@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登入 - 資料夾權限文管系統</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons - 使用穩定版本和 unpkg 作為備用 -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" onerror="this.onerror=null;this.href='https://unpkg.com/bootstrap-icons@1.10.0/font/bootstrap-icons.css'">
+    <!-- Preload Bootstrap Icons Font -->
+    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/fonts/bootstrap-icons.woff2" as="font" type="font/woff2" crossorigin>
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+            max-width: 450px;
+            width: 100%;
+            animation: fadeIn 0.5s ease-in;
+        }
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .login-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .login-header h2 {
+            margin: 0;
+            font-weight: 600;
+        }
+        .login-header .icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+        .login-body {
+            padding: 40px;
+        }
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        .btn-login {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            padding: 12px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-register {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            border: none;
+            padding: 12px;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+        .btn-register:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+        }
+        .alert-custom {
+            border: none;
+            border-radius: 10px;
+        }
+        .input-group-text {
+            background: #f8f9fa;
+            border-right: none;
+        }
+        .form-control {
+            border-left: none;
+        }
+        .tab-content {
+            margin-top: 20px;
+        }
+        .nav-tabs {
+            border-bottom: 2px solid #e9ecef;
+        }
+        .nav-tabs .nav-link {
+            border: none;
+            color: #6c757d;
+            font-weight: 500;
+            padding: 10px 20px;
+        }
+        .nav-tabs .nav-link.active {
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+            background: none;
+        }
+        .first-account-notice {
+            background: linear-gradient(135deg, #ffeaa7 0%, #fdcb6e 100%);
+            color: #2d3436;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            text-align: center;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <div class="icon">
+                <i class="bi bi-folder-lock"></i>
+            </div>
+            <h2>資料夾權限文管系統</h2>
+            <p class="mb-0">請登入或註冊以繼續</p>
+        </div>
+        
+        <div class="login-body">
+            <!-- 預設管理員提示 -->
+            <div class="alert alert-info alert-custom" role="alert">
+                <i class="bi bi-info-circle-fill"></i>
+                <strong>提示：</strong>系統預設管理員帳號為 <code>admin</code> / <code>admin123</code><br>
+                <small class="text-muted">一般使用者註冊後需等待管理員審核通過才能登入</small>
+            </div>
+
+            <!-- 訊息區域 -->
+            <div id="message-area"></div>
+
+            <!-- 分頁 -->
+            <ul class="nav nav-tabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="login-tab" data-bs-toggle="tab" data-bs-target="#login-content" type="button" role="tab">
+                        <i class="bi bi-box-arrow-in-right"></i> 登入
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="register-tab" data-bs-toggle="tab" data-bs-target="#register-content" type="button" role="tab">
+                        <i class="bi bi-person-plus"></i> 註冊
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content">
+                <!-- 登入表單 -->
+                <div class="tab-pane fade show active" id="login-content" role="tabpanel">
+                    <form id="login-form">
+                        <div class="mb-3">
+                            <label class="form-label">使用者名稱</label>
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="bi bi-person"></i>
+                                </span>
+                                <input type="text" class="form-control" name="username" placeholder="請輸入使用者名稱" required>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">密碼</label>
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="bi bi-lock"></i>
+                                </span>
+                                <input type="password" class="form-control" name="password" placeholder="請輸入密碼" required>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-login w-100">
+                            <i class="bi bi-box-arrow-in-right"></i> 登入
+                        </button>
+                    </form>
+                </div>
+
+                <!-- 註冊表單 -->
+                <div class="tab-pane fade" id="register-content" role="tabpanel">
+                    <form id="register-form">
+                        <div class="mb-3">
+                            <label class="form-label">使用者名稱 <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="bi bi-person"></i>
+                                </span>
+                                <input type="text" class="form-control" name="username" placeholder="請輸入使用者名稱" required>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">密碼 <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="bi bi-lock"></i>
+                                </span>
+                                <input type="password" class="form-control" name="password" placeholder="至少 6 個字元" required minlength="6">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">確認密碼 <span class="text-danger">*</span></label>
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="bi bi-lock-fill"></i>
+                                </span>
+                                <input type="password" class="form-control" name="password_confirm" placeholder="請再次輸入密碼" required minlength="6">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">姓名（選填）</label>
+                            <div class="input-group">
+                                <span class="input-group-text">
+                                    <i class="bi bi-card-text"></i>
+                                </span>
+                                <input type="text" class="form-control" name="full_name" placeholder="請輸入您的姓名">
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary btn-register w-100">
+                            <i class="bi bi-person-plus"></i> 註冊
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        $(document).ready(function() {
+            // 登入表單提交
+            $('#login-form').on('submit', function(e) {
+                e.preventDefault();
+                
+                const formData = {
+                    username: $(this).find('input[name="username"]').val(),
+                    password: $(this).find('input[name="password"]').val()
+                };
+
+                $.ajax({
+                    url: '/api/auth/login',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(formData),
+                    success: function(response) {
+                        showMessage('success', '✅ ' + (response.message || '登入成功！正在跳轉...'));
+                        setTimeout(function() {
+                            window.location.href = '/index.html';
+                        }, 1000);
+                    },
+                    error: function(xhr) {
+                        let error = xhr.responseJSON?.error || '登入失敗，請重試';
+                        let messageType = 'danger';
+                        
+                        // 根據錯誤訊息調整顯示
+                        if (error.includes('pending') || error.includes('等待審核') || error.includes('審核中')) {
+                            error = '<strong>⏳ 帳號審核中</strong><br>' +
+                                   '您的帳號正在等待管理員審核，審核通過後即可登入。<br>' +
+                                   '<small class="text-muted">如有疑問，請聯繫管理員</small>';
+                            messageType = 'warning';
+                        } else if (error.includes('rejected') || error.includes('已被拒絕')) {
+                            error = '<strong>❌ 帳號已被拒絕</strong><br>' +
+                                   '您的註冊申請已被管理員拒絕。<br>' +
+                                   '<small class="text-muted">如有疑問，請聯繫管理員</small>';
+                            messageType = 'danger';
+                        } else if (error.includes('帳號或密碼錯誤')) {
+                            error = '<strong>🔒 登入失敗</strong><br>' +
+                                   '帳號或密碼錯誤，請重新輸入。';
+                            messageType = 'danger';
+                        }
+                        
+                        showMessage(messageType, error);
+                    }
+                });
+            });
+
+            // 註冊表單提交
+            $('#register-form').on('submit', function(e) {
+                e.preventDefault();
+                
+                const password = $(this).find('input[name="password"]').val();
+                const passwordConfirm = $(this).find('input[name="password_confirm"]').val();
+
+                if (password !== passwordConfirm) {
+                    showMessage('danger', '兩次輸入的密碼不一致');
+                    return;
+                }
+
+                const formData = {
+                    username: $(this).find('input[name="username"]').val(),
+                    password: password,
+                    full_name: $(this).find('input[name="full_name"]').val()
+                };
+
+                $.ajax({
+                    url: '/api/auth/register',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(formData),
+                    success: function(response) {
+                        let message = response.message || '註冊成功！';
+                        let messageType = 'success';
+                        
+                        // 檢查是否需要審核
+                        if (response.requiresApproval) {
+                            message = '<strong>📝 註冊成功！</strong><br>' + 
+                                     '您的帳號正在等待管理員審核，審核通過後即可登入。<br>' +
+                                     '<small class="text-muted">請稍後再試或聯繫管理員</small>';
+                            messageType = 'info';
+                        } else if (response.isFirstAccount) {
+                            // 預設管理員帳號（admin/admin123）已存在時，第一個註冊的使用者不是管理員
+                            message = '<strong>✅ 註冊成功！</strong><br>' + 
+                                     '您的帳號正在等待管理員審核，審核通過後即可登入。';
+                            messageType = 'info';
+                        }
+                        
+                        showMessage(messageType, message);
+                        
+                        // 清空表單
+                        $('#register-form')[0].reset();
+                        
+                        // 切換到登入頁面
+                        setTimeout(function() {
+                            $('#login-tab').click();
+                        }, 3000);
+                    },
+                    error: function(xhr) {
+                        const error = xhr.responseJSON?.error || '註冊失敗，請重試';
+                        showMessage('danger', error);
+                    }
+                });
+            });
+        });
+
+        // 顯示訊息
+        function showMessage(type, message) {
+            const alertHtml = `
+                <div class="alert alert-${type} alert-custom alert-dismissible fade show" role="alert">
+                    <i class="bi bi-${type === 'success' ? 'check-circle-fill' : 'exclamation-triangle-fill'}"></i>
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+            $('#message-area').html(alertHtml);
+            
+            // 自動消失
+            setTimeout(function() {
+                $('.alert').alert('close');
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
+

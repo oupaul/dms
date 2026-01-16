@@ -1,0 +1,36 @@
+{
+  "name": "folder-permission-system",
+  "version": "1.0.0",
+  "description": "資料夾權限管理系統",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "audit": "npm audit",
+    "audit-fix": "npm audit fix",
+    "update-deps": "npm update --save"
+  },
+  "dependencies": {
+    "argon2": "^0.31.2",
+    "body-parser": "^2.2.0",
+    "csv-parser": "^3.2.0",
+    "csv-writer": "^1.6.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.1.0",
+    "express-session": "^1.18.1",
+    "multer": "^2.0.2",
+    "sqlite3": "^5.1.7"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "keywords": [
+    "folder",
+    "permission",
+    "management",
+    "system"
+  ],
+  "author": "",
+  "license": "ISC"
+}

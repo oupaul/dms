@@ -1,0 +1,199 @@
+# ============================================================================
+# Excel 匯出功能 - 從 xlsx 遷移到 ExcelJS
+# ============================================================================
+# 此檔案說明如何修改 app.js 以使用 ExcelJS 替代 xlsx
+# ============================================================================
+
+## 步驟 1: 安裝新套件
+
+```bash
+npm uninstall xlsx
+npm install exceljs
+```
+
+## 步驟 2: 修改 app.js
+
+### 第 7 行：修改導入
+
+原本：
+```javascript
+const XLSX = require('xlsx');
+```
+
+改為：
+```javascript
+const ExcelJS = require('exceljs');
+```
+
+### 第 2157-2326 行：修改 /export_excel 端點
+
+原本：
+```javascript
+app.get('/export_excel', (req, res) => {
+    // ... 資料獲取代碼 ...
+    
+    const workbook = XLSX.utils.book_new();
+    
+    const foldersSheet = XLSX.utils.json_to_sheet(foldersData);
+    XLSX.utils.book_append_sheet(workbook, foldersSheet, '資料夾');
+    
+    const usersSheet = XLSX.utils.json_to_sheet(usersData);
+    XLSX.utils.book_append_sheet(workbook, usersSheet, '人員');
+    
+    // ... 其他工作表 ...
+    
+    const tempFile = 'temp_export_' + Date.now() + '.xlsx';
+    XLSX.writeFile(workbook, tempFile);
+    
+    res.download(tempFile, fileName, (err) => {
+        fs.unlinkSync(tempFile);
+    });
+});
+```
+
+改為：
+```javascript
+app.get('/export_excel', async (req, res) => {  // 加上 async
+    // ... 資料獲取代碼保持不變 ...
+    
+    try {
+        // 創建工作簿
+        const workbook = new ExcelJS.Workbook();
+        workbook.creator = '資料夾權限管理系統';
+        workbook.created = new Date();
+        
+        // === 輔助函數：添加工作表 ===
+        const addWorksheet = (name, data) => {
+            const worksheet = workbook.addWorksheet(name);
+            
+            if (data.length > 0) {
+                // 獲取標題（物件的 keys）
+                const headers = Object.keys(data[0]);
+                
+                // 添加標題行
+                worksheet.addRow(headers);
+                
+                // 設定標題樣式
+                worksheet.getRow(1).font = { bold: true, size: 11 };
+                worksheet.getRow(1).fill = {
+                    type: 'pattern',
+                    pattern: 'solid',
+                    fgColor: { argb: 'FFD9D9D9' }
+                };
+                worksheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+                
+                // 添加資料行
+                data.forEach(row => {
+                    const values = headers.map(header => row[header] || '');
+                    worksheet.addRow(values);
+                });
+                
+                // 自動調整欄寬
+                worksheet.columns.forEach((column, index) => {
+                    let maxLength = headers[index].length;
+                    column.eachCell({ includeEmpty: false }, cell => {
+                        const cellLength = cell.value ? cell.value.toString().length : 0;
+                        if (cellLength > maxLength) maxLength = cellLength;
+                    });
+                    column.width = Math.min(Math.max(maxLength + 2, 10), 50);
+                });
+                
+                // 添加篩選
+                worksheet.autoFilter = {
+                    from: { row: 1, column: 1 },
+                    to: { row: 1, column: headers.length }
+                };
+            }
+            
+            return worksheet;
+        };
+        
+        // === 添加各個工作表 ===
+        
+        // 1. 資料夾工作表
+        addWorksheet('資料夾', foldersData);
+        
+        // 2. 人員工作表
+        addWorksheet('人員', usersData);
+        
+        // 3. 群組工作表
+        addWorksheet('群組', groupsData);
+        
+        // 4. 群組成員明細工作表
+        addWorksheet('群組成員明細', groupMembersData);
+        
+        // 5. 權限工作表
+        addWorksheet('權限', permissionsData);
+        
+        // 6. 統計摘要工作表
+        addWorksheet('統計摘要', summaryData);
+        
+        // === 寫入檔案 ===
+        const tempFile = 'temp_export_' + Date.now() + '.xlsx';
+        await workbook.xlsx.writeFile(tempFile);  // 使用 await
+        
+        console.log(`Exported Excel: ${folders.length} folders, ${users.length} users, ${groups.length} groups, ${permissions.length} permissions`);
+        
+        // 下載並刪除臨時檔案
+        res.download(tempFile, fileName, (err) => {
+            if (err) {
+                console.error('Download error:', err);
+            }
+            // 刪除臨時檔案
+            fs.unlink(tempFile, (unlinkErr) => {
+                if (unlinkErr) console.error('Error deleting temp file:', unlinkErr);
+            });
+        });
+        
+    } catch (error) {
+        console.error('Excel export error:', error);
+        res.status(500).json({ error: '匯出失敗：' + error.message });
+    }
+});
+```
+
+## 完整修改版本的完整說明
+
+### 主要變更：
+
+1. **async/await**: 因為 ExcelJS 使用 Promise，需要將函數改為 async
+2. **創建工作簿**: 使用 `new ExcelJS.Workbook()`
+3. **添加工作表**: 使用 `workbook.addWorksheet(name)`
+4. **添加資料**: 使用 `worksheet.addRow()`
+5. **寫入檔案**: 使用 `await workbook.xlsx.writeFile()`
+
+### 額外優化（ExcelJS 提供的功能）：
+
+1. ✅ 標題行樣式（粗體、背景色）
+2. ✅ 自動調整欄寬
+3. ✅ 添加自動篩選
+4. ✅ 儲存格對齊
+
+## 測試檢查清單
+
+修改後請測試：
+
+- [ ] 匯出完整報表 Excel
+- [ ] 檢查所有工作表是否正確
+- [ ] 檢查資料完整性
+- [ ] 檢查檔案可以用 Excel 開啟
+- [ ] 檢查樣式是否正確
+
+## 回滾方法
+
+如果有問題，回滾：
+
+```bash
+# 1. 還原程式碼
+git checkout app.js
+# 或
+cp app.js.backup app.js
+
+# 2. 還原套件
+npm uninstall exceljs
+npm install xlsx@0.18.5
+
+# 3. 重啟
+pm2 restart folder-permission-system
+```
+

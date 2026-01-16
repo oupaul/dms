@@ -1,0 +1,1649 @@
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>權限 CSV 生成工具</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .main-card {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px 15px 0 0;
+        }
+        .step-card {
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+        .step-card:hover {
+            border-color: #667eea;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.2);
+        }
+        .step-number {
+            background: #667eea;
+            color: white;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .preview-table {
+            max-height: 400px;
+            overflow: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+        }
+        .preview-table table {
+            font-size: 0.85em;
+        }
+        .output-textarea {
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            min-height: 300px;
+        }
+        .btn-action {
+            padding: 12px 30px;
+            font-weight: 600;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+        .btn-action:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+        }
+        .permission-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            margin: 2px;
+        }
+        .badge-read { background: #d4edda; color: #155724; }
+        .badge-write { background: #fff3cd; color: #856404; }
+        .mapping-table {
+            font-size: 0.9em;
+        }
+        .mapping-table td {
+            padding: 8px;
+        }
+        .access-guard-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(13, 37, 63, 0.85);
+            z-index: 3000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="access-guard" class="access-guard-overlay">
+        <div class="spinner-border text-light" role="status">
+            <span class="visually-hidden">權限檢查中</span>
+        </div>
+        <p class="mt-3 mb-0">正在確認帳號權限，請稍候...</p>
+    </div>
+    <div class="main-card">
+        <!-- 標題 -->
+        <div class="header text-center">
+            <h1><i class="bi bi-shield-lock-fill"></i> 權限 CSV 生成工具</h1>
+            <p class="mb-0">快速將 Excel 權限表轉換為系統可匯入的 CSV 格式</p>
+        </div>
+
+        <div class="p-4">
+            <!-- 步驟 1: 貼上資料 -->
+            <div class="step-card">
+                <div class="d-flex align-items-center mb-3">
+                    <span class="step-number me-3">1</span>
+                    <h4 class="mb-0">從 Excel 貼上權限資料</h4>
+                </div>
+                
+                <div class="info-box">
+                    <i class="bi bi-info-circle-fill text-primary"></i>
+                    <strong>操作說明：</strong>
+                    <ol class="mb-0 mt-2">
+                        <li>在 Excel 中選取整個權限表（包含標題列）</li>
+                        <li>按 <kbd>Ctrl+C</kbd> 複製</li>
+                        <li>在下方文字框按 <kbd>Ctrl+V</kbd> 貼上</li>
+                        <li><span class="badge bg-success">NEW</span> 支援階層結構！使用縮排表示層級關係</li>
+                    </ol>
+                </div>
+
+                <div class="alert alert-info mt-3">
+                    <i class="bi bi-lightbulb-fill"></i>
+                    <strong>支援兩種格式：</strong>
+                    
+                    <div class="row mt-2">
+                        <div class="col-md-6">
+                            <strong>格式 1：縱向（資料夾在左）</strong>
+                            <pre class="mb-0 mt-1 bg-light p-2 rounded" style="font-size: 0.8em;">資料夾    人員1  人員2
+OOLAR01   RW     RO
+  子資料夾  RW     RW</pre>
+                        </div>
+                        <div class="col-md-6">
+                            <strong>格式 2：橫向（資料夾在上）⭐</strong>
+                            <pre class="mb-0 mt-1 bg-light p-2 rounded" style="font-size: 0.8em;">層級1   share    share    share
+層級2   財務部    IT部     HR
+層級3   會計      系統      
+人員1   RW       RO       RW
+人員2   RO       RW       RO</pre>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-warning mt-2 mb-0">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <strong>重要提示 - 群組命名規則：</strong><br>
+                        <small>系統會自動尋找使用<strong>完整路徑</strong>命名的群組，例如：<br>
+                        • RD → <code>RD_RO</code>、<code>RD_RW</code><br>
+                        • RD/Test → <code>RD_Test_RO</code>、<code>RD_Test_RW</code><br>
+                        • RD/Test/Lab → <code>RD_Test_Lab_RO</code>、<code>RD_Test_Lab_RW</code><br>
+                        請確保已使用「自動生成群組並指派權限」功能建立相應的群組。</small>
+                    </div>
+                    
+                    <div class="mt-2">
+                        <button class="btn btn-sm btn-primary" onclick="showFormatHelp()">
+                            <i class="bi bi-question-circle"></i> 格式詳細說明
+                        </button>
+                    </div>
+                </div>
+
+                <textarea id="excel-input" class="form-control" rows="8" 
+                          placeholder="請在此貼上從 Excel 複製的權限表資料...
+
+範例格式：
+第一欄	處理長	應用	組別	部門	公司主管	副總級	...
+OOLAR01	RW	RW	RW	RW	RW	RW	...
+OOLAR02	RW	RW	RW	RW	RW	RW	..."></textarea>
+
+                <div class="mt-3">
+                    <div class="btn-group me-2" role="group">
+                        <input type="radio" class="btn-check" name="format-type" id="format-vertical" value="vertical" checked>
+                        <label class="btn btn-outline-primary" for="format-vertical">
+                            <i class="bi bi-list-ul"></i> 縱向格式
+                        </label>
+                        
+                        <input type="radio" class="btn-check" name="format-type" id="format-horizontal" value="horizontal">
+                        <label class="btn btn-outline-primary" for="format-horizontal">
+                            <i class="bi bi-table"></i> 橫向格式（矩陣）
+                        </label>
+                    </div>
+                    
+                    <button class="btn btn-primary btn-action" onclick="parseExcelData()">
+                        <i class="bi bi-arrow-right-circle"></i> 解析資料
+                    </button>
+                    <button class="btn btn-secondary ms-2" onclick="clearAll()">
+                        <i class="bi bi-x-circle"></i> 清空
+                    </button>
+                </div>
+            </div>
+
+            <!-- 步驟 2: 設定對應 -->
+            <div class="step-card" id="mapping-section" style="display:none;">
+                <div class="d-flex align-items-center mb-3">
+                    <span class="step-number me-3">2</span>
+                    <h4 class="mb-0">設定欄位對應</h4>
+                </div>
+
+                <!-- 階層結構預覽 -->
+                <div id="hierarchy-preview-box" style="display:none;" class="alert alert-success mb-3">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <div>
+                            <i class="bi bi-diagram-3-fill"></i>
+                            <strong>階層結構預覽</strong>
+                            <span class="badge bg-success ms-2" id="level-count">0</span> 個層級
+                        </div>
+                        <button class="btn btn-sm btn-outline-success" onclick="toggleHierarchyPreview()">
+                            <i class="bi bi-eye"></i> <span id="preview-toggle-text">展開</span>
+                        </button>
+                    </div>
+                    <div id="hierarchy-preview-content" style="display:none;">
+                        <pre id="hierarchy-tree" class="mb-0 mt-2 bg-white p-3 rounded" style="font-size: 0.9em; max-height: 300px; overflow-y: auto;"></pre>
+                    </div>
+                </div>
+
+                <div class="alert alert-warning">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <strong>重要：</strong>請確認哪些欄位代表<strong>資料夾</strong>，哪些欄位代表<strong>人員或群組</strong>
+                </div>
+
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header bg-primary text-white">
+                                <i class="bi bi-folder-fill"></i> 資料夾欄位
+                            </div>
+                            <div class="card-body">
+                                <label class="form-label">選擇資料夾名稱所在欄位：</label>
+                                <select id="folder-column" class="form-select">
+                                    <option value="">請選擇...</option>
+                                </select>
+                                <small class="text-muted">通常是第一欄（如：OOLAR01, OOLAR02...）</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header bg-success text-white">
+                                <i class="bi bi-people-fill"></i> 權限欄位範圍
+                            </div>
+                            <div class="card-body">
+                                <label class="form-label">權限資料開始欄位：</label>
+                                <select id="permission-start-column" class="form-select mb-2">
+                                    <option value="">請選擇...</option>
+                                </select>
+                                <label class="form-label">權限資料結束欄位：</label>
+                                <select id="permission-end-column" class="form-select">
+                                    <option value="">請選擇...</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-3">
+                    <button class="btn btn-success btn-action" onclick="generateMapping()">
+                        <i class="bi bi-gear-fill"></i> 生成對應表
+                    </button>
+                </div>
+            </div>
+
+            <!-- 步驟 3: 人員/群組對應 -->
+            <div class="step-card" id="user-group-mapping" style="display:none;">
+                <div class="d-flex align-items-center mb-3">
+                    <span class="step-number me-3">3</span>
+                    <h4 class="mb-0">設定人員 ID 對應</h4>
+                    <button class="btn btn-sm btn-outline-primary ms-auto" onclick="loadSystemData()">
+                        <i class="bi bi-arrow-clockwise"></i> 重新載入系統資料
+                    </button>
+                </div>
+
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle-fill"></i>
+                    <strong>功能說明：</strong>
+                    <ul class="mb-0 mt-2">
+                        <li>產生的 CSV 用於<strong>「將人員加入群組」</strong></li>
+                        <li>Excel 第一欄 = 人員帳號，會自動對應到系統人員</li>
+                        <li>每個資料夾的 RO/RW → 自動對應該資料夾的群組（例如：財務部_RO）</li>
+                        <li>產生的 CSV 包含 <code>user_id</code> 和 <code>group_id</code></li>
+                    </ul>
+                </div>
+                
+                <div class="alert alert-info">
+                    <i class="bi bi-magic text-primary"></i>
+                    <strong>搭配群組自動權限：</strong>
+                    <ul class="mb-0 mt-2">
+                        <li>群組匯入時會自動指派權限（例如：財務部_RO → 財務部資料夾 read 權限）</li>
+                        <li>匯入此權限 CSV 後，人員會自動加入對應的群組</li>
+                        <li>人員透過群組獲得資料夾權限，無需手動設定</li>
+                    </ul>
+                </div>
+
+                <div id="system-data-status" class="alert alert-success" style="display:none;">
+                    <i class="bi bi-check-circle-fill"></i>
+                    已載入系統資料：
+                    <span class="badge bg-success" id="user-count">0</span> 位人員，
+                    <span class="badge bg-success" id="group-count">0</span> 個群組
+                </div>
+
+                <div class="table-responsive preview-table">
+                    <table class="table table-bordered table-sm mapping-table" id="mapping-table">
+                        <thead class="table-light">
+                            <tr>
+                                <th width="5%">#</th>
+                                <th width="25%">Excel 欄位名稱</th>
+                                <th width="20%">類型</th>
+                                <th width="50%">對應 ID</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mapping-body">
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="mt-3">
+                    <button class="btn btn-success btn-action" onclick="generatePermissions()">
+                        <i class="bi bi-magic"></i> 生成權限 CSV
+                    </button>
+                </div>
+            </div>
+
+            <!-- 步驟 4: 預覽和下載 -->
+            <div class="step-card" id="output-section" style="display:none;">
+                <div class="d-flex align-items-center mb-3">
+                    <span class="step-number me-3">4</span>
+                    <h4 class="mb-0">預覽和下載</h4>
+                </div>
+
+                <div class="alert alert-success">
+                    <i class="bi bi-check-circle-fill"></i>
+                    <strong>生成成功！</strong>共產生 <span id="permission-count" class="badge bg-success">0</span> 筆權限記錄
+                </div>
+
+                <!-- 統計資訊 -->
+                <div class="row mb-3">
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h3 class="text-primary" id="stat-folders">0</h3>
+                                <small class="text-muted">資料夾數</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h3 class="text-success" id="stat-read">0</h3>
+                                <small class="text-muted">讀取權限</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h3 class="text-warning" id="stat-write">0</h3>
+                                <small class="text-muted">寫入權限</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h3 class="text-warning" id="stat-write">0</h3>
+                                <small class="text-muted">寫入權限</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <label class="form-label"><strong>CSV 輸出內容：</strong></label>
+                <textarea id="csv-output" class="form-control output-textarea" readonly></textarea>
+
+                <div class="mt-3 d-flex gap-2">
+                    <button class="btn btn-primary btn-action" onclick="downloadCSV()">
+                        <i class="bi bi-download"></i> 下載 CSV 檔案
+                    </button>
+                    <button class="btn btn-danger btn-action" onclick="directImport()">
+                        <i class="bi bi-cloud-upload-fill"></i> 直接匯入到系統
+                    </button>
+                    <button class="btn btn-success btn-action" onclick="copyToClipboard()">
+                        <i class="bi bi-clipboard"></i> 複製到剪貼簿
+                    </button>
+                    <button class="btn btn-info btn-action" onclick="showPreviewTable()">
+                        <i class="bi bi-table"></i> 表格預覽
+                    </button>
+                </div>
+                
+                <div class="alert alert-info mt-3">
+                    <i class="bi bi-info-circle-fill"></i> 
+                    <strong>直接匯入說明：</strong>
+                    「直接匯入到系統」按鈕會將生成的 CSV 內容直接傳送到主系統進行匯入，無需下載和手動上傳。
+                </div>
+            </div>
+
+            <!-- 預覽表格模態框 -->
+            <div class="modal fade" id="preview-modal" tabindex="-1">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="bi bi-table"></i> 權限資料預覽</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="table-responsive" style="max-height: 600px; overflow: auto;">
+                                <table class="table table-bordered table-hover table-sm" id="preview-table-content">
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 格式說明模態框 -->
+            <div class="modal fade" id="format-help-modal" tabindex="-1">
+                <div class="modal-dialog modal-xl">
+                    <div class="modal-content">
+                        <div class="modal-header bg-primary text-white">
+                            <h5 class="modal-title"><i class="bi bi-question-circle"></i> 格式詳細說明</h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h5 class="text-primary"><i class="bi bi-list-ul"></i> 格式 1：縱向（資料夾在左）</h5>
+                                    <p>適用於資料夾較多、人員較少的情況</p>
+                                    <div class="card mb-3">
+                                        <div class="card-header">範例：</div>
+                                        <div class="card-body">
+                                            <pre class="mb-0 bg-light p-3 rounded" style="font-size: 0.85em;">資料夾名稱    人員1    人員2    群組1    群組2
+OOLAR01       RW       RO       RW       RO
+OOLAR02       RW                RO       RW
+  子資料夾     RW       RW       RW       RO</pre>
+                                        </div>
+                                    </div>
+                                    <ul class="list-group">
+                                        <li class="list-group-item">✓ 第 1 欄：資料夾名稱</li>
+                                        <li class="list-group-item">✓ 第 2 欄起：各人員/群組</li>
+                                        <li class="list-group-item">✓ 支援縮排表示階層</li>
+                                        <li class="list-group-item">✓ 適合：資料夾多、權限對象少</li>
+                                    </ul>
+                                </div>
+                                
+                                <div class="col-md-6">
+                                    <h5 class="text-success"><i class="bi bi-table"></i> 格式 2：橫向（資料夾在上）⭐</h5>
+                                    <p>適用於資料夾較少、人員較多的情況</p>
+                                    <div class="card mb-3">
+                                        <div class="card-header">範例：</div>
+                                        <div class="card-body">
+                                            <pre class="mb-0 bg-light p-3 rounded" style="font-size: 0.85em;">第一層       share    share    share    share
+第二層       財務部    IT部     HR       Admin
+第三層       會計      系統              
+張三         RW       RO       RW       RW
+李四         RO       RW                RW
+王五         RW       RW       RO       </pre>
+                                        </div>
+                                    </div>
+                                    <ul class="list-group">
+                                        <li class="list-group-item">✓ 前 3 行：資料夾階層</li>
+                                        <li class="list-group-item">✓ 第 4 行起：使用者帳號</li>
+                                        <li class="list-group-item">✓ 自動建立階層關係</li>
+                                        <li class="list-group-item">✓ 適合：人員多、資料夾少</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            
+                            <hr class="my-4">
+                            
+                            <h5 class="text-info"><i class="bi bi-lightbulb"></i> 如何選擇格式？</h5>
+                            <div class="table-responsive">
+                                <table class="table table-bordered">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th width="20%">情況</th>
+                                            <th width="40%">縱向格式</th>
+                                            <th width="40%">橫向格式（矩陣）</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td><strong>資料夾數量</strong></td>
+                                            <td class="table-success">✓ 很多（100+）</td>
+                                            <td class="table-warning">適合較少（20-50）</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>人員數量</strong></td>
+                                            <td class="table-warning">適合較少（5-20）</td>
+                                            <td class="table-success">✓ 很多（50+）</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>階層關係</strong></td>
+                                            <td>縮排表示</td>
+                                            <td>3 行分層表示</td>
+                                        </tr>
+                                        <tr>
+                                            <td><strong>Excel 格式</strong></td>
+                                            <td>一般列表</td>
+                                            <td>矩陣表格</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let parsedData = [];
+        let headers = [];
+        let mappingData = [];
+        let generatedPermissions = [];
+        let folderHierarchy = []; // 儲存資料夾階層關係
+        let systemUsers = []; // 系統中的人員清單
+        let systemGroups = []; // 系統中的群組清單
+        let apiBaseUrl = window.location.origin; // API 基礎 URL
+        const accessGuard = document.getElementById('access-guard');
+        verifyEditorAccess('權限 CSV 生成器');
+
+        async function verifyEditorAccess(featureName) {
+            try {
+                const resp = await fetch('/api/auth/status', { credentials: 'include' });
+                if (!resp.ok) throw new Error('伺服器沒有回應');
+                const data = await resp.json();
+                if (!data.loggedIn) {
+                    alert('請先登入主系統後再使用此工具。');
+                    window.location.href = '/login.html';
+                    return;
+                }
+                if (data.user && data.user.permissionLevel === 'viewer') {
+                    alert(`此帳號為唯讀，無法使用${featureName}功能。`);
+                    window.location.href = '/index.html';
+                    return;
+                }
+                if (accessGuard) {
+                    accessGuard.style.display = 'none';
+                }
+            } catch (error) {
+                alert(`無法確認帳號權限：${error.message}`);
+                window.location.href = '/login.html';
+            }
+        }
+
+        // 頁面載入時從系統載入人員和群組清單
+        async function loadSystemData() {
+            try {
+                // 載入人員
+                const usersResponse = await fetch(`${apiBaseUrl}/api/users`);
+                if (usersResponse.ok) {
+                    systemUsers = await usersResponse.json();
+                    console.log('已載入系統人員:', systemUsers);
+                }
+                
+                // 載入群組
+                const groupsResponse = await fetch(`${apiBaseUrl}/api/groups`);
+                if (groupsResponse.ok) {
+                    systemGroups = await groupsResponse.json();
+                    console.log('已載入系統群組:', systemGroups);
+                }
+                
+                // 更新狀態顯示
+                const statusDiv = document.getElementById('system-data-status');
+                const userCountSpan = document.getElementById('user-count');
+                const groupCountSpan = document.getElementById('group-count');
+                
+                if (userCountSpan) userCountSpan.textContent = systemUsers.length;
+                if (groupCountSpan) groupCountSpan.textContent = systemGroups.length;
+                
+                if (systemUsers.length > 0 || systemGroups.length > 0) {
+                    if (statusDiv) statusDiv.style.display = 'block';
+                } else {
+                    console.warn('系統中沒有人員或群組資料');
+                }
+                
+                // 如果已經有 mappingData，重新生成選擇器
+                if (mappingData.length > 0) {
+                    regenerateMappingSelectors();
+                }
+            } catch (error) {
+                console.error('載入系統資料失敗:', error);
+                // 即使載入失敗，仍允許手動輸入 ID
+            }
+        }
+
+        // 重新生成所有 ID 選擇器
+        function regenerateMappingSelectors() {
+            mappingData.forEach((item, idx) => {
+                const selectorDiv = document.getElementById(`id-selector-${idx}`);
+                if (selectorDiv) {
+                    const permissionSuffix = item.permissionSuffix || '';
+                    if (permissionSuffix) {
+                        selectorDiv.innerHTML = generateIdSelectorWithSuffix(idx, item.type, permissionSuffix);
+                    } else {
+                        selectorDiv.innerHTML = generateIdSelector(idx, item.type);
+                    }
+                }
+            });
+        }
+
+        // 解析 Excel 資料
+        function parseExcelData() {
+            const input = document.getElementById('excel-input').value.trim();
+            if (!input) {
+                alert('請先貼上 Excel 資料！');
+                return;
+            }
+
+            // 檢查選擇的格式
+            const formatType = document.querySelector('input[name="format-type"]:checked').value;
+            
+            if (formatType === 'horizontal') {
+                parseHorizontalFormat(input);
+            } else {
+                parseVerticalFormat(input);
+            }
+        }
+
+        // 解析橫向格式（資料夾在上，使用者在左）
+        function parseHorizontalFormat(input) {
+            const lines = input.split('\n').filter(line => line.trim());
+            if (lines.length < 2) {
+                alert('橫向格式至少需要 1 行資料夾階層 + 1 行使用者資料！');
+                return;
+            }
+
+            // 判斷分隔符
+            const delimiter = lines[0].includes('\t') ? '\t' : /\s{2,}/;
+            
+            // 自動偵測階層數量
+            // 檢查前幾行的第一欄是否包含「層級」、「階層」、「level」等關鍵字
+            let hierarchyLineCount = 0;
+            const hierarchyKeywords = ['層級', '階層', 'level', 'tier', '第', 'L'];
+            
+            for (let i = 0; i < lines.length; i++) {
+                const firstCol = lines[i].split(delimiter)[0].trim();
+                const isHierarchyLine = hierarchyKeywords.some(keyword => 
+                    firstCol.toLowerCase().includes(keyword.toLowerCase())
+                );
+                
+                if (isHierarchyLine) {
+                    hierarchyLineCount++;
+                } else {
+                    // 遇到第一個非階層行就停止
+                    break;
+                }
+            }
+            
+            // 如果沒有偵測到階層關鍵字，預設前3行為階層（向後兼容）
+            if (hierarchyLineCount === 0) {
+                hierarchyLineCount = Math.min(3, lines.length - 1);
+                console.log('未偵測到階層關鍵字，預設使用前', hierarchyLineCount, '行作為階層');
+            }
+            
+            console.log('偵測到', hierarchyLineCount, '個階層');
+            
+            if (lines.length <= hierarchyLineCount) {
+                alert(`資料不足！需要至少 ${hierarchyLineCount} 行階層 + 1 行使用者資料`);
+                return;
+            }
+            
+            // 動態解析所有階層
+            const levels = [];
+            for (let i = 0; i < hierarchyLineCount; i++) {
+                const levelData = lines[i].split(delimiter).map(v => v.trim());
+                levels.push(levelData);
+                console.log(`層級 ${i + 1}:`, levelData);
+            }
+            
+            // 建立資料夾結構（從第 2 欄開始，第 1 欄通常是標籤）
+            const folderColumns = [];
+            folderHierarchy = [];
+            
+            // 找出最大欄位數
+            const maxCols = Math.max(...levels.map(level => level.length));
+            
+            for (let colIdx = 1; colIdx < maxCols; colIdx++) {
+                // 收集這一欄所有階層的值
+                const parts = [];
+                const levelValues = {};
+                
+                for (let levelIdx = 0; levelIdx < levels.length; levelIdx++) {
+                    const value = levels[levelIdx][colIdx] || '';
+                    levelValues[`level${levelIdx + 1}`] = value;
+                    if (value) {
+                        parts.push(value);
+                    }
+                }
+                
+                if (parts.length === 0) continue;
+                
+                const folderPath = parts.join('/');
+                const folderInfo = {
+                    index: colIdx,
+                    path: folderPath,
+                    name: parts[parts.length - 1], // 最後一個非空值
+                    ...levelValues // 動態添加 level1, level2, level3, level4...
+                };
+                
+                folderColumns.push(folderInfo);
+            }
+            
+            console.log('資料夾欄位:', folderColumns);
+            
+            // 解析使用者和權限（從階層行之後開始）
+            const userPermissions = [];
+            for (let lineIdx = hierarchyLineCount; lineIdx < lines.length; lineIdx++) {
+                const values = lines[lineIdx].split(delimiter).map(v => v.trim());
+                const userName = values[0];
+                
+                if (!userName) continue;
+                
+                // 解析該使用者對每個資料夾的權限
+                const permissions = [];
+                for (let colIdx = 1; colIdx < values.length && colIdx < folderColumns.length + 1; colIdx++) {
+                    const permValue = values[colIdx];
+                    if (permValue && permValue.match(/^(RW|RO|R|W)$/i)) {
+                        permissions.push({
+                            folder: folderColumns[colIdx - 1],
+                            permission: permValue
+                        });
+                    }
+                }
+                
+                userPermissions.push({
+                    user: userName,
+                    permissions: permissions
+                });
+            }
+            
+            console.log('使用者權限:', userPermissions);
+            
+            // 轉換為標準格式
+            convertHorizontalToStandard(folderColumns, userPermissions);
+            
+            alert(`✅ 解析成功（橫向格式）！\n偵測到 ${hierarchyLineCount} 個階層\n資料夾：${folderColumns.length} 個\n使用者：${userPermissions.length} 位`);
+        }
+
+        // 轉換橫向格式為標準格式
+        function convertHorizontalToStandard(folderColumns, userPermissions) {
+            // 建立資料夾階層
+            folderHierarchy = [];
+            const folderMap = new Map();
+            let folderId = 0;
+            
+            // 先建立所有唯一的資料夾
+            const allFolders = new Set();
+            folderColumns.forEach(col => {
+                if (col.level1) allFolders.add(col.level1);
+                if (col.level2) allFolders.add(`${col.level1}/${col.level2}`);
+                if (col.level3) allFolders.add(`${col.level1}/${col.level2}/${col.level3}`);
+            });
+            
+            // 按路徑排序並建立階層
+            const sortedFolders = Array.from(allFolders).sort();
+            sortedFolders.forEach(path => {
+                const parts = path.split('/');
+                const name = parts[parts.length - 1];
+                const level = parts.length - 1;
+                const parent = parts.length > 1 ? parts.slice(0, -1).join('/') : null;
+                
+                folderHierarchy.push({
+                    name: name,
+                    level: level,
+                    parent: parent ? folderMap.get(parent) : null,
+                    path: path,
+                    index: folderId++
+                });
+                
+                folderMap.set(path, name);
+            });
+            
+            console.log('建立的資料夾階層:', folderHierarchy);
+            
+            // 顯示階層結構
+            showHierarchyPreview();
+            
+            // 橫向格式直接跳到使用者 ID 對應
+            showHorizontalUserMapping(userPermissions, folderColumns);
+        }
+
+        // 顯示橫向格式的使用者 ID 對應
+        function showHorizontalUserMapping(userPermissions, folderColumns) {
+            // 隱藏欄位選擇區段（橫向格式不需要）
+            document.getElementById('mapping-section').style.display = 'none';
+            
+            // 建立使用者對應資料（第一欄是人員帳號）
+            mappingData = userPermissions.map((up, idx) => {
+                return {
+                    index: idx,
+                    name: up.user,
+                    type: 'user', // 第一欄都是人員
+                    id: '',
+                    permissions: up.permissions
+                };
+            });
+            
+            // 顯示使用者對應表
+            const tbody = document.getElementById('mapping-body');
+            tbody.innerHTML = '';
+            
+            mappingData.forEach((item, idx) => {
+                const permCount = item.permissions.length;
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="text-center">${idx + 1}</td>
+                    <td><strong>${item.name}</strong> <span class="badge bg-info">${permCount} 筆權限</span></td>
+                    <td>
+                        <span class="badge bg-primary">人員 (User)</span>
+                    </td>
+                    <td>
+                        <div id="id-selector-${idx}">
+                            ${generateIdSelector(idx, 'user')}
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+            
+            document.getElementById('user-group-mapping').style.display = 'block';
+            document.getElementById('user-group-mapping').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 分析是否為群組以及權限類型
+        function analyzeIfGroup(userName, permissions) {
+            // 檢查名稱是否包含群組關鍵字
+            const groupKeywords = ['部', 'group', 'team', '組', '科', '處', '中心', '單位'];
+            const hasGroupKeyword = groupKeywords.some(kw => userName.includes(kw));
+            
+            // 檢查是否包含 @ 符號（email 格式通常是人員）
+            const hasEmail = userName.includes('@');
+            
+            // 分析所有權限，統計 RO 和 RW 的數量
+            let roCount = 0;
+            let rwCount = 0;
+            let mixedCount = 0;
+            
+            permissions.forEach(perm => {
+                const type = perm.permission_type;
+                if (type === 'read') {
+                    roCount++;
+                } else if (type === 'write') {
+                    rwCount++;
+                }
+            });
+            
+            // 判斷主要權限類型
+            let suffix = '';
+            if (roCount > 0 && rwCount === 0) {
+                suffix = 'RO'; // 全部都是唯讀
+            } else if (rwCount > 0 && roCount === 0) {
+                suffix = 'RW'; // 全部都是讀寫
+            } else if (roCount > 0 && rwCount > 0) {
+                // 混合權限，選擇數量較多的
+                suffix = rwCount >= roCount ? 'RW' : 'RO';
+            }
+            
+            // 綜合判斷是否為群組
+            const isGroup = (hasGroupKeyword || suffix !== '') && !hasEmail;
+            
+            return {
+                isGroup: isGroup,
+                suffix: suffix
+            };
+        }
+
+        // 解析縱向格式（原有邏輯）
+        function parseVerticalFormat(input) {
+            // 分行處理
+            const lines = input.split('\n').filter(line => line.trim());
+            if (lines.length < 2) {
+                alert('資料格式不正確，至少需要標題列和一行資料！');
+                return;
+            }
+
+            // 解析標題
+            const firstLine = lines[0];
+            // 判斷分隔符（Tab 或多個空白）
+            const delimiter = firstLine.includes('\t') ? '\t' : /\s{2,}/;
+            headers = firstLine.split(delimiter).map(h => h.trim()).filter(h => h);
+
+            // 解析資料行並識別階層
+            parsedData = [];
+            folderHierarchy = [];
+            
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i];
+                
+                // 檢測縮排級別
+                const leadingSpaces = line.match(/^[\s\t]*/)[0];
+                const indentLevel = detectIndentLevel(leadingSpaces);
+                
+                // 解析欄位值
+                const values = line.split(delimiter).map(v => v.trim());
+                
+                if (values.length > 0 && values[0]) {
+                    // 儲存原始資料夾名稱（不含縮排）
+                    const folderName = values[0].trim();
+                    
+                    // 計算父資料夾
+                    const parentFolder = findParentFolder(indentLevel);
+                    
+                    // 儲存階層資訊
+                    folderHierarchy.push({
+                        name: folderName,
+                        level: indentLevel,
+                        parent: parentFolder,
+                        index: parsedData.length
+                    });
+                    
+                    // 將處理後的資料加入（資料夾名稱已去除縮排）
+                    values[0] = folderName;
+                    parsedData.push(values);
+                }
+            }
+
+            console.log('解析的標題:', headers);
+            console.log('解析的資料:', parsedData);
+            console.log('階層關係:', folderHierarchy);
+
+            if (headers.length === 0 || parsedData.length === 0) {
+                alert('解析失敗，請確認資料格式是否正確！');
+                return;
+            }
+
+            // 顯示階層結構預覽
+            showHierarchyPreview();
+
+            // 顯示對應設定區段
+            populateColumnSelects();
+            document.getElementById('mapping-section').style.display = 'block';
+            
+            const hierarchyInfo = folderHierarchy.length > 0 ? 
+                `\n階層結構：已識別 ${countLevels()} 個層級` : '';
+            
+            alert(`✅ 解析成功！\n標題欄位：${headers.length} 個\n資料列：${parsedData.length} 筆${hierarchyInfo}`);
+        }
+
+        // 檢測縮排級別
+        function detectIndentLevel(leadingSpaces) {
+            if (!leadingSpaces) return 0;
+            
+            // 計算 Tab 數量（1 Tab = 1 級）
+            const tabCount = (leadingSpaces.match(/\t/g) || []).length;
+            if (tabCount > 0) return tabCount;
+            
+            // 計算空白數量（通常 2 或 4 個空白 = 1 級）
+            const spaceCount = leadingSpaces.length;
+            
+            // 智慧判斷縮排單位（2 或 4 個空白）
+            if (spaceCount >= 4) {
+                return Math.floor(spaceCount / 4);
+            } else if (spaceCount >= 2) {
+                return Math.floor(spaceCount / 2);
+            }
+            
+            return spaceCount > 0 ? 1 : 0;
+        }
+
+        // 找到父資料夾
+        function findParentFolder(currentLevel) {
+            if (currentLevel === 0) return null;
+            
+            // 從後往前找，找到第一個比當前層級小的資料夾
+            for (let i = folderHierarchy.length - 1; i >= 0; i--) {
+                if (folderHierarchy[i].level === currentLevel - 1) {
+                    return folderHierarchy[i].name;
+                }
+            }
+            
+            return null;
+        }
+
+        // 計算總共有幾個層級
+        function countLevels() {
+            if (folderHierarchy.length === 0) return 0;
+            return Math.max(...folderHierarchy.map(f => f.level)) + 1;
+        }
+
+        // 顯示階層結構預覽
+        function showHierarchyPreview() {
+            if (folderHierarchy.length === 0) return;
+            
+            const previewHtml = folderHierarchy.map(folder => {
+                const indent = '　'.repeat(folder.level * 2); // 全形空白
+                const icon = folder.level === 0 ? '📁' : (folder.level === 1 ? '📂' : '📄');
+                const parentInfo = folder.parent ? ` <span class="text-muted">(父: ${folder.parent})</span>` : ' <span class="text-success">(根)</span>';
+                return `${indent}${icon} <strong>${folder.name}</strong>${parentInfo}`;
+            }).join('\n');
+            
+            console.log('階層結構預覽:\n' + previewHtml);
+            
+            // 更新 UI
+            const levels = countLevels();
+            if (levels > 0) {
+                document.getElementById('hierarchy-preview-box').style.display = 'block';
+                document.getElementById('level-count').textContent = levels;
+                document.getElementById('hierarchy-tree').innerHTML = previewHtml;
+            }
+        }
+
+        // 切換階層預覽顯示
+        function toggleHierarchyPreview() {
+            const content = document.getElementById('hierarchy-preview-content');
+            const toggleText = document.getElementById('preview-toggle-text');
+            
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                toggleText.textContent = '收合';
+            } else {
+                content.style.display = 'none';
+                toggleText.textContent = '展開';
+            }
+        }
+
+        // 填充欄位選擇下拉選單
+        function populateColumnSelects() {
+            const folderSelect = document.getElementById('folder-column');
+            const startSelect = document.getElementById('permission-start-column');
+            const endSelect = document.getElementById('permission-end-column');
+
+            folderSelect.innerHTML = '<option value="">請選擇...</option>';
+            startSelect.innerHTML = '<option value="">請選擇...</option>';
+            endSelect.innerHTML = '<option value="">請選擇...</option>';
+
+            headers.forEach((header, index) => {
+                folderSelect.innerHTML += `<option value="${index}">${index + 1}. ${header}</option>`;
+                startSelect.innerHTML += `<option value="${index}">${index + 1}. ${header}</option>`;
+                endSelect.innerHTML += `<option value="${index}">${index + 1}. ${header}</option>`;
+            });
+
+            // 預設值
+            folderSelect.value = '0'; // 第一欄通常是資料夾名稱
+            if (headers.length > 1) {
+                startSelect.value = '1'; // 權限從第二欄開始
+                endSelect.value = String(headers.length - 1); // 到最後一欄
+            }
+        }
+
+        // 生成對應表
+        function generateMapping() {
+            const folderCol = parseInt(document.getElementById('folder-column').value);
+            const startCol = parseInt(document.getElementById('permission-start-column').value);
+            const endCol = parseInt(document.getElementById('permission-end-column').value);
+
+            if (isNaN(folderCol) || isNaN(startCol) || isNaN(endCol)) {
+                alert('請完成所有欄位選擇！');
+                return;
+            }
+
+            if (startCol > endCol) {
+                alert('開始欄位不能大於結束欄位！');
+                return;
+            }
+
+            // 建立對應表
+            mappingData = [];
+            for (let i = startCol; i <= endCol; i++) {
+                mappingData.push({
+                    index: i,
+                    name: headers[i],
+                    type: 'user', // 預設為人員
+                    id: ''
+                });
+            }
+
+            // 顯示對應表
+            const tbody = document.getElementById('mapping-body');
+            tbody.innerHTML = '';
+            
+            mappingData.forEach((item, idx) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="text-center">${idx + 1}</td>
+                    <td><strong>${item.name}</strong></td>
+                    <td>
+                        <select class="form-select form-select-sm" id="type-select-${idx}" onchange="updateMappingType(${idx}, this.value)">
+                            <option value="user">人員 (User)</option>
+                            <option value="group">群組 (Group)</option>
+                        </select>
+                    </td>
+                    <td>
+                        <div id="id-selector-${idx}">
+                            ${generateIdSelector(idx, 'user')}
+                        </div>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+
+            document.getElementById('user-group-mapping').style.display = 'block';
+        }
+
+        // 生成 ID 選擇器（帶權限後綴的智慧匹配）
+        function generateIdSelectorWithSuffix(index, type, permissionSuffix) {
+            const dataList = type === 'user' ? systemUsers : systemGroups;
+            const excelName = mappingData[index].name;
+            
+            if (dataList.length === 0) {
+                // 如果沒有系統資料，使用手動輸入
+                return `
+                    <input type="text" class="form-control form-control-sm" 
+                           id="id-input-${index}"
+                           placeholder="輸入 ID (例如: 1, 2, 3...)" 
+                           onchange="updateMappingId(${index}, this.value)">
+                    <small class="text-muted">系統中無${type === 'user' ? '人員' : '群組'}資料，請手動輸入 ID</small>
+                `;
+            }
+            
+            // 智慧匹配（優先使用權限後綴）
+            let matchedItem = null;
+            
+            if (type === 'group' && permissionSuffix) {
+                // 1. 嘗試匹配：名稱 + _RO 或 _RW
+                const targetName = `${excelName}_${permissionSuffix}`;
+                matchedItem = dataList.find(item => item.name === targetName);
+                
+                // 2. 如果沒找到，嘗試移除 Excel 名稱中可能已存在的後綴再加上新後綴
+                if (!matchedItem) {
+                    const baseName = excelName.replace(/_(RO|RW|READ|WRITE|ADMIN)$/i, '');
+                    const targetName2 = `${baseName}_${permissionSuffix}`;
+                    matchedItem = dataList.find(item => item.name === targetName2);
+                }
+                
+                // 3. 嘗試部分匹配 + 後綴
+                if (!matchedItem) {
+                    matchedItem = dataList.find(item => {
+                        const itemBaseName = item.name.replace(/_(RO|RW|READ|WRITE|ADMIN)$/i, '');
+                        return item.name.endsWith(`_${permissionSuffix}`) && 
+                               (itemBaseName === excelName || 
+                                itemBaseName.includes(excelName) || 
+                                excelName.includes(itemBaseName));
+                    });
+                }
+            } else if (type === 'user') {
+                // 人員匹配邏輯（完全匹配 > Email 匹配 > 包含匹配）
+                matchedItem = dataList.find(item => item.name === excelName);
+                if (!matchedItem) {
+                    matchedItem = dataList.find(item => item.email === excelName);
+                }
+                if (!matchedItem) {
+                    matchedItem = dataList.find(item => 
+                        (item.name && excelName.includes(item.name)) ||
+                        (excelName && item.name.includes(excelName))
+                    );
+                }
+            } else {
+                // 群組但沒有權限後綴，使用一般匹配
+                matchedItem = dataList.find(item => item.name === excelName);
+                if (!matchedItem) {
+                    const baseName = excelName.replace(/_(RO|RW|READ|WRITE|ADMIN)$/i, '');
+                    matchedItem = dataList.find(item => {
+                        const itemBaseName = item.name.replace(/_(RO|RW|READ|WRITE|ADMIN)$/i, '');
+                        return itemBaseName === baseName;
+                    });
+                }
+                if (!matchedItem) {
+                    matchedItem = dataList.find(item => 
+                        (item.name && excelName.includes(item.name)) ||
+                        (excelName && item.name.includes(excelName))
+                    );
+                }
+            }
+            
+            let optionsHtml = '<option value="">請選擇...</option>';
+            dataList.forEach(item => {
+                const selected = matchedItem && item.id === matchedItem.id ? 'selected' : '';
+                const displayName = type === 'user' 
+                    ? `${item.name} (${item.email})` 
+                    : item.name;
+                optionsHtml += `<option value="${item.id}" ${selected}>${item.id}. ${displayName}</option>`;
+            });
+            
+            // 如果找到匹配，自動設定 ID
+            if (matchedItem) {
+                mappingData[index].id = matchedItem.id;
+                mappingData[index].matchedName = matchedItem.name;
+            }
+            
+            const matchInfo = matchedItem 
+                ? `<small class="text-success"><i class="bi bi-check-circle"></i> 自動匹配：${matchedItem.name}</small>` 
+                : (permissionSuffix 
+                    ? `<small class="text-warning"><i class="bi bi-exclamation-triangle"></i> 未找到 "${excelName}_${permissionSuffix}"，請手動選擇</small>`
+                    : '<small class="text-muted">請手動選擇</small>');
+            
+            return `
+                <select class="form-select form-select-sm" id="id-select-${index}" onchange="updateMappingIdFromSelect(${index}, this.value)">
+                    ${optionsHtml}
+                </select>
+                ${matchInfo}
+            `;
+        }
+
+        // 生成 ID 選擇器（下拉選單或手動輸入）- 舊版本，保留向後相容
+        function generateIdSelector(index, type) {
+            const dataList = type === 'user' ? systemUsers : systemGroups;
+            const excelName = mappingData[index].name;
+            
+            if (dataList.length === 0) {
+                // 如果沒有系統資料，使用手動輸入
+                return `
+                    <input type="text" class="form-control form-control-sm" 
+                           id="id-input-${index}"
+                           placeholder="輸入 ID (例如: 1, 2, 3...)" 
+                           onchange="updateMappingId(${index}, this.value)">
+                    <small class="text-muted">系統中無${type === 'user' ? '人員' : '群組'}資料，請手動輸入 ID</small>
+                `;
+            }
+            
+            // 嘗試智慧匹配（增強版 - 支援 _RO/_RW 後綴）
+            let matchedItem = null;
+            
+            // 完全匹配
+            matchedItem = dataList.find(item => item.name === excelName);
+            
+            // Email 匹配（僅人員）
+            if (!matchedItem && type === 'user') {
+                matchedItem = dataList.find(item => item.email === excelName);
+            }
+            
+            // 群組名稱 + 權限後綴匹配 (例如: "財務部" 匹配 "財務部_RO" 或 "財務部_RW")
+            if (!matchedItem && type === 'group') {
+                // 移除可能的 _RO 或 _RW 後綴
+                const baseNameFromExcel = excelName.replace(/_(RO|RW|READ|WRITE|ADMIN)$/i, '');
+                matchedItem = dataList.find(item => {
+                    const baseNameFromSystem = item.name.replace(/_(RO|RW|READ|WRITE|ADMIN)$/i, '');
+                    return baseNameFromSystem === baseNameFromExcel;
+                });
+            }
+            
+            // 包含匹配
+            if (!matchedItem) {
+                matchedItem = dataList.find(item => 
+                    (item.name && excelName.includes(item.name)) ||
+                    (excelName && item.name.includes(excelName))
+                );
+            }
+            
+            let optionsHtml = '<option value="">請選擇...</option>';
+            dataList.forEach(item => {
+                const selected = matchedItem && item.id === matchedItem.id ? 'selected' : '';
+                const displayName = type === 'user' 
+                    ? `${item.name} (${item.email})` 
+                    : item.name;
+                optionsHtml += `<option value="${item.id}" ${selected}>${item.id}. ${displayName}</option>`;
+            });
+            
+            // 如果找到匹配，自動設定 ID
+            if (matchedItem) {
+                mappingData[index].id = matchedItem.id;
+                mappingData[index].matchedName = matchedItem.name;
+            }
+            
+            return `
+                <select class="form-select form-select-sm" id="id-select-${index}" onchange="updateMappingIdFromSelect(${index}, this.value)">
+                    ${optionsHtml}
+                </select>
+                ${matchedItem ? `<small class="text-success"><i class="bi bi-check-circle"></i> 自動匹配：${matchedItem.name}</small>` : '<small class="text-muted">或手動選擇</small>'}
+            `;
+        }
+
+        // 更新對應類型
+        function updateMappingType(index, type) {
+            mappingData[index].type = type;
+            
+            // 重新生成 ID 選擇器（使用權限後綴版本）
+            const selectorDiv = document.getElementById(`id-selector-${index}`);
+            if (selectorDiv) {
+                const permissionSuffix = mappingData[index].permissionSuffix || '';
+                if (permissionSuffix) {
+                    selectorDiv.innerHTML = generateIdSelectorWithSuffix(index, type, permissionSuffix);
+                } else {
+                    selectorDiv.innerHTML = generateIdSelector(index, type);
+                }
+            }
+        }
+
+        // 從下拉選單更新對應 ID
+        function updateMappingIdFromSelect(index, id) {
+            mappingData[index].id = id;
+            
+            // 更新匹配的名稱
+            const type = mappingData[index].type;
+            const dataList = type === 'user' ? systemUsers : systemGroups;
+            const matchedItem = dataList.find(item => item.id == id);
+            if (matchedItem) {
+                mappingData[index].matchedName = matchedItem.name;
+            }
+        }
+
+        // 更新對應 ID（手動輸入時使用）
+        function updateMappingId(index, id) {
+            mappingData[index].id = id;
+        }
+
+        // 生成權限資料
+        function generatePermissions() {
+            // 驗證所有對應都有填寫 ID
+            const missingIds = mappingData.filter(item => !item.id);
+            if (missingIds.length > 0) {
+                if (!confirm(`有 ${missingIds.length} 個欄位尚未設定 ID，確定要繼續嗎？（這些欄位將被忽略）`)) {
+                    return;
+                }
+            }
+
+            generatedPermissions = [];
+            let stats = { folders: new Set(), read: 0, write: 0 };
+
+            // 檢查是否為橫向格式（mappingData 包含 permissions 屬性）
+            const isHorizontalFormat = mappingData.length > 0 && mappingData[0].permissions;
+
+            if (isHorizontalFormat) {
+                // 橫向格式新邏輯：
+                // - 產生「人員加入群組」的記錄
+                // - 根據 Excel 中的 RO/RW 找到對應的群組（完整路徑_RO 或 _RW，例如：RD_Test_Lab_RO）
+                // - 每個人員對每個群組產生一筆記錄
+                
+                mappingData.forEach(userMapping => {
+                    if (!userMapping.id) return; // 人員 ID 未設定
+                    
+                    const userId = userMapping.id;
+                    const userName = userMapping.matchedName || userMapping.name;
+
+                    userMapping.permissions.forEach(perm => {
+                        const folderName = perm.folder.name;
+                        const folderPath = perm.folder.path; // 取得完整路徑（例如：RD/Test/Lab）
+                        const permValue = (perm.permission || '').toUpperCase();
+                        
+                        stats.folders.add(folderName);
+
+                        // 根據 RO/RW 決定群組後綴
+                        let groupSuffix = '';
+                        let permType = '';
+                        
+                        if (permValue === 'RO' || permValue === 'R' || permValue === 'READ') {
+                            groupSuffix = '_RO';
+                            permType = 'read';
+                            stats.read++;
+                        } else if (permValue === 'RW' || permValue === 'W' || permValue === 'WRITE') {
+                            groupSuffix = '_RW';
+                            permType = 'write';
+                            stats.write++;
+                        } else {
+                            console.warn(`未知權限值: ${permValue} (資料夾: ${folderName}, 人員: ${userName})`);
+                            return;
+                        }
+                        
+                        // 將路徑轉換為群組命名格式（將 "/" 替換為 "_"）
+                        // 例如：RD/Test/Lab → RD_Test_Lab
+                        const groupPath = folderPath.replace(/\//g, '_');
+                        const targetGroupName = `${groupPath}${groupSuffix}`;
+                        
+                        console.log(`尋找群組: ${targetGroupName} (資料夾路徑: ${folderPath})`);
+                        
+                        const matchedGroup = systemGroups.find(g => g.name === targetGroupName);
+                        
+                        if (!matchedGroup) {
+                            console.warn(`⚠️ 找不到群組: ${targetGroupName}（資料夾路徑: ${folderPath}, 人員: ${userName}）`);
+                            return;
+                        }
+                        
+                        // 生成記錄：人員 + 群組（用於加入群組）
+                        generatedPermissions.push({
+                            type: 'permission',
+                            folder_name: folderName,
+                            user_id: userId,
+                            group_id: matchedGroup.id,
+                            permission_type: permType,
+                            reference: `${userName} (人員 ${userId}) → ${matchedGroup.name} (群組 ${matchedGroup.id})`
+                        });
+                    });
+                });
+            } else {
+                // 縱向格式：原有邏輯
+                const folderCol = parseInt(document.getElementById('folder-column').value);
+
+                parsedData.forEach(row => {
+                    const folderName = row[folderCol];
+                    if (!folderName) return;
+
+                    stats.folders.add(folderName);
+
+                    // 遍歷每個權限欄位
+                    mappingData.forEach(mapping => {
+                        const permValue = row[mapping.index];
+                        if (!permValue || !mapping.id) return;
+
+                        // 解析權限類型
+                        const permType = parsePermissionType(permValue);
+                        if (!permType) return;
+
+                        // 統計
+                        if (permType === 'read') stats.read++;
+                        else if (permType === 'write') stats.write++;
+
+                        // 生成權限記錄
+                        const permission = {
+                            type: 'permission',
+                            folder_name: folderName,
+                            user_id: mapping.type === 'user' ? mapping.id : '',
+                            group_id: mapping.type === 'group' ? mapping.id : '',
+                            permission_type: permType,
+                            reference: `${mapping.name} (${mapping.type === 'user' ? '人員' : '群組'} ${mapping.id})`
+                        };
+                        generatedPermissions.push(permission);
+                    });
+                });
+            }
+
+            if (generatedPermissions.length === 0) {
+                alert('沒有產生任何權限記錄，請檢查資料！');
+                return;
+            }
+
+            // 生成 CSV
+            const csvContent = generateCSVContent();
+            document.getElementById('csv-output').value = csvContent;
+            document.getElementById('permission-count').textContent = generatedPermissions.length;
+            document.getElementById('stat-folders').textContent = stats.folders.size;
+            document.getElementById('stat-read').textContent = stats.read;
+            document.getElementById('stat-write').textContent = stats.write;
+
+            document.getElementById('output-section').style.display = 'block';
+            document.getElementById('output-section').scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 解析權限類型
+        function parsePermissionType(value) {
+            const v = value.toUpperCase().trim();
+            if (v === 'RW' || v === 'R/W' || v === 'W' || v === 'WRITE') return 'write';
+            if (v === 'RO' || v === 'R' || v === 'READ') return 'read';
+            return null;
+        }
+
+        // 生成 CSV 內容（只產生「人員加入群組」記錄）
+        function generateCSVContent() {
+            const BOM = '\uFEFF';
+            
+            // 只輸出 type, user_id, group_id（用於將人員加入群組）
+            let csv = BOM + 'type,user_id,group_id,reference\n';
+            
+            generatedPermissions.forEach(perm => {
+                // 只輸出有 user_id 和 group_id 的記錄
+                if (perm.user_id && perm.group_id) {
+                    csv += `${perm.type},${perm.user_id},${perm.group_id},"${perm.reference}"\n`;
+                }
+            });
+            
+            return csv;
+        }
+
+        // 重新生成 CSV
+        function regenerateCSV() {
+            const csvContent = generateCSVContent();
+            document.getElementById('csv-output').value = csvContent;
+            
+            const includeFolders = document.getElementById('include-folders').checked;
+            if (includeFolders) {
+                alert('✅ 已重新生成 CSV（包含資料夾結構）！');
+            } else {
+                alert('✅ 已重新生成 CSV（僅權限）！');
+            }
+        }
+
+        // 下載 CSV
+        function downloadCSV() {
+            const content = document.getElementById('csv-output').value;
+            const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+            link.setAttribute('href', url);
+            link.setAttribute('download', `permissions_${timestamp}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            alert('✅ CSV 檔案已下載！');
+        }
+
+        // 直接匯入到系統
+        function directImport() {
+            const content = document.getElementById('csv-output').value;
+            
+            if (!content || content.trim() === '') {
+                alert('❌ 沒有可匯入的 CSV 內容！');
+                return;
+            }
+            
+            // 顯示確認對話框
+            const confirmMsg = `確定要將生成的 CSV 內容直接匯入到系統嗎？\n\n` +
+                `這將會新增 ${generatedPermissions.length} 筆群組成員關係。\n\n` +
+                `操作說明：\n` +
+                `1. 此操作會將人員加入對應的群組\n` +
+                `2. 不會重複新增已存在的成員關係\n` +
+                `3. 建議先確認資料正確性\n\n` +
+                `是否繼續？`;
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+            
+            // 準備 FormData
+            const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+            const formData = new FormData();
+            formData.append('file', blob, 'permissions.csv');
+            
+            // 顯示處理中訊息
+            const processingMsg = '⏳ 正在匯入中，請稍候...';
+            alert(processingMsg);
+            
+            // 發送到後端
+            fetch('/import_csv', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('匯入成功:', data);
+                
+                const successMsg = `✅ 匯入成功！\n\n` +
+                    `已匯入：${data.count || 0} 筆資料\n\n` +
+                    `💡 提示：\n` +
+                    `• 前往「群組管理」→「編輯人員」查看群組成員\n` +
+                    `• 或前往「查詢」頁面查看人員所屬群組`;
+                
+                alert(successMsg);
+                
+                // 詢問是否要切換到主系統
+                if (confirm('是否要開啟主系統查看結果？')) {
+                    window.open('/index.html', '_blank');
+                }
+            })
+            .catch(error => {
+                console.error('匯入失敗:', error);
+                
+                const errorMsg = `❌ 匯入失敗！\n\n` +
+                    `錯誤訊息：${error.message}\n\n` +
+                    `可能原因：\n` +
+                    `1. 主系統未啟動\n` +
+                    `2. 網路連線問題\n` +
+                    `3. CSV 格式錯誤\n\n` +
+                    `建議：\n` +
+                    `• 檢查主系統是否正常運作\n` +
+                    `• 或使用「下載 CSV 檔案」後手動匯入`;
+                
+                alert(errorMsg);
+            });
+        }
+
+        // 複製到剪貼簿
+        function copyToClipboard() {
+            const textarea = document.getElementById('csv-output');
+            textarea.select();
+            document.execCommand('copy');
+            alert('✅ 已複製到剪貼簿！');
+        }
+
+        // 顯示表格預覽
+        function showPreviewTable() {
+            const table = document.getElementById('preview-table-content');
+            table.innerHTML = `
+                <thead class="table-dark sticky-top">
+                    <tr>
+                        <th>#</th>
+                        <th>資料夾名稱</th>
+                        <th>人員 ID</th>
+                        <th>群組 ID</th>
+                        <th>權限類型</th>
+                        <th>參考資訊</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${generatedPermissions.map((perm, idx) => `
+                        <tr>
+                            <td>${idx + 1}</td>
+                            <td><strong>${perm.folder_name}</strong></td>
+                            <td>${perm.user_id || '-'}</td>
+                            <td>${perm.group_id || '-'}</td>
+                            <td><span class="permission-badge badge-${perm.permission_type}">${perm.permission_type}</span></td>
+                            <td><small>${perm.reference}</small></td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            `;
+            
+            const modal = new bootstrap.Modal(document.getElementById('preview-modal'));
+            modal.show();
+        }
+
+        // 顯示格式說明
+        function showFormatHelp() {
+            const modal = new bootstrap.Modal(document.getElementById('format-help-modal'));
+            modal.show();
+        }
+
+        // 清空所有
+        function clearAll() {
+            if (confirm('確定要清空所有資料嗎？')) {
+                document.getElementById('excel-input').value = '';
+                document.getElementById('csv-output').value = '';
+                document.getElementById('mapping-section').style.display = 'none';
+                document.getElementById('user-group-mapping').style.display = 'none';
+                document.getElementById('output-section').style.display = 'none';
+                document.getElementById('hierarchy-preview-box').style.display = 'none';
+                parsedData = [];
+                headers = [];
+                mappingData = [];
+                generatedPermissions = [];
+                folderHierarchy = [];
+            }
+        }
+
+        // 頁面載入時自動載入系統資料
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('頁面載入完成，開始載入系統資料...');
+            loadSystemData();
+        });
+    </script>
+</body>
+</html>
+
+

@@ -1,0 +1,1000 @@
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>資料夾 CSV 生成器</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css" rel="stylesheet">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <style>
+        .tree-preview {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            padding: 15px;
+            border-radius: 5px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+        }
+        .tree-item {
+            padding: 2px 0;
+            cursor: pointer;
+        }
+        .tree-item:hover {
+            background: #e9ecef;
+        }
+        .indent-1 { padding-left: 20px; }
+        .indent-2 { padding-left: 40px; }
+        .indent-3 { padding-left: 60px; }
+        .indent-4 { padding-left: 80px; }
+        .indent-5 { padding-left: 100px; }
+        .folder-input-area {
+            min-height: 200px;
+            font-family: 'Courier New', monospace;
+        }
+        .method-card {
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .method-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        .method-card.active {
+            border: 2px solid #0d6efd;
+            background: #e7f1ff;
+        }
+        .example-box {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .access-guard-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(13, 37, 63, 0.85);
+            z-index: 2000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="access-guard" class="access-guard-overlay">
+        <div class="spinner-border text-light" role="status">
+            <span class="visually-hidden">權限檢查中</span>
+        </div>
+        <p class="mt-3 mb-0">正在確認帳號權限，請稍候...</p>
+    </div>
+    <nav class="navbar navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="bi bi-file-earmark-spreadsheet"></i> 資料夾 CSV 生成器
+            </a>
+            <a href="index.html" class="btn btn-light btn-sm">
+                <i class="bi bi-arrow-left"></i> 返回主系統
+            </a>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <div class="row">
+            <div class="col-12">
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> 
+                    <strong>功能說明：</strong>此工具可協助您快速生成資料夾匯入用的 CSV 檔案。請選擇以下任一方式輸入資料夾結構。
+                </div>
+            </div>
+        </div>
+
+        <!-- 輸入方法選擇 -->
+        <div class="row mb-4">
+            <div class="col-md-4">
+                <div class="card method-card active" data-method="paste">
+                    <div class="card-body text-center">
+                        <i class="bi bi-clipboard-check fs-1 text-primary"></i>
+                        <h5 class="card-title mt-2">從 Excel 貼上</h5>
+                        <p class="card-text small">從 Excel 或試算表複製後直接貼上</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card method-card" data-method="tree">
+                    <div class="card-body text-center">
+                        <i class="bi bi-diagram-3 fs-1 text-success"></i>
+                        <h5 class="card-title mt-2">階層式輸入</h5>
+                        <p class="card-text small">使用縮排表示資料夾階層</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card method-card" data-method="visual">
+                    <div class="card-body text-center">
+                        <i class="bi bi-ui-checks fs-1 text-warning"></i>
+                        <h5 class="card-title mt-2">視覺化編輯</h5>
+                        <p class="card-text small">使用表格介面逐筆輸入</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 方法 1: 從 Excel 貼上 -->
+        <div id="method-paste" class="method-section">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="bi bi-clipboard-check"></i> 方法一：從 Excel 貼上</h5>
+                </div>
+                <div class="card-body">
+                    <div class="example-box">
+                        <strong><i class="bi bi-lightbulb"></i> 使用說明（階層欄位格式）：</strong>
+                        <ol class="mb-0 mt-2">
+                            <li><strong>第一欄 (A)</strong>：第一階資料夾（根目錄）</li>
+                            <li><strong>第二欄 (B)</strong>：第二階資料夾（第一欄的子資料夾）</li>
+                            <li><strong>第三欄 (C)</strong>：第三階資料夾（第二欄「同一行」的子資料夾）</li>
+                            <li>選取資料後複製（Ctrl+C），在下方貼上（Ctrl+V）</li>
+                            <li>系統會自動解析階層關係並轉換為 CSV 格式</li>
+                        </ol>
+                        <div class="alert alert-success mt-2 mb-0">
+                            <small>
+                                <strong>範例 Excel 格式：</strong><br>
+                                <table class="table table-sm table-bordered mb-0" style="background: white;">
+                                    <tr>
+                                        <td><code>Share</code></td>
+                                        <td><code>董事長</code></td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td></td>
+                                        <td><code>總經理</code></td>
+                                        <td></td>
+                                    </tr>
+                                    <tr>
+                                        <td></td>
+                                        <td><code>管理部</code></td>
+                                        <td><code>財務</code></td>
+                                    </tr>
+                                    <tr>
+                                        <td></td>
+                                        <td></td>
+                                        <td><code>人事</code></td>
+                                    </tr>
+                                </table>
+                                <strong>結果：</strong>Share → 董事長、總經理、管理部 → (管理部下) 財務、人事
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">Excel 資料貼上區：</label>
+                            <textarea id="excel-paste-area" class="form-control folder-input-area" 
+                                placeholder="請從 Excel 複製資料後貼上...&#10;&#10;範例格式（階層欄位）：&#10;Share	董事長	&#10;	總經理	&#10;	管理部	財務&#10;		人事"></textarea>
+                            <button class="btn btn-primary mt-2" onclick="parseExcelData()">
+                                <i class="bi bi-arrow-right-circle"></i> 解析資料
+                            </button>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">預覽（樹狀結構）：</label>
+                            <div id="paste-preview" class="tree-preview">
+                                <span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 方法 2: 階層式輸入 -->
+        <div id="method-tree" class="method-section" style="display:none;">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="bi bi-diagram-3"></i> 方法二：階層式輸入</h5>
+                </div>
+                <div class="card-body">
+                    <div class="example-box">
+                        <strong><i class="bi bi-lightbulb"></i> 使用說明：</strong>
+                        <ol class="mb-0 mt-2">
+                            <li>使用縮排（空格或Tab）表示資料夾的層級關係</li>
+                            <li>同層級的資料夾使用相同的縮排量</li>
+                            <li>子資料夾比父資料夾多一層縮排（建議使用 2 或 4 個空格）</li>
+                            <li>系統會自動偵測縮排單位並計算 parent_id</li>
+                            <li><strong>重要：</strong>父資料夾必須先於子資料夾輸入</li>
+                        </ol>
+                        <div class="alert alert-warning mt-2 mb-0">
+                            <small>
+                                <strong>範例：</strong><br>
+                                <code>公司</code> ← 第一層（根資料夾）<br>
+                                <code>&nbsp;&nbsp;管理部</code> ← 第二層（縮排2格）<br>
+                                <code>&nbsp;&nbsp;&nbsp;&nbsp;財務組</code> ← 第三層（縮排4格）<br>
+                                <code>&nbsp;&nbsp;&nbsp;&nbsp;人事組</code> ← 第三層（縮排4格）<br>
+                                <code>&nbsp;&nbsp;技術部</code> ← 第二層（縮排2格）
+                            </small>
+                        </div>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">階層式輸入：</label>
+                            <textarea id="tree-input-area" class="form-control folder-input-area" 
+                                placeholder="請使用縮排輸入資料夾結構...&#10;&#10;範例：&#10;總公司&#10;  業務部&#10;    業務一組&#10;    業務二組&#10;  行銷部&#10;  研發部&#10;    前端組&#10;    後端組"></textarea>
+                            <button class="btn btn-success mt-2" onclick="parseTreeData()">
+                                <i class="bi bi-arrow-right-circle"></i> 解析資料
+                            </button>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">預覽（樹狀結構）：</label>
+                            <div id="tree-preview" class="tree-preview">
+                                <span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 方法 3: 視覺化編輯 -->
+        <div id="method-visual" class="method-section" style="display:none;">
+            <div class="card">
+                <div class="card-header bg-warning">
+                    <h5 class="mb-0"><i class="bi bi-ui-checks"></i> 方法三：視覺化編輯</h5>
+                </div>
+                <div class="card-body">
+                    <div class="example-box">
+                        <strong><i class="bi bi-lightbulb"></i> 使用說明：</strong>
+                        <p class="mb-0 mt-2">
+                            使用表格逐筆輸入資料夾資訊。<strong>父資料夾可以從下拉選單選擇</strong>，無需記憶ID。
+                            點擊「新增行」可新增更多資料夾。
+                        </p>
+                    </div>
+                    
+                    <div class="table-responsive">
+                        <table class="table table-bordered" id="visual-table">
+                            <thead class="table-light">
+                                <tr>
+                                    <th width="50">#</th>
+                                    <th>資料夾名稱</th>
+                                    <th width="250">父資料夾</th>
+                                    <th width="100">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="visual-tbody">
+                                <tr data-row-id="1">
+                                    <td>1</td>
+                                    <td><input type="text" class="form-control form-control-sm folder-name-input" placeholder="例：總公司" onchange="updateParentSelects()"></td>
+                                    <td>
+                                        <select class="form-select form-select-sm parent-select">
+                                            <option value="">（根目錄）</option>
+                                        </select>
+                                    </td>
+                                    <td><button class="btn btn-sm btn-danger" onclick="removeRow(this)"><i class="bi bi-trash"></i></button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <button class="btn btn-success btn-sm" onclick="addRow()">
+                        <i class="bi bi-plus-circle"></i> 新增行
+                    </button>
+                    <button class="btn btn-warning mt-2" onclick="parseVisualData()">
+                        <i class="bi bi-arrow-right-circle"></i> 產生 CSV
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- CSV 預覽和下載區 -->
+        <div class="card mt-4" id="csv-output-section" style="display:none;">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0"><i class="bi bi-file-earmark-text"></i> CSV 輸出結果</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">CSV 內容預覽：</label>
+                        <textarea id="csv-output" class="form-control" rows="12" readonly></textarea>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-bold">統計資訊：</label>
+                        <div class="alert alert-info">
+                            <div id="csv-stats"></div>
+                        </div>
+                        <div class="d-grid gap-2">
+                            <button class="btn btn-danger btn-lg" onclick="directImport()">
+                                <i class="bi bi-cloud-upload-fill"></i> 直接匯入到系統
+                            </button>
+                            <button class="btn btn-success" onclick="downloadCSV()">
+                                <i class="bi bi-download"></i> 下載 CSV 檔案
+                            </button>
+                            <button class="btn btn-primary" onclick="copyToClipboard()">
+                                <i class="bi bi-clipboard"></i> 複製到剪貼簿
+                            </button>
+                            <button class="btn btn-secondary" onclick="reset()">
+                                <i class="bi bi-arrow-counterclockwise"></i> 重新開始
+                            </button>
+                        </div>
+                        <div class="alert alert-info mt-3">
+                            <i class="bi bi-info-circle-fill"></i> 
+                            <strong>直接匯入說明：</strong>
+                            「直接匯入到系統」按鈕會將生成的資料夾結構直接傳送到主系統，無需下載和手動上傳。
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let parsedData = [];
+        const accessGuard = document.getElementById('access-guard');
+        verifyEditorAccess('資料夾 CSV 生成器');
+
+        async function verifyEditorAccess(featureName) {
+            try {
+                const resp = await fetch('/api/auth/status', { credentials: 'include' });
+                if (!resp.ok) throw new Error('伺服器沒有回應');
+                const data = await resp.json();
+                if (!data.loggedIn) {
+                    alert('請先登入主系統後再使用此工具。');
+                    window.location.href = '/login.html';
+                    return;
+                }
+                if (data.user && data.user.permissionLevel === 'viewer') {
+                    alert(`此帳號為唯讀，無法使用${featureName}功能。`);
+                    window.location.href = '/index.html';
+                    return;
+                }
+                if (accessGuard) {
+                    accessGuard.style.display = 'none';
+                }
+            } catch (error) {
+                alert(`無法確認帳號權限：${error.message}`);
+                window.location.href = '/login.html';
+            }
+        }
+
+        // 切換輸入方法
+        $('.method-card').click(function() {
+            $('.method-card').removeClass('active');
+            $(this).addClass('active');
+            const method = $(this).data('method');
+            $('.method-section').hide();
+            $('#method-' + method).show();
+        });
+
+        // 方法 1: 解析 Excel 貼上的資料（階層欄位格式）
+        function parseExcelData() {
+            const input = $('#excel-paste-area').val().trim();
+            if (!input) {
+                alert('請先貼上 Excel 資料');
+                return;
+            }
+
+            const lines = input.split('\n');
+            parsedData = [];
+            let idCounter = 1;
+            
+            // 用於追蹤每一欄在當前行的資料夾 ID（每行重置）
+            const columnLastIds = [];
+
+            lines.forEach(line => {
+                const parts = line.split('\t'); // Excel 用 Tab 分隔
+                
+                // 為當前行建立臨時的欄位 ID 追蹤
+                const currentRowIds = [];
+                
+                // 遍歷每一欄
+                for (let colIndex = 0; colIndex < parts.length; colIndex++) {
+                    const name = parts[colIndex] ? parts[colIndex].trim() : '';
+                    
+                    // 跳過空白儲存格
+                    if (!name) {
+                        currentRowIds[colIndex] = null;
+                        continue;
+                    }
+                    
+                    // 確定 parent_id
+                    let parent_id = '';
+                    
+                    if (colIndex === 0) {
+                        // 第一欄（第一階）：沒有父資料夾
+                        parent_id = '';
+                    } else {
+                        // 其他欄：往左找最近的有值的欄位作為父資料夾
+                        // 這樣可以處理中間有空欄的情況（例如：RD | Test | (空) | Lab）
+                        for (let i = colIndex - 1; i >= 0; i--) {
+                            // 優先使用當前行該欄的資料夾
+                            if (currentRowIds[i]) {
+                                parent_id = currentRowIds[i];
+                                break;
+                            }
+                            // 如果當前行該欄是空的，檢查該欄的最後一個資料夾（來自上一行）
+                            if (columnLastIds[i]) {
+                                parent_id = columnLastIds[i];
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // 新增資料夾
+                    const folderId = idCounter++;
+                    parsedData.push({
+                        id: folderId,
+                        name: name,
+                        parent_id: parent_id
+                    });
+                    
+                    // 更新當前行的欄位 ID
+                    currentRowIds[colIndex] = folderId;
+                    
+                    // 更新該欄的最後一個 ID（用於下一行）
+                    columnLastIds[colIndex] = folderId;
+                    
+                    console.log(`Added: ${name} (ID: ${folderId}, Parent: ${parent_id || 'root'})`);
+                }
+            });
+
+            if (parsedData.length === 0) {
+                alert('無法解析資料，請檢查格式');
+                return;
+            }
+
+            console.log('Parsed data:', parsedData);
+            displayTreePreview($('#paste-preview'), parsedData);
+            generateCSV();
+        }
+
+        // 方法 2: 解析階層式輸入
+        function parseTreeData() {
+            const input = $('#tree-input-area').val().trim();
+            if (!input) {
+                alert('請先輸入資料夾結構');
+                return;
+            }
+
+            const lines = input.split('\n');
+            parsedData = [];
+            const stack = []; // 用於追蹤當前路徑：[{level, dbId}]
+            const idMap = new Map(); // 映射：臨時ID -> 資料庫ID
+
+            // 第一次掃描：確定縮排單位
+            let minIndent = Infinity;
+            lines.forEach(line => {
+                if (!line.trim()) return;
+                const indent = line.search(/\S/);
+                if (indent > 0 && indent < minIndent) {
+                    minIndent = indent;
+                }
+            });
+            const indentUnit = minIndent === Infinity ? 2 : minIndent; // 預設 2 個空格
+
+            console.log('Detected indent unit:', indentUnit);
+
+            lines.forEach(line => {
+                if (!line.trim()) return;
+
+                // 計算縮排層級
+                const indent = line.search(/\S/);
+                const name = line.trim();
+                const level = Math.floor(indent / indentUnit);
+
+                console.log(`Processing: "${name}", indent=${indent}, level=${level}`);
+
+                // 調整 stack 到當前層級
+                while (stack.length > level) {
+                    stack.pop();
+                }
+
+                // 取得父資料夾的資料庫 ID
+                let parent_db_id = '';
+                if (stack.length > 0) {
+                    const parentInfo = stack[stack.length - 1];
+                    parent_db_id = parentInfo.dbId;
+                }
+
+                // 計算資料庫 ID（從1開始連續編號）
+                const db_id = parsedData.length + 1;
+
+                const item = {
+                    name: name,
+                    parent_id: parent_db_id
+                };
+
+                parsedData.push(item);
+                
+                // 將當前項目推入 stack
+                stack.push({
+                    level: level,
+                    dbId: db_id
+                });
+
+                console.log(`Added: "${name}", db_id=${db_id}, parent_id=${parent_db_id}`);
+            });
+
+            if (parsedData.length === 0) {
+                alert('無法解析資料');
+                return;
+            }
+
+            // 為預覽添加 ID
+            parsedData.forEach((item, index) => {
+                item.id = index + 1;
+            });
+
+            displayTreePreview($('#tree-preview'), parsedData);
+            generateCSV();
+        }
+
+        // 方法 3: 解析視覺化表格
+        function parseVisualData() {
+            parsedData = [];
+            const rowIdToDbId = {}; // 行號 -> 資料庫ID 的映射
+            let dbId = 1;
+
+            // 第一次遍歷：收集所有資料夾並分配 dbId
+            $('#visual-tbody tr').each(function() {
+                const rowId = String($(this).data('row-id')); // 確保轉換為字串
+                const name = $(this).find('.folder-name-input').val().trim();
+                
+                if (name) {
+                    rowIdToDbId[rowId] = dbId++;
+                }
+            });
+
+            console.log('rowIdToDbId 映射:', rowIdToDbId);
+
+            // 第二次遍歷：建立資料結構並計算 parent_id
+            $('#visual-tbody tr').each(function() {
+                const rowId = String($(this).data('row-id')); // 確保轉換為字串
+                const name = $(this).find('.folder-name-input').val().trim();
+                const parentRowId = String($(this).find('.parent-select').val() || ''); // 確保轉換為字串
+
+                if (name) {
+                    let parent_id = '';
+                    
+                    // 如果選擇了父資料夾，轉換為對應的 dbId
+                    if (parentRowId && parentRowId !== '') {
+                        parent_id = rowIdToDbId[parentRowId];
+                        
+                        // 調試輸出
+                        console.log(`資料夾: ${name}, 行號: ${rowId}, 父行號: ${parentRowId}, 父ID: ${parent_id}`);
+                        
+                        if (!parent_id) {
+                            console.warn(`⚠️ 警告: "${name}" 的父資料夾行號 ${parentRowId} 無法找到對應的 ID`);
+                            parent_id = '';
+                        }
+                    }
+                    
+                    parsedData.push({
+                        name: name,
+                        parent_id: parent_id || '',
+                        dbId: rowIdToDbId[rowId]
+                    });
+                }
+            });
+
+            if (parsedData.length === 0) {
+                alert('請至少輸入一個資料夾');
+                return;
+            }
+
+            console.log('解析結果:', parsedData);
+
+            // 顯示樹狀預覽
+            displayTreePreview($('#tree-preview'), parsedData);
+            
+            generateCSV();
+        }
+
+        // 顯示樹狀預覽
+        function displayTreePreview(container, data) {
+            container.empty();
+            
+            // 建立樹狀結構
+            const buildTree = (parentId, level) => {
+                const children = data.filter(item => {
+                    if (parentId === '') {
+                        return item.parent_id === '' || !item.parent_id;
+                    }
+                    return String(item.parent_id) === String(parentId);
+                });
+
+                children.forEach(item => {
+                    const indent = '  '.repeat(level);
+                    const icon = level === 0 ? '📁' : '📂';
+                    const div = $(`<div class="tree-item indent-${level}">${indent}${icon} ${item.name} (ID: ${item.id})</div>`);
+                    container.append(div);
+                    buildTree(item.id, level + 1);
+                });
+            };
+
+            buildTree('', 0);
+        }
+
+        // 依賴排序：確保父資料夾在子資料夾之前
+        function sortByDependency(data) {
+            if (!data || data.length === 0) return [];
+            
+            const sorted = [];
+            const processed = new Set();
+            
+            // 統一獲取項目的唯一識別符（支援 id 或 dbId）
+            function getItemId(item) {
+                return item.dbId !== undefined ? item.dbId : (item.id !== undefined ? item.id : null);
+            }
+            
+            // 建立 ID 映射（支援 id 和 dbId）
+            const idMap = {};
+            data.forEach(item => {
+                const itemId = getItemId(item);
+                if (itemId !== null) {
+                    idMap[itemId] = item;
+                }
+            });
+            
+            // 遞迴處理函數
+            function processItem(item) {
+                const itemId = getItemId(item);
+                if (itemId === null || processed.has(itemId)) {
+                    return; // 已處理過或無效
+                }
+                
+                // 如果有父資料夾，先處理父資料夾
+                if (item.parent_id) {
+                    const parentId = parseInt(item.parent_id);
+                    if (!isNaN(parentId) && parentId > 0) {
+                        const parent = idMap[parentId];
+                        
+                        if (parent && !processed.has(parentId)) {
+                            processItem(parent);
+                        }
+                    }
+                }
+                
+                // 處理當前項目
+                sorted.push(item);
+                processed.add(itemId);
+            }
+            
+            // 處理所有項目
+            data.forEach(item => {
+                processItem(item);
+            });
+            
+            return sorted;
+        }
+        
+        // 生成 CSV（改用名稱映射確保正確性）
+        function generateCSV() {
+            if (!parsedData || parsedData.length === 0) {
+                alert('沒有可生成的資料');
+                return;
+            }
+            
+            let csvContent = 'type,name,parent_id\n';
+            let warnings = [];
+            
+            // 統一獲取項目的唯一識別符（支援 id 或 dbId）
+            function getItemId(item) {
+                return item.dbId !== undefined ? item.dbId : (item.id !== undefined ? item.id : null);
+            }
+            
+            // 排序：確保父資料夾在子資料夾之前
+            const sortedData = sortByDependency(parsedData);
+            
+            // 建立舊 ID（id 或 dbId）到新 CSV 順序 ID 的映射
+            const oldIdToNewId = {};
+            sortedData.forEach((item, index) => {
+                const oldId = getItemId(item);
+                if (oldId !== null) {
+                    oldIdToNewId[oldId] = index + 1;
+                }
+            });
+            
+            console.log('排序後的資料夾順序:', sortedData.map(item => item.name));
+            console.log('舊 ID 到新 ID 的映射:', oldIdToNewId);
+            
+            sortedData.forEach((item, index) => {
+                const name = item.name.includes(',') ? `"${item.name}"` : item.name;
+                let parent_id = '';
+                
+                // 處理 parent_id
+                if (item.parent_id) {
+                    const parentOldId = parseInt(item.parent_id);
+                    
+                    // 檢查 parent_id 是否有效
+                    if (!isNaN(parentOldId) && parentOldId > 0) {
+                        // 轉換為新的 CSV ID
+                        const newParentId = oldIdToNewId[parentOldId];
+                        
+                        if (newParentId) {
+                            // 檢查父資料夾是否在當前資料夾之前
+                            const parentIndex = sortedData.findIndex(d => {
+                                const dId = getItemId(d);
+                                return dId === parentOldId;
+                            });
+                            
+                            if (parentIndex >= 0 && parentIndex < index) {
+                                parent_id = newParentId;
+                            } else {
+                                warnings.push(`⚠️ "${item.name}" 的父資料夾在其後面，已設為根資料夾`);
+                                parent_id = '';
+                            }
+                        } else {
+                            warnings.push(`⚠️ "${item.name}" 的 parent_id (${parentOldId}) 找不到對應的資料夾，已設為根資料夾`);
+                            parent_id = '';
+                        }
+                    } else {
+                        warnings.push(`⚠️ "${item.name}" 的 parent_id "${item.parent_id}" 無效，已設為根資料夾`);
+                        parent_id = '';
+                    }
+                }
+                
+                csvContent += `folder,${name},${parent_id}\n`;
+            });
+
+            $('#csv-output').val(csvContent);
+            $('#csv-output-section').show();
+
+            // 顯示統計和警告
+            const rootCount = sortedData.filter(item => {
+                if (!item.parent_id) return true;
+                const parentIdNum = parseInt(item.parent_id);
+                return isNaN(parentIdNum) || parentIdNum <= 0;
+            }).length;
+            
+            let stats = `
+                <strong>總資料夾數：</strong> ${sortedData.length}<br>
+                <strong>根資料夾：</strong> ${rootCount}<br>
+                <strong>子資料夾：</strong> ${sortedData.length - rootCount}<br>
+                <div class="text-info mt-2"><small>📋 資料夾已按依賴關係排序（父資料夾在前）</small></div>
+            `;
+            
+            if (warnings.length > 0) {
+                stats += `<br><div class="text-danger mt-2"><strong>警告：</strong><br>${warnings.join('<br>')}</div>`;
+            } else {
+                stats += `<br><div class="text-success mt-2">✓ 所有 parent_id 都有效！</div>`;
+            }
+            
+            $('#csv-stats').html(stats);
+
+            // 在控制台輸出詳細資訊供除錯
+            console.log('=== CSV Generation ===');
+            console.log('原始資料:', parsedData);
+            console.log('排序後資料:', sortedData);
+            sortedData.forEach((item, index) => {
+                const itemId = getItemId(item);
+                console.log(`CSV Row ${index + 1}: "${item.name}" (ID: ${itemId}), parent_id: ${item.parent_id || '(root)'}`);
+            });
+
+            // 滾動到結果區
+            $('html, body').animate({
+                scrollTop: $('#csv-output-section').offset().top - 20
+            }, 500);
+        }
+
+        // 下載 CSV
+        function downloadCSV() {
+            const content = $('#csv-output').val();
+            const BOM = '\uFEFF';
+            const blob = new Blob([BOM + content], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            
+            link.setAttribute('href', url);
+            link.setAttribute('download', 'folders_import.csv');
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            alert('CSV 檔案已下載！\n\n請到「資料夾管理」頁面使用「批次匯入資料夾」功能上傳此檔案。');
+        }
+
+        // 複製到剪貼簿
+        function copyToClipboard() {
+            const content = $('#csv-output').val();
+            navigator.clipboard.writeText(content).then(() => {
+                alert('已複製到剪貼簿！');
+            }).catch(err => {
+                console.error('複製失敗:', err);
+                $('#csv-output').select();
+                document.execCommand('copy');
+                alert('已複製到剪貼簿！');
+            });
+        }
+
+        // 重新開始
+        function reset() {
+            if (confirm('確定要清除所有資料重新開始？')) {
+                $('#excel-paste-area').val('');
+                $('#tree-input-area').val('');
+                $('#paste-preview').html('<span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>');
+                $('#tree-preview').html('<span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>');
+                $('#csv-output').val('');
+                $('#csv-output-section').hide();
+                parsedData = [];
+            }
+        }
+
+        // 視覺化編輯：新增行
+        function addRow() {
+            const rowCount = $('#visual-tbody tr').length + 1;
+            const row = `
+                <tr data-row-id="${rowCount}">
+                    <td>${rowCount}</td>
+                    <td><input type="text" class="form-control form-control-sm folder-name-input" placeholder="例：資料夾名稱" onchange="updateParentSelects()"></td>
+                    <td>
+                        <select class="form-select form-select-sm parent-select">
+                            <option value="">（根目錄）</option>
+                        </select>
+                    </td>
+                    <td><button class="btn btn-sm btn-danger" onclick="removeRow(this)"><i class="bi bi-trash"></i></button></td>
+                </tr>
+            `;
+            $('#visual-tbody').append(row);
+            updateParentSelects();
+        }
+        
+        // 更新所有父資料夾下拉選單
+        function updateParentSelects() {
+            const allRows = $('#visual-tbody tr');
+            const folders = [];
+            
+            // 收集所有已輸入的資料夾名稱
+            allRows.each(function(index) {
+                const rowId = String($(this).data('row-id') || (index + 1)); // 確保轉換為字串
+                const folderName = $(this).find('.folder-name-input').val().trim();
+                if (folderName) {
+                    folders.push({
+                        id: rowId,
+                        name: folderName
+                    });
+                }
+            });
+            
+            // 更新每一行的父資料夾下拉選單
+            allRows.each(function() {
+                const currentRowId = String($(this).data('row-id')); // 確保轉換為字串
+                const select = $(this).find('.parent-select');
+                const currentValue = String(select.val() || ''); // 確保轉換為字串
+                
+                // 重建選項
+                select.empty();
+                select.append('<option value="">（根目錄）</option>');
+                
+                // 添加其他資料夾選項（排除自己）
+                folders.forEach(folder => {
+                    if (folder.id !== currentRowId) {
+                        const selected = currentValue === folder.id ? 'selected' : '';
+                        select.append(`<option value="${folder.id}" ${selected}>${folder.name} (行 ${folder.id})</option>`);
+                    }
+                });
+            });
+        }
+
+        // 視覺化編輯：移除行
+        function removeRow(btn) {
+            if ($('#visual-tbody tr').length > 1) {
+                $(btn).closest('tr').remove();
+                // 更新行號
+                $('#visual-tbody tr').each(function(index) {
+                    $(this).find('td:first').text(index + 1);
+                    $(this).attr('data-row-id', index + 1);
+                });
+                // 更新父資料夾選單
+                updateParentSelects();
+            } else {
+                alert('至少需要保留一行');
+            }
+        }
+        
+        // 直接匯入到系統
+        function directImport() {
+            const content = document.getElementById('csv-output').value;
+            
+            if (!content || content.trim() === '') {
+                alert('❌ 沒有可匯入的 CSV 內容！');
+                return;
+            }
+            
+            // 計算資料夾數量
+            const lines = content.trim().split('\n');
+            const folderCount = lines.length - 1; // 扣除標題行
+            
+            // 顯示確認對話框
+            const confirmMsg = `確定要將生成的資料夾結構直接匯入到系統嗎？\n\n` +
+                `這將會建立 ${folderCount} 個資料夾。\n\n` +
+                `操作說明：\n` +
+                `1. 此操作會建立新的資料夾結構\n` +
+                `2. 不會重複建立已存在的資料夾\n` +
+                `3. 建議先確認資料正確性\n\n` +
+                `是否繼續？`;
+            
+            if (!confirm(confirmMsg)) {
+                return;
+            }
+            
+            // 準備 FormData
+            const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
+            const formData = new FormData();
+            formData.append('file', blob, 'folders.csv');
+            
+            // 顯示處理中訊息
+            alert('⏳ 正在匯入中，請稍候...');
+            
+            // 發送到後端
+            fetch('/import_csv', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('匯入成功:', data);
+                
+                // 後端返回的字段是 imported（也有 count 向後兼容）
+                const importedCount = data.imported || data.count || 0;
+                const stats = data.stats || {};
+                
+                // 建立詳細統計訊息
+                let statsMsg = '';
+                if (stats.folders !== undefined) {
+                    const parts = [];
+                    if (stats.folders > 0) parts.push(`資料夾: ${stats.folders}`);
+                    if (stats.users > 0) parts.push(`人員: ${stats.users}`);
+                    if (stats.groups > 0) parts.push(`群組: ${stats.groups}`);
+                    if (stats.group_members > 0) parts.push(`群組成員: ${stats.group_members}`);
+                    if (stats.permissions > 0) parts.push(`權限: ${stats.permissions}`);
+                    
+                    if (parts.length > 0) {
+                        statsMsg = `\n📊 詳細統計：\n${parts.join('\n')}\n`;
+                    }
+                }
+                
+                const successMsg = `✅ 匯入成功！\n\n` +
+                    `已匯入：${importedCount} 筆資料${statsMsg}\n` +
+                    `💡 提示：\n` +
+                    `• 前往「資料夾管理」查看階層樹\n` +
+                    `• 可使用「自動生成群組」為資料夾建立對應群組\n\n` +
+                    `📝 說明：\n` +
+                    `• 如果資料已存在，不會重複建立\n` +
+                    `• 實際建立的數量可能少於匯入筆數`;
+                
+                alert(successMsg);
+                
+                // 詢問是否要切換到主系統
+                if (confirm('是否要開啟主系統查看結果？')) {
+                    window.open('/index.html', '_blank');
+                }
+            })
+            .catch(error => {
+                console.error('匯入失敗:', error);
+                
+                const errorMsg = `❌ 匯入失敗！\n\n` +
+                    `錯誤訊息：${error.message}\n\n` +
+                    `可能原因：\n` +
+                    `1. 主系統未啟動\n` +
+                    `2. 網路連線問題\n` +
+                    `3. CSV 格式錯誤\n\n` +
+                    `建議：\n` +
+                    `• 檢查主系統是否正常運作\n` +
+                    `• 或使用「下載 CSV 檔案」後手動匯入`;
+                
+                alert(errorMsg);
+            });
+        }
+    </script>
+</body>
+</html>
+
+
