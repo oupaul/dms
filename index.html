@@ -280,8 +280,19 @@
                     <button type="button" class="btn btn-secondary" onclick="hideUserImport(); return false;">取消</button>
                 </form>
             </div>
+            <div class="mb-2">
+                <button class="btn btn-sm btn-outline-primary me-2" onclick="selectAllUsersForDelete(); return false;">
+                    <i class="bi bi-check-square"></i> 全選
+                </button>
+                <button class="btn btn-sm btn-outline-secondary me-2" onclick="deselectAllUsersForDelete(); return false;">
+                    <i class="bi bi-square"></i> 取消全選
+                </button>
+                <button class="btn btn-sm btn-danger" id="batch-delete-users-btn" style="display:none;" onclick="batchDeleteUsers(); return false;">
+                    <i class="bi bi-trash"></i> 批次刪除選中項目
+                </button>
+            </div>
             <table class="table" id="users-table">
-                <thead><tr><th>ID</th><th>姓名</th><th>Email</th><th>部門</th><th>公司</th><th>職稱</th><th>電話</th><th>描述</th><th>操作</th></tr></thead>
+                <thead><tr><th><input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this);"></th><th>ID</th><th>姓名</th><th>Email</th><th>部門</th><th>公司</th><th>職稱</th><th>電話</th><th>描述</th><th>操作</th></tr></thead>
                 <tbody></tbody>
             </table>
         </div>
@@ -302,9 +313,21 @@
                     <button type="button" class="btn btn-secondary" onclick="hideGroupImport(); return false;">取消</button>
                 </form>
             </div>
+            <div class="mb-2">
+                <button class="btn btn-sm btn-outline-primary me-2" onclick="selectAllGroupsForDelete(); return false;">
+                    <i class="bi bi-check-square"></i> 全選
+                </button>
+                <button class="btn btn-sm btn-outline-secondary me-2" onclick="deselectAllGroupsForDelete(); return false;">
+                    <i class="bi bi-square"></i> 取消全選
+                </button>
+                <button class="btn btn-sm btn-danger" id="batch-delete-groups-btn" style="display:none;" onclick="batchDeleteGroups(); return false;">
+                    <i class="bi bi-trash"></i> 批次刪除選中項目
+                </button>
+            </div>
             <table class="table" id="groups-table">
                 <thead>
                     <tr>
+                        <th><input type="checkbox" id="select-all-groups" onchange="toggleSelectAllGroups(this);"></th>
                         <th>ID</th>
                         <th style="cursor:pointer;" onclick="sortGroups('name')" title="點擊排序">
                             名稱 <i id="sort-name-icon" class="bi bi-arrow-down-up text-muted"></i>
@@ -405,9 +428,21 @@
             </div>
             
             <h5 class="mt-4">已指派的權限</h5>
+            <div class="mb-2">
+                <button class="btn btn-sm btn-outline-primary me-2" onclick="selectAllPermissionsForDelete(); return false;">
+                    <i class="bi bi-check-square"></i> 全選
+                </button>
+                <button class="btn btn-sm btn-outline-secondary me-2" onclick="deselectAllPermissionsForDelete(); return false;">
+                    <i class="bi bi-square"></i> 取消全選
+                </button>
+                <button class="btn btn-sm btn-danger" id="batch-delete-permissions-btn" style="display:none;" onclick="batchDeletePermissions(); return false;">
+                    <i class="bi bi-trash"></i> 批次刪除選中項目
+                </button>
+            </div>
             <table class="table mt-3" id="perms-table">
                 <thead class="table-light">
                     <tr>
+                        <th><input type="checkbox" id="select-all-permissions" onchange="toggleSelectAllPermissions(this);"></th>
                         <th>資料夾</th>
                         <th>人員/群組</th>
                         <th>權限</th>
@@ -1344,6 +1379,31 @@ permission,,,,3,,2,write</code></pre>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-success" onclick="createDatabase()">
                         <i class="bi bi-check-circle"></i> 建立
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 匯出權限清單（矩陣格式）選項模態 -->
+    <div class="modal fade" tabindex="-1" id="export-permission-matrix-modal">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-primary text-white">
+                    <h5 class="modal-title"><i class="bi bi-table"></i> 匯出權限清單 (Excel 矩陣格式)</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small mb-3">匯出格式：上方四層標題（資料夾階層）、下方人員清單與對應權限（RW/RO）。</p>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="export-matrix-include-description" value="1">
+                        <label class="form-check-label" for="export-matrix-include-description">一併輸出描述欄位（人員的「描述」會出現在矩陣中）</label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="export-matrix-confirm-btn" onclick="doExportPermissionMatrix(); return false;">
+                        <i class="bi bi-download"></i> 開始匯出
                     </button>
                 </div>
             </div>
@@ -2611,7 +2671,8 @@ group_member,,2,4</code></pre>
             const tbody = $(tbodySelector);
             tbody.empty();
             if (!data || data.length === 0) {
-                tbody.html('<tr><td colspan="' + (fields.length + 1) + '" class="text-muted text-center">無資料</td></tr>');
+                const colspan = type === 'users' ? fields.length + 2 : fields.length + 1;
+                tbody.html('<tr><td colspan="' + colspan + '" class="text-muted text-center">無資料</td></tr>');
                 return;
             }
             
@@ -2620,6 +2681,10 @@ group_member,,2,4</code></pre>
             
             data.forEach(item => {
                 const tr = $('<tr>');
+                // 如果是人員表格，添加勾選框
+                if (type === 'users') {
+                    tr.append(`<td><input type="checkbox" class="user-checkbox" value="${item.id}" onchange="updateBatchDeleteButton('users');"></td>`);
+                }
                 fields.forEach(f => tr.append(`<td>${item[f] || 'N/A'}</td>`));
                 tr.append(`<td>
                     <button class="btn btn-sm btn-warning edit-btn me-1" data-id="${item.id}" data-type="${type}">編輯</button>
@@ -2627,6 +2692,10 @@ group_member,,2,4</code></pre>
                 </td>`);
                 tbody.append(tr);
             });
+            // 更新批次刪除按鈕顯示狀態
+            if (type === 'users') {
+                updateBatchDeleteButton('users');
+            }
             console.log('Table refreshed for ' + type + ' with ' + data.length + ' items');
         }
 
@@ -2994,6 +3063,7 @@ group_member,,2,4</code></pre>
             const id = $(this).data('id');
             const name = $(this).data('name');
             
+            // 先詢問是否要刪除
             if (confirm(`確認刪除資料夾「${name}」?\n\n注意:如果此資料夾有子資料夾或已被指派權限,將無法刪除。`)) {
                 $.ajax({ 
                     url: '/api/folders', 
@@ -3006,7 +3076,33 @@ group_member,,2,4</code></pre>
                 }).fail(function(xhr) {
                     console.error('Delete failed:', xhr.responseText);
                     if (xhr.status === 400) {
-                        alert('❌ 無法刪除:此資料夾可能有子資料夾或已被指派權限。\n請先刪除子資料夾和相關權限。');
+                        const response = xhr.responseJSON;
+                        // 詢問是否要強制刪除
+                        const forceMsg = `❌ 無法刪除:此資料夾可能有子資料夾或已被指派權限。\n\n` +
+                                      `是否要強制刪除？\n` +
+                                      `⚠️ 警告：強制刪除將會：\n` +
+                                      `1. 刪除所有子資料夾（包括子資料夾的子資料夾）\n` +
+                                      `2. 刪除所有相關的權限指派\n` +
+                                      `此操作無法復原！`;
+                        
+                        if (confirm(forceMsg)) {
+                            // 再次確認
+                            if (confirm(`⚠️ 最後確認：您確定要強制刪除資料夾「${name}」及其所有子資料夾和相關權限嗎？\n\n此操作無法復原！`)) {
+                                // 執行強制刪除
+                                $.ajax({ 
+                                    url: '/api/folders', 
+                                    method: 'DELETE', 
+                                    contentType: 'application/json', 
+                                    data: JSON.stringify({ id: parseInt(id), force: true })
+                                }).done(function() {
+                                    alert('✅ 強制刪除成功!');
+                                    loadData('folders');
+                                }).fail(function(xhr2) {
+                                    console.error('Force delete failed:', xhr2.responseText);
+                                    alert('❌ 強制刪除失敗: ' + (xhr2.responseJSON ? xhr2.responseJSON.error : xhr2.statusText));
+                                });
+                            }
+                        }
                     } else {
                         alert('❌ 刪除失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
                     }
@@ -3128,7 +3224,7 @@ group_member,,2,4</code></pre>
             const tbody = $('#groups-table tbody');
             tbody.empty();
             if (!data || data.length === 0) {
-                tbody.html('<tr><td colspan="4" class="text-muted text-center">無群組</td></tr>');
+                tbody.html('<tr><td colspan="5" class="text-muted text-center">無群組</td></tr>');
                 return;
             }
             
@@ -3142,6 +3238,7 @@ group_member,,2,4</code></pre>
             // 先建立所有行(顯示載入中)並按順序插入
             data.forEach(group => {
                 const tr = $(`<tr data-group-id="${group.id}" data-group-name="${group.name}">
+                    <td><input type="checkbox" class="group-checkbox" value="${group.id}" onchange="updateBatchDeleteButton('groups');"></td>
                     <td>${group.id}</td>
                     <td>${group.name}</td>
                     <td class="member-count" data-member-count="0"><span class="spinner-border spinner-border-sm" role="status"></span> 載入中...</td>
@@ -3168,6 +3265,8 @@ group_member,,2,4</code></pre>
                 });
             });
             
+            // 更新批次刪除按鈕顯示狀態
+            updateBatchDeleteButton('groups');
             console.log('Groups loaded with member counts');
         }
         
@@ -3379,11 +3478,165 @@ group_member,,2,4</code></pre>
             updateGroupMembersSelectedCount();
         }
 
+        // 批次刪除相關函數
+        function toggleSelectAllUsers(checkbox) {
+            $('.user-checkbox').prop('checked', checkbox.checked);
+            updateBatchDeleteButton('users');
+        }
+
+        function toggleSelectAllGroups(checkbox) {
+            $('.group-checkbox').prop('checked', checkbox.checked);
+            updateBatchDeleteButton('groups');
+        }
+
+        function toggleSelectAllPermissions(checkbox) {
+            $('.permission-checkbox').prop('checked', checkbox.checked);
+            updateBatchDeleteButton('permissions');
+        }
+
+        // 人員管理頁面全選/取消全選（批次刪除用）
+        function selectAllUsersForDelete() {
+            $('.user-checkbox').prop('checked', true);
+            $('#select-all-users').prop('checked', true);
+            updateBatchDeleteButton('users');
+        }
+
+        function deselectAllUsersForDelete() {
+            $('.user-checkbox').prop('checked', false);
+            $('#select-all-users').prop('checked', false);
+            updateBatchDeleteButton('users');
+        }
+
+        // 群組管理頁面全選/取消全選（批次刪除用）
+        function selectAllGroupsForDelete() {
+            $('.group-checkbox').prop('checked', true);
+            $('#select-all-groups').prop('checked', true);
+            updateBatchDeleteButton('groups');
+        }
+
+        function deselectAllGroupsForDelete() {
+            $('.group-checkbox').prop('checked', false);
+            $('#select-all-groups').prop('checked', false);
+            updateBatchDeleteButton('groups');
+        }
+
+        // 權限管理頁面全選/取消全選（批次刪除用）
+        function selectAllPermissionsForDelete() {
+            $('.permission-checkbox').prop('checked', true);
+            $('#select-all-permissions').prop('checked', true);
+            updateBatchDeleteButton('permissions');
+        }
+
+        function deselectAllPermissionsForDelete() {
+            $('.permission-checkbox').prop('checked', false);
+            $('#select-all-permissions').prop('checked', false);
+            updateBatchDeleteButton('permissions');
+        }
+
+        function updateBatchDeleteButton(type) {
+            let count = 0;
+            let btnId = '';
+            if (type === 'users') {
+                count = $('.user-checkbox:checked').length;
+                btnId = '#batch-delete-users-btn';
+            } else if (type === 'groups') {
+                count = $('.group-checkbox:checked').length;
+                btnId = '#batch-delete-groups-btn';
+            } else if (type === 'permissions') {
+                count = $('.permission-checkbox:checked').length;
+                btnId = '#batch-delete-permissions-btn';
+            }
+            
+            if (count > 0) {
+                $(btnId).show().text(`批次刪除選中項目 (${count})`);
+            } else {
+                $(btnId).hide();
+            }
+        }
+
+        function batchDeleteUsers() {
+            const selectedIds = [];
+            $('.user-checkbox:checked').each(function() {
+                selectedIds.push(parseInt($(this).val()));
+            });
+            
+            if (selectedIds.length === 0) {
+                alert('請先選擇要刪除的項目');
+                return;
+            }
+            
+            if (!confirm(`確認要刪除選中的 ${selectedIds.length} 個人員嗎？\n\n注意：如果選中的人員已被指派權限，將無法刪除。`)) {
+                return;
+            }
+            
+            batchDeleteItems('users', selectedIds, '/api/users/batch');
+        }
+
+        function batchDeleteGroups() {
+            const selectedIds = [];
+            $('.group-checkbox:checked').each(function() {
+                selectedIds.push(parseInt($(this).val()));
+            });
+            
+            if (selectedIds.length === 0) {
+                alert('請先選擇要刪除的項目');
+                return;
+            }
+            
+            if (!confirm(`確認要刪除選中的 ${selectedIds.length} 個群組嗎？\n\n注意：如果選中的群組已被指派權限，將無法刪除。`)) {
+                return;
+            }
+            
+            batchDeleteItems('groups', selectedIds, '/api/groups/batch');
+        }
+
+        function batchDeletePermissions() {
+            const selectedIds = [];
+            $('.permission-checkbox:checked').each(function() {
+                selectedIds.push(parseInt($(this).val()));
+            });
+            
+            if (selectedIds.length === 0) {
+                alert('請先選擇要刪除的項目');
+                return;
+            }
+            
+            if (!confirm(`確認要刪除選中的 ${selectedIds.length} 個權限指派嗎？`)) {
+                return;
+            }
+            
+            batchDeleteItems('permissions', selectedIds, '/api/permissions/batch');
+        }
+
+        function batchDeleteItems(type, ids, url) {
+            $.ajax({
+                url: url,
+                method: 'DELETE',
+                contentType: 'application/json',
+                data: JSON.stringify({ ids: ids })
+            }).done(function(response) {
+                console.log('Batch delete success:', response);
+                alert(`✅ 成功刪除 ${response.deleted || ids.length} 個項目${response.failed && response.failed.length > 0 ? `\n\n無法刪除的項目：${response.failed.length} 個（可能已被指派權限）` : ''}`);
+                
+                // 重新載入資料
+                if (type === 'users') {
+                    loadData('users');
+                } else if (type === 'groups') {
+                    loadData('groups');
+                } else if (type === 'permissions') {
+                    loadData('permissions');
+                }
+            }).fail(function(xhr) {
+                console.error('Batch delete failed:', xhr.responseText);
+                alert('❌ 批次刪除失敗: ' + (xhr.responseJSON ? xhr.responseJSON.message || xhr.responseJSON.error : xhr.statusText));
+            });
+        }
+
         function loadPermissions(data) {
             const tbody = $('#perms-table tbody');
             tbody.empty();
             if (!data || data.length === 0) {
-                tbody.html('<tr><td colspan="4" class="text-muted text-center">無權限</td></tr>');
+                tbody.html('<tr><td colspan="5" class="text-muted text-center">無權限</td></tr>');
                 loadDropdowns();
                 return;
             }
@@ -3401,9 +3654,17 @@ group_member,,2,4</code></pre>
                 }
                 const permissionText = p.permission_type === 'read' ? '讀取' : 
                                       p.permission_type === 'write' ? '寫入' : p.permission_type;
-                const tr = $(`<tr><td>${folderName}</td><td>${target}</td><td>${permissionText}</td><td><button class="btn btn-sm btn-danger del-btn" data-id="${p.id}" data-type="permission">刪除</button></td></tr>`);
+                const tr = $(`<tr>
+                    <td><input type="checkbox" class="permission-checkbox" value="${p.id}" onchange="updateBatchDeleteButton('permissions');"></td>
+                    <td>${folderName}</td>
+                    <td>${target}</td>
+                    <td>${permissionText}</td>
+                    <td><button class="btn btn-sm btn-danger del-btn" data-id="${p.id}" data-type="permission">刪除</button></td>
+                </tr>`);
                 tbody.append(tr);
             });
+            // 更新批次刪除按鈕顯示狀態
+            updateBatchDeleteButton('permissions');
             loadDropdowns();
         }
 
@@ -3655,18 +3916,17 @@ group_member,,2,4</code></pre>
             alert('✅ Excel 報表準備中,請稍候...\n\n檔案將自動開始下載');
         }
         
-        // 匯出權限清單（矩陣格式）
+        // 匯出權限清單（矩陣格式）：先顯示選項模態，可勾選是否一併輸出描述
         function exportPermissionMatrix() {
-            // 顯示提示
-            alert('✅ 權限清單準備中,請稍候...\n\n' +
-                '📊 匯出格式:\n' +
-                '• 上方四層標題（資料夾階層結構）\n' +
-                '• 下方人員清單與對應權限（RW/RO）\n' +
-                '• 每個資料夾包含 RW 和 RO 兩列\n\n' +
-                '💡 檔案將自動開始下載');
-            
-            // 使用 window.location 來下載
-            window.location.href = '/export_permission_matrix';
+            $('#export-matrix-include-description').prop('checked', false);
+            $('#export-permission-matrix-modal').modal('show');
+        }
+        function doExportPermissionMatrix() {
+            const includeDescription = $('#export-matrix-include-description').is(':checked');
+            $('#export-permission-matrix-modal').modal('hide');
+            alert('✅ 權限清單準備中，請稍候…\n\n📊 匯出格式：上方四層標題（資料夾階層）、下方人員清單與對應權限（RW/RO）。\n\n💡 檔案將自動開始下載');
+            const url = includeDescription ? '/export_permission_matrix?include_description=1' : '/export_permission_matrix';
+            window.location.href = url;
         }
 
         function showImport() { showSection('import'); }

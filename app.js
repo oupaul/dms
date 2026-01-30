@@ -1724,46 +1724,93 @@ app.put('/api/folders/:id', withUserDatabase, (req, res) => {
 });
 
 app.delete('/api/folders', withUserDatabase, (req, res) => {
-  const { id } = req.body;
-  console.log('Hit DELETE /api/folders', { id });
+  const { id, force } = req.body;
+  console.log('Hit DELETE /api/folders', { id, force });
   
-  // 檢查是否有子資料夾
-  req.userDb.get('SELECT COUNT(*) as count FROM folders WHERE parent_id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+  // 先獲取要刪除的資料夾資訊
+  req.userDb.get('SELECT name, parent_id, path FROM folders WHERE id = ?', [id], (err3, folder) => {
+    if (err3) return res.status(500).json({ error: err3.message });
+    if (!folder) return res.status(404).json({ error: 'Not found' });
     
-    if (row.count > 0) {
-      return res.status(400).json({ 
-        error: 'cannot_delete_folder_with_children',
-        message: '此資料夾有子資料夾，無法刪除'
+    // 如果不是強制刪除，檢查是否有子資料夾或權限
+    if (!force) {
+      // 檢查是否有子資料夾
+      req.userDb.get('SELECT COUNT(*) as count FROM folders WHERE parent_id = ?', [id], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        if (row.count > 0) {
+          return res.status(400).json({ 
+            error: 'cannot_delete_folder_with_children',
+            message: '此資料夾有子資料夾，無法刪除'
+          });
+        }
+        
+        // 檢查是否有權限指派
+        req.userDb.get('SELECT COUNT(*) as count FROM permissions WHERE folder_id = ?', [id], (err2, row2) => {
+          if (err2) return res.status(500).json({ error: err2.message });
+          
+          if (row2.count > 0) {
+            return res.status(400).json({ 
+              error: 'cannot_delete_folder_with_permissions',
+              message: '此資料夾已被指派權限，無法刪除'
+            });
+          }
+          
+          // 可以安全刪除
+          req.userDb.run('DELETE FROM folders WHERE id = ?', [id], (err4) => {
+            if (err4) return res.status(500).json({ error: err4.message });
+            // 記錄審計日誌
+            logAudit(req, 'delete', 'folder', parseInt(id), folder.name, folder, null);
+            console.log(`✓ Deleted folder: ${id}`);
+            res.json({ success: true });
+          });
+        });
       });
-    }
-    
-    // 檢查是否有權限指派
-    req.userDb.get('SELECT COUNT(*) as count FROM permissions WHERE folder_id = ?', [id], (err2, row2) => {
-      if (err2) return res.status(500).json({ error: err2.message });
-      
-      if (row2.count > 0) {
-        return res.status(400).json({ 
-          error: 'cannot_delete_folder_with_permissions',
-          message: '此資料夾已被指派權限，無法刪除'
+    } else {
+      // 強制刪除：先刪除所有子資料夾和相關權限
+      // 遞迴刪除所有子資料夾
+      function deleteFolderRecursive(folderId, callback) {
+        // 先刪除該資料夾的所有權限
+        req.userDb.run('DELETE FROM permissions WHERE folder_id = ?', [folderId], (err) => {
+          if (err) return callback(err);
+          
+          // 獲取所有子資料夾
+          req.userDb.all('SELECT id FROM folders WHERE parent_id = ?', [folderId], (err2, children) => {
+            if (err2) return callback(err2);
+            
+            // 遞迴刪除每個子資料夾
+            if (children && children.length > 0) {
+              let completed = 0;
+              let hasError = null;
+              
+              children.forEach(child => {
+                deleteFolderRecursive(child.id, (err3) => {
+                  if (err3 && !hasError) hasError = err3;
+                  completed++;
+                  if (completed === children.length) {
+                    if (hasError) return callback(hasError);
+                    // 刪除子資料夾記錄
+                    req.userDb.run('DELETE FROM folders WHERE id = ?', [folderId], callback);
+                  }
+                });
+              });
+            } else {
+              // 沒有子資料夾，直接刪除
+              req.userDb.run('DELETE FROM folders WHERE id = ?', [folderId], callback);
+            }
+          });
         });
       }
       
-      // 先獲取要刪除的資料夾資訊
-      req.userDb.get('SELECT name, parent_id, path FROM folders WHERE id = ?', [id], (err3, folder) => {
-        if (err3) return res.status(500).json({ error: err3.message });
-        if (!folder) return res.status(404).json({ error: 'Not found' });
-        
-        // 可以安全刪除
-        req.userDb.run('DELETE FROM folders WHERE id = ?', [id], (err4) => {
-          if (err4) return res.status(500).json({ error: err4.message });
-          // 記錄審計日誌
-          logAudit(req, 'delete', 'folder', parseInt(id), folder.name, folder, null);
-          console.log(`✓ Deleted folder: ${id}`);
-          res.json({ success: true });
-        });
+      // 開始遞迴刪除
+      deleteFolderRecursive(parseInt(id), (err) => {
+        if (err) return res.status(500).json({ error: err.message });
+        // 記錄審計日誌
+        logAudit(req, 'delete', 'folder', parseInt(id), folder.name, { ...folder, force: true }, null);
+        console.log(`✓ Force deleted folder: ${id}`);
+        res.json({ success: true, force: true });
       });
-    });
+    }
   });
 });
 
@@ -2309,6 +2356,89 @@ app.delete('/api/users', withUserDatabase, (req, res) => {
   });
 });
 
+// 批次刪除人員
+app.delete('/api/users/batch', withUserDatabase, (req, res) => {
+  const { ids } = req.body;
+  console.log('Hit DELETE /api/users/batch', { ids });
+  
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  
+  const deleted = [];
+  const failed = [];
+  let processed = 0;
+  const total = ids.length;
+  
+  if (total === 0) {
+    return res.json({ success: true, deleted: 0, failed: 0, deleted_ids: [], failed_ids: [] });
+  }
+  
+  ids.forEach((id) => {
+    // 檢查是否有關聯的權限
+    req.userDb.all(`
+      SELECT p.id, p.permission_type, f.name as folder_name, f.path as folder_path
+      FROM permissions p
+      LEFT JOIN folders f ON p.folder_id = f.id
+      WHERE p.user_id = ?
+    `, [id], (err, permissions) => {
+      if (err) {
+        failed.push({ id, error: err.message });
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+        return;
+      }
+      
+      if (permissions && permissions.length > 0) {
+        failed.push({ id, error: '已被指派權限，無法刪除' });
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+        return;
+      }
+      
+      // 獲取要刪除的人員資訊
+      req.userDb.get('SELECT name, email, department, company, title, phone, description FROM users WHERE id = ?', [id], (err2, user) => {
+        if (err2) {
+          failed.push({ id, error: err2.message });
+          processed++;
+          if (processed === total) {
+            res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+          }
+          return;
+        }
+        
+        if (!user) {
+          failed.push({ id, error: 'Not found' });
+          processed++;
+          if (processed === total) {
+            res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+          }
+          return;
+        }
+        
+        // 刪除人員
+        req.userDb.run('DELETE FROM users WHERE id = ?', [id], (err3) => {
+          if (err3) {
+            failed.push({ id, error: err3.message });
+          } else {
+            deleted.push(id);
+            logAudit(req, 'delete', 'user', parseInt(id), user.name, user, null);
+          }
+          
+          processed++;
+          if (processed === total) {
+            res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+          }
+        });
+      });
+    });
+  });
+});
+
 // API: 群組
 app.get('/api/groups', withUserDatabase, (req, res) => {
   console.log('Hit /api/groups');
@@ -2397,6 +2527,89 @@ app.delete('/api/groups', withUserDatabase, (req, res) => {
         // 記錄審計日誌
         logAudit(req, 'delete', 'group', parseInt(id), group.name, group, null);
         res.json({ success: true });
+      });
+    });
+  });
+});
+
+// 批次刪除群組
+app.delete('/api/groups/batch', withUserDatabase, (req, res) => {
+  const { ids } = req.body;
+  console.log('Hit DELETE /api/groups/batch', { ids });
+  
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  
+  const deleted = [];
+  const failed = [];
+  let processed = 0;
+  const total = ids.length;
+  
+  if (total === 0) {
+    return res.json({ success: true, deleted: 0, failed: 0, deleted_ids: [], failed_ids: [] });
+  }
+  
+  ids.forEach((id) => {
+    // 檢查是否有關聯的權限
+    req.userDb.all(`
+      SELECT p.id, p.permission_type, f.name as folder_name, f.path as folder_path
+      FROM permissions p
+      LEFT JOIN folders f ON p.folder_id = f.id
+      WHERE p.group_id = ?
+    `, [id], (err, permissions) => {
+      if (err) {
+        failed.push({ id, error: err.message });
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+        return;
+      }
+      
+      if (permissions && permissions.length > 0) {
+        failed.push({ id, error: '已被指派權限，無法刪除' });
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+        return;
+      }
+      
+      // 獲取要刪除的群組資訊
+      req.userDb.get('SELECT name FROM groups WHERE id = ?', [id], (err2, group) => {
+        if (err2) {
+          failed.push({ id, error: err2.message });
+          processed++;
+          if (processed === total) {
+            res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+          }
+          return;
+        }
+        
+        if (!group) {
+          failed.push({ id, error: 'Not found' });
+          processed++;
+          if (processed === total) {
+            res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+          }
+          return;
+        }
+        
+        // 刪除群組
+        req.userDb.run('DELETE FROM groups WHERE id = ?', [id], (err3) => {
+          if (err3) {
+            failed.push({ id, error: err3.message });
+          } else {
+            deleted.push(id);
+            logAudit(req, 'delete', 'group', parseInt(id), group.name, group, null);
+          }
+          
+          processed++;
+          if (processed === total) {
+            res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+          }
+        });
       });
     });
   });
@@ -2589,6 +2802,82 @@ app.delete('/api/permissions', withUserDatabase, (req, res) => {
       }, null);
       
       res.json({ success: true });
+    });
+  });
+});
+
+// 批次刪除權限
+app.delete('/api/permissions/batch', withUserDatabase, (req, res) => {
+  const { ids } = req.body;
+  console.log('Hit DELETE /api/permissions/batch', { ids });
+  
+  if (!ids || !Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids array required' });
+  }
+  
+  const deleted = [];
+  const failed = [];
+  let processed = 0;
+  const total = ids.length;
+  
+  if (total === 0) {
+    return res.json({ success: true, deleted: 0, failed: 0, deleted_ids: [], failed_ids: [] });
+  }
+  
+  ids.forEach((id) => {
+    // 獲取要刪除的權限資訊
+    req.userDb.get(`
+      SELECT p.*, f.path as folder_path, f.name as folder_name,
+             u.name as user_name, g.name as group_name
+      FROM permissions p
+      LEFT JOIN folders f ON p.folder_id = f.id
+      LEFT JOIN users u ON p.user_id = u.id
+      LEFT JOIN groups g ON p.group_id = g.id
+      WHERE p.id = ?
+    `, [id], (err, permission) => {
+      if (err) {
+        failed.push({ id, error: err.message });
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+        return;
+      }
+      
+      if (!permission) {
+        failed.push({ id, error: 'Not found' });
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+        return;
+      }
+      
+      // 構建資源名稱
+      const resourceName = `${permission.folder_path || permission.folder_name || '資料夾'}: ${permission.user_name || permission.group_name || '未知'}`;
+      
+      // 刪除權限
+      req.userDb.run('DELETE FROM permissions WHERE id = ?', [id], (err2) => {
+        if (err2) {
+          failed.push({ id, error: err2.message });
+        } else {
+          deleted.push(id);
+          logAudit(req, 'delete', 'permission', parseInt(id), resourceName, {
+            folder_id: permission.folder_id,
+            user_id: permission.user_id,
+            group_id: permission.group_id,
+            permission_type: permission.permission_type,
+            folder_path: permission.folder_path,
+            user_name: permission.user_name,
+            group_name: permission.group_name
+          }, null);
+        }
+        
+        processed++;
+        if (processed === total) {
+          res.json({ success: true, deleted: deleted.length, failed: failed.length, deleted_ids: deleted, failed_ids: failed });
+        }
+      });
     });
   });
 });
@@ -3626,7 +3915,7 @@ app.get('/permission_generator.html', ensureEditorAccess, (req, res) => {
   });
 });
 
-// 靜態檔案 (放最後)
+// 靜態檔案
 app.use(express.static('public'));
 
 // 首頁
@@ -3870,8 +4159,10 @@ app.get('/export_excel', withUserDatabase, async (req, res) => {
 });
 
 // 匯出權限清單（橫向格式，四層標題 + 人員權限）
+// 查詢參數：include_description=1 時一併輸出人員描述欄位
 app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
-  console.log('Hit /export_permission_matrix - Exporting permission matrix');
+  const includeDescription = (req.query.include_description === '1' || req.query.include_description === 'true');
+  console.log('Hit /export_permission_matrix - Exporting permission matrix, include_description:', includeDescription);
   
   try {
     // 1. 查詢所有資料夾
@@ -3890,17 +4181,39 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
       return res.status(400).json({ error: '沒有資料夾資料，無法匯出權限清單' });
     }
     
-    // 2. 查詢所有人員
-    const users = await new Promise((resolve, reject) => {
-      req.userDb.all(`SELECT id, name FROM users ORDER BY name`, (err, rows) => {
-        if (err) {
-          console.error('Error querying users:', err);
-          reject(err);
+    // 2. 查詢所有人員（需要描述時一併查詢 description；若 DB 無 description 欄位則自動改為不輸出描述）
+    let actualIncludeDescription = includeDescription;
+    let users;
+    if (actualIncludeDescription) {
+      try {
+        users = await new Promise((resolve, reject) => {
+          req.userDb.all(`SELECT id, name, description FROM users ORDER BY name`, (err, rows) => {
+            if (err) reject(err);
+            else resolve(rows || []);
+          });
+        });
+      } catch (userErr) {
+        const msg = (userErr && userErr.message) ? String(userErr.message) : '';
+        if (/no such column.*description/i.test(msg)) {
+          actualIncludeDescription = false;
+          users = await new Promise((resolve, reject) => {
+            req.userDb.all(`SELECT id, name FROM users ORDER BY name`, (err, rows) => {
+              if (err) reject(err);
+              else resolve(rows || []);
+            });
+          });
         } else {
-          resolve(rows || []);
+          throw userErr;
         }
+      }
+    } else {
+      users = await new Promise((resolve, reject) => {
+        req.userDb.all(`SELECT id, name FROM users ORDER BY name`, (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        });
       });
-    });
+    }
     
     if (!users || users.length === 0) {
       return res.status(400).json({ error: '沒有人員資料，無法匯出權限清單' });
@@ -4047,7 +4360,7 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
     const row3 = []; // 第三層：依父資料夾 ID 顯示
     const row4 = []; // 第四層：依父資料夾 ID 顯示
     
-    let currentCol = 2; // 從第2列開始（第1列是人員名稱）
+    let currentCol = actualIncludeDescription ? 3 : 2; // 含描述時從第3欄開始（A=層級/人員名，B=描述），否則從第2欄
     
     // 記錄每個根目錄的起始和結束列，用於合併
     const rootFolderRanges = {};
@@ -4109,11 +4422,18 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
       }
     }
     
-    // 添加標題行（A欄顯示層級標籤，B欄開始顯示資料夾標題）
-    worksheet.addRow(['第一層', ...row1]); // A欄顯示「第一層」，B欄開始顯示根目錄資料夾名稱（需要合併相同根目錄）
-    worksheet.addRow(['第二層', ...row2]); // A欄顯示「第二層」，B欄開始顯示「share」（每個資料夾2列）
-    worksheet.addRow(['第三層', ...row3]); // A欄顯示「第三層」，B欄開始顯示父資料夾名稱（每個資料夾2列合併）
-    worksheet.addRow(['第四層', ...row4]); // A欄顯示「第四層」，B欄開始顯示資料夾本身名稱（每個資料夾2列合併）
+    // 添加標題行（A欄顯示層級標籤，B欄為描述欄標題（可選），其後為資料夾標題）
+    if (actualIncludeDescription) {
+      worksheet.addRow(['第一層', '描述', ...row1]);
+      worksheet.addRow(['第二層', '', ...row2]);
+      worksheet.addRow(['第三層', '', ...row3]);
+      worksheet.addRow(['第四層', '', ...row4]);
+    } else {
+      worksheet.addRow(['第一層', ...row1]);
+      worksheet.addRow(['第二層', ...row2]);
+      worksheet.addRow(['第三層', ...row3]);
+      worksheet.addRow(['第四層', ...row4]);
+    }
     
         // 8.（不進行欄位合併，確保每一層的文字都能對應至各自的欄位）
 // 9. 設定標題樣式
@@ -4131,7 +4451,10 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
     
     // 10. 添加人員權限資料
     users.forEach(user => {
-      const row = [user.name];
+      const desc = actualIncludeDescription && user && 'description' in user
+        ? String(user.description != null ? user.description : '').trim()
+        : '';
+      const row = actualIncludeDescription ? [user.name, desc] : [user.name];
       
       foldersWithLevel.forEach(folder => {
         const perm = permissionMap[user.id] && permissionMap[user.id][folder.id];
@@ -4156,13 +4479,20 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
     
     // 12. 設定欄寬
     worksheet.getColumn(1).width = 20; // A欄：人員名稱列和層級標籤
-    for (let col = 2; col <= currentCol - 1; col++) {
-      worksheet.getColumn(col).width = 8;
+    if (actualIncludeDescription) {
+      worksheet.getColumn(2).width = 25; // B欄：描述
+      for (let col = 3; col <= currentCol - 1; col++) {
+        worksheet.getColumn(col).width = 8;
+      }
+    } else {
+      for (let col = 2; col <= currentCol - 1; col++) {
+        worksheet.getColumn(col).width = 8;
+      }
     }
     
-    // 13. 凍結標題行和人員名稱列（A欄，前4行）
+    // 13. 凍結標題行和人員名稱列（含描述時凍結 A、B 欄，前4行）
     worksheet.views = [
-      { state: 'frozen', xSplit: 1, ySplit: 4 }
+      { state: 'frozen', xSplit: actualIncludeDescription ? 2 : 1, ySplit: 4 }
     ];
     
     // 14. 寫入檔案
@@ -4761,6 +5091,15 @@ app.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
 app.use((req, res) => {
   console.log('404 for:', req.url);
   res.status(404).json({ error: 'Not Found: ' + req.url });
+});
+
+// 未捕獲錯誤寫入 stderr，方便 pm2 logs --err 看到
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason, p) => {
+  console.error('[unhandledRejection]', reason, p);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
