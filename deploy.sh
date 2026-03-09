@@ -158,9 +158,11 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 echo "更新系統套件..."
-sudo apt update -qq
-sudo apt upgrade -y -qq
-sudo apt install -y curl wget git build-essential sqlite3
+sudo apt-get update -qq --fix-missing
+sudo apt-get upgrade -y -qq --fix-missing || {
+    echo -e "${YELLOW}⚠️  部分套件更新失敗（可能為套件庫暫時性問題），繼續部署...${NC}"
+}
+sudo apt-get install -y curl wget git build-essential sqlite3
 
 echo -e "${GREEN}✅ 系統準備完成${NC}"
 echo ""
