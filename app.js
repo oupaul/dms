@@ -83,7 +83,21 @@ function isDatabaseOwnedBy(dbName, username) {
 }
 
 function isViewer(req) {
-  return req.session && req.session.permissionLevel === 'viewer';
+  if (!req.session) return false;
+  if (req.session.role === 'admin') return false;
+  if (req.session.rolePermissions) {
+    const p = req.session.rolePermissions;
+    return !p.can_manage_users && !p.can_manage_groups &&
+           !p.can_manage_permissions && !p.can_manage_folders;
+  }
+  return req.session.permissionLevel === 'viewer';
+}
+
+function getRoleDbAccess(req) {
+  if (req.session && req.session.rolePermissions) {
+    return req.session.rolePermissions.database_access || 'all';
+  }
+  return isViewer(req) ? 'specified' : 'all';
 }
 
 const VIEWER_WRITE_WHITELIST = [
@@ -267,7 +281,17 @@ function initializeTables(database, callback) {
       allowed_databases TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
-    
+
+    // 角色表
+    database.run(`CREATE TABLE IF NOT EXISTS system_roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      description TEXT,
+      is_builtin INTEGER DEFAULT 0,
+      permissions TEXT NOT NULL DEFAULT '{}',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
+
     database.all("PRAGMA table_info(accounts)", [], (err, columns) => {
       if (err) return;
       const columnNames = columns.map(col => col.name);
@@ -276,6 +300,9 @@ function initializeTables(database, callback) {
       }
       if (!columnNames.includes('allowed_databases')) {
         database.run("ALTER TABLE accounts ADD COLUMN allowed_databases TEXT");
+      }
+      if (!columnNames.includes('role_id')) {
+        database.run("ALTER TABLE accounts ADD COLUMN role_id INTEGER REFERENCES system_roles(id)");
       }
     });
     
@@ -429,6 +456,43 @@ async function loadDefaultDatabase() {
 loadDefaultDatabase().then(() => {
   console.log('Database initialized!');
   
+  // 建立內建角色
+  const builtinRoles = [
+    {
+      name: '系統管理員',
+      description: '系統內建角色，擁有完整管理權限',
+      is_builtin: 1,
+      permissions: JSON.stringify({ can_manage_users: true, can_manage_groups: true, can_manage_permissions: true, can_manage_folders: true, can_export: true, can_import: true, database_access: 'all' })
+    },
+    {
+      name: '編輯者',
+      description: '可完整編輯所有資料與資料庫',
+      is_builtin: 1,
+      permissions: JSON.stringify({ can_manage_users: true, can_manage_groups: true, can_manage_permissions: true, can_manage_folders: true, can_export: true, can_import: true, database_access: 'all' })
+    },
+    {
+      name: '唯讀（全部資料庫）',
+      description: '可查看所有資料庫，不可修改',
+      is_builtin: 1,
+      permissions: JSON.stringify({ can_manage_users: false, can_manage_groups: false, can_manage_permissions: false, can_manage_folders: false, can_export: false, can_import: false, database_access: 'all' })
+    },
+    {
+      name: '唯讀（指定資料庫）',
+      description: '僅可查看管理員指定的資料庫，不可修改',
+      is_builtin: 1,
+      permissions: JSON.stringify({ can_manage_users: false, can_manage_groups: false, can_manage_permissions: false, can_manage_folders: false, can_export: false, can_import: false, database_access: 'specified' })
+    }
+  ];
+
+  builtinRoles.forEach(role => {
+    db.run(
+      `INSERT OR IGNORE INTO system_roles (name, description, is_builtin, permissions) VALUES (?, ?, ?, ?)`,
+      [role.name, role.description, role.is_builtin, role.permissions],
+      (err) => { if (err) console.error('建立內建角色失敗:', err); }
+    );
+  });
+  console.log('✓ Built-in roles initialized');
+
   // 在系統資料庫中創建活動會話表（用於追蹤所有用戶的在線狀態）
   db.run(`CREATE TABLE IF NOT EXISTS active_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -637,10 +701,11 @@ async function withUserDatabase(req, res, next) {
       return res.status(400).json({ error: '未設定資料庫', message: '請先選擇可用的資料庫' });
     }
     
-    if (isViewer(req)) {
+    const dbAccess = getRoleDbAccess(req);
+    if (dbAccess === 'specified') {
       const allowed = (req.session.allowedDatabases || []).includes(targetDatabase);
       if (!allowed) {
-        return res.status(403).json({ error: '無法存取此資料庫', code: 'viewer_database_forbidden' });
+        return res.status(403).json({ error: '無法存取此資料庫', code: 'role_database_forbidden' });
       }
     }
     
@@ -810,6 +875,29 @@ app.post('/api/auth/login', async (req, res) => {
     }
     
     const permissionLevel = user.permission_level || 'editor';
+
+    // 載入角色權限
+    let roleId = user.role_id || null;
+    let roleName = null;
+    let rolePermissions = null;
+
+    if (roleId) {
+      const roleRow = await new Promise((resolve) => {
+        db.get('SELECT id, name, permissions FROM system_roles WHERE id = ?', [roleId], (err, row) => resolve(row || null));
+      });
+      if (roleRow) {
+        roleName = roleRow.name;
+        try { rolePermissions = JSON.parse(roleRow.permissions); } catch { rolePermissions = null; }
+      }
+    }
+
+    // 若無 role_id，根據 permission_level 推斷
+    if (!rolePermissions) {
+      rolePermissions = permissionLevel === 'viewer'
+        ? { can_manage_users: false, can_manage_groups: false, can_manage_permissions: false, can_manage_folders: false, can_export: false, can_import: false, database_access: 'specified' }
+        : { can_manage_users: true, can_manage_groups: true, can_manage_permissions: true, can_manage_folders: true, can_export: true, can_import: true, database_access: 'all' };
+    }
+
     let allowedDatabases = parseAllowedDatabases(user.allowed_databases);
     if (permissionLevel === 'viewer') {
       allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
@@ -842,6 +930,9 @@ app.post('/api/auth/login', async (req, res) => {
       req.session.permissionLevel = permissionLevel;
       req.session.allowedDatabases = permissionLevel === 'viewer' ? allowedDatabases : [];
       req.session.userDatabase = targetDatabase;
+      req.session.roleId = roleId;
+      req.session.roleName = roleName;
+      req.session.rolePermissions = rolePermissions;
       
       // 記錄活動會話到系統資料庫（在線用戶追蹤）
       const ipAddress = req.ip || req.connection.remoteAddress;
@@ -1007,7 +1098,10 @@ app.get('/api/auth/status', (req, res) => {
         role: req.session.role,
         permissionLevel: req.session.permissionLevel || 'editor',
         allowedDatabases: req.session.allowedDatabases || [],
-        database: req.session.userDatabase
+        database: req.session.userDatabase,
+        roleId: req.session.roleId || null,
+        roleName: req.session.roleName || null,
+        rolePermissions: req.session.rolePermissions || null
       }
     });
   } else {
@@ -1044,7 +1138,7 @@ app.get('/api/admin/pending-accounts', requireAdmin, (req, res) => {
 // 取得所有帳號（管理員專用）
 app.get('/api/admin/accounts', requireAdmin, (req, res) => {
   db.all(
-    'SELECT id, username, full_name, role, status, user_database, created_at, permission_level, allowed_databases FROM accounts ORDER BY created_at DESC',
+    `SELECT a.id, a.username, a.full_name, a.role, a.status, a.user_database, a.created_at, a.permission_level, a.allowed_databases, a.role_id, sr.name as role_name, sr.permissions as role_permissions FROM accounts a LEFT JOIN system_roles sr ON a.role_id = sr.id ORDER BY a.created_at DESC`,
     [],
     (err, rows) => {
       if (err) {
@@ -1053,7 +1147,10 @@ app.get('/api/admin/accounts', requireAdmin, (req, res) => {
       const mapped = (rows || []).map(row => ({
         ...row,
         permission_level: row.permission_level || 'editor',
-        allowed_databases: parseAllowedDatabases(row.allowed_databases)
+        allowed_databases: parseAllowedDatabases(row.allowed_databases),
+        role_id: row.role_id || null,
+        role_name: row.role_name || null,
+        role_permissions: row.role_permissions ? (() => { try { return JSON.parse(row.role_permissions); } catch { return null; } })() : null
       }));
       res.json(mapped);
     }
@@ -1062,7 +1159,7 @@ app.get('/api/admin/accounts', requireAdmin, (req, res) => {
 
 // 審核帳號（批准/拒絕）
 app.post('/api/admin/review-account', requireAdmin, async (req, res) => {
-  const { accountId, action, permissionLevel, allowedDatabases } = req.body; // action: 'approve' or 'reject'
+  const { accountId, action, permissionLevel, allowedDatabases, roleId } = req.body; // action: 'approve' or 'reject'
   
   if (!accountId || !action) {
     return res.status(400).json({ error: '缺少必要參數' });
@@ -1094,8 +1191,8 @@ app.post('/api/admin/review-account', requireAdmin, async (req, res) => {
     if (action === 'approve') {
       await new Promise((resolve, reject) => {
         db.run(
-          'UPDATE accounts SET status = ?, permission_level = ?, allowed_databases = ? WHERE id = ? AND status = ?',
-          [newStatus, finalPermissionLevel, serializedAllowed, accountId, 'pending'],
+          'UPDATE accounts SET status = ?, permission_level = ?, allowed_databases = ?, role_id = ? WHERE id = ? AND status = ?',
+          [newStatus, finalPermissionLevel, serializedAllowed, roleId || null, accountId, 'pending'],
           function(err) {
             if (err) reject(err);
             else if (this.changes === 0) reject(new Error('帳號不存在或狀態已變更'));
@@ -1130,7 +1227,7 @@ app.post('/api/admin/review-account', requireAdmin, async (req, res) => {
 
 // 更新帳號權限（管理員專用）
 app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res) => {
-  const { accountId, permissionLevel, allowedDatabases } = req.body;
+  const { accountId, permissionLevel, allowedDatabases, roleId } = req.body;
   if (!accountId || !permissionLevel) {
     return res.status(400).json({ error: '缺少必要參數' });
   }
@@ -1164,8 +1261,8 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
     
     await new Promise((resolve, reject) => {
       db.run(
-        'UPDATE accounts SET permission_level = ?, allowed_databases = ? WHERE id = ?',
-        [finalPermissionLevel, serialized, accountId],
+        'UPDATE accounts SET permission_level = ?, allowed_databases = ?, role_id = ? WHERE id = ?',
+        [finalPermissionLevel, serialized, roleId || null, accountId],
         function(err) {
           if (err) reject(err);
           else if (this.changes === 0) reject(new Error('更新失敗'));
@@ -1174,7 +1271,7 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
       );
     });
     
-    res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: sanitized });
+    res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: sanitized, roleId: roleId || null });
   } catch (error) {
     console.error('更新帳號權限失敗:', error);
     res.status(500).json({ error: error.message });
@@ -2185,16 +2282,16 @@ app.get('/api/admin/backup/list', requireAdmin, (req, res) => {
 // 管理員直接新增使用者（無需審核）
 app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
   console.log('Hit POST /api/admin/accounts/create');
-  const { username, password, full_name, permissionLevel, allowedDatabases } = req.body;
-  
+  const { username, password, full_name, permissionLevel, allowedDatabases, roleId } = req.body;
+
   if (!username || !password) {
     return res.status(400).json({ error: '請提供使用者名稱和密碼' });
   }
-  
+
   if (password.length < 6) {
     return res.status(400).json({ error: '密碼長度至少需要 6 個字元' });
   }
-  
+
   // 驗證使用者名稱格式（只允許英數字和底線）
   if (!/^[a-zA-Z0-9_]+$/.test(username)) {
     return res.status(400).json({ error: '使用者名稱只能包含英數字和底線' });
@@ -2234,8 +2331,8 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
     // 建立帳號（直接啟用，無需審核）
     const accountId = await new Promise((resolve, reject) => {
       db.run(
-        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [username, passwordHash, full_name || null, 'user', 'active', userDbName, finalPermissionLevel, serializedAllowed],
+        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, role_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [username, passwordHash, full_name || null, 'user', 'active', userDbName, finalPermissionLevel, serializedAllowed, roleId || null],
         function(err) {
           if (err) reject(err);
           else resolve(this.lastID);
@@ -2248,14 +2345,15 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
     userDb.close();
     
     console.log(`✓ 管理員建立帳號成功: ${username}, 資料庫: ${userDbName}, 權限: ${finalPermissionLevel}`);
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: '帳號建立成功',
       accountId: accountId,
       username: username,
       userDatabase: userDbName,
       permissionLevel: finalPermissionLevel,
-      status: 'active'
+      status: 'active',
+      roleId: roleId || null
     });
     
   } catch (error) {
@@ -2264,6 +2362,110 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
   }
 });
 console.log('Registered /api/admin/accounts/create');
+
+// ==================== 角色管理 API ====================
+
+// 取得所有角色
+app.get('/api/admin/roles', requireAdmin, (req, res) => {
+  db.all('SELECT * FROM system_roles ORDER BY is_builtin DESC, id ASC', [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const result = (rows || []).map(r => ({
+      ...r,
+      permissions: (() => { try { return JSON.parse(r.permissions); } catch { return {}; } })()
+    }));
+    res.json(result);
+  });
+});
+
+// 建立自定義角色
+app.post('/api/admin/roles', requireAdmin, (req, res) => {
+  const { name, description, permissions } = req.body;
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: '請提供角色名稱' });
+  }
+  if (!permissions || typeof permissions !== 'object') {
+    return res.status(400).json({ error: '請提供權限設定' });
+  }
+  const validKeys = ['can_manage_users', 'can_manage_groups', 'can_manage_permissions', 'can_manage_folders', 'can_export', 'can_import', 'database_access'];
+  const sanitized = {};
+  validKeys.forEach(k => {
+    if (k === 'database_access') {
+      sanitized[k] = permissions[k] === 'specified' ? 'specified' : 'all';
+    } else {
+      sanitized[k] = !!permissions[k];
+    }
+  });
+
+  db.run(
+    'INSERT INTO system_roles (name, description, is_builtin, permissions) VALUES (?, ?, 0, ?)',
+    [name.trim(), description || null, JSON.stringify(sanitized)],
+    function(err) {
+      if (err) {
+        if (err.message.includes('UNIQUE')) return res.status(400).json({ error: '角色名稱已存在' });
+        return res.status(500).json({ error: err.message });
+      }
+      logAudit(req, 'create', 'role', this.lastID, name.trim(), null, sanitized);
+      res.json({ success: true, id: this.lastID, name: name.trim(), permissions: sanitized });
+    }
+  );
+});
+
+// 更新角色（不可修改內建角色）
+app.put('/api/admin/roles/:id', requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id);
+  const { name, description, permissions } = req.body;
+  if (!name || !permissions) return res.status(400).json({ error: '缺少必要參數' });
+
+  db.get('SELECT * FROM system_roles WHERE id = ?', [id], (err, role) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!role) return res.status(404).json({ error: '角色不存在' });
+    if (role.is_builtin) return res.status(400).json({ error: '無法修改系統內建角色' });
+
+    const validKeys = ['can_manage_users', 'can_manage_groups', 'can_manage_permissions', 'can_manage_folders', 'can_export', 'can_import', 'database_access'];
+    const sanitized = {};
+    validKeys.forEach(k => {
+      if (k === 'database_access') {
+        sanitized[k] = permissions[k] === 'specified' ? 'specified' : 'all';
+      } else {
+        sanitized[k] = !!permissions[k];
+      }
+    });
+
+    db.run(
+      'UPDATE system_roles SET name = ?, description = ?, permissions = ? WHERE id = ?',
+      [name.trim(), description || null, JSON.stringify(sanitized), id],
+      function(err2) {
+        if (err2) return res.status(500).json({ error: err2.message });
+        logAudit(req, 'update', 'role', id, name.trim(), role.permissions, sanitized);
+        res.json({ success: true, id, name: name.trim(), permissions: sanitized });
+      }
+    );
+  });
+});
+
+// 刪除角色（不可刪除內建角色，不可刪除有帳號使用中的角色）
+app.delete('/api/admin/roles/:id', requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id);
+
+  db.get('SELECT * FROM system_roles WHERE id = ?', [id], (err, role) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!role) return res.status(404).json({ error: '角色不存在' });
+    if (role.is_builtin) return res.status(400).json({ error: '無法刪除系統內建角色' });
+
+    db.get('SELECT COUNT(*) as count FROM accounts WHERE role_id = ?', [id], (err2, row) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      if (row && row.count > 0) {
+        return res.status(400).json({ error: `此角色正被 ${row.count} 個帳號使用，無法刪除` });
+      }
+
+      db.run('DELETE FROM system_roles WHERE id = ?', [id], function(err3) {
+        if (err3) return res.status(500).json({ error: err3.message });
+        logAudit(req, 'delete', 'role', id, role.name, role.permissions, null);
+        res.json({ success: true, message: '角色已刪除' });
+      });
+    });
+  });
+});
 
 app.get('/api/users/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;

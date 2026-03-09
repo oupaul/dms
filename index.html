@@ -107,6 +107,11 @@
                         <i class="bi bi-shield-fill-check"></i> 帳號管理
                     </a>
                 </li>
+                <li class="nav-item" id="nav-roles-management" style="display:none;">
+                    <a class="nav-link" href="#" onclick="showSection('roles-management')">
+                        <i class="bi bi-person-badge-fill"></i> 角色管理
+                    </a>
+                </li>
                 <li class="nav-item" id="admin-powershell-menu-item" style="display: none;">
                     <a class="nav-link text-danger" href="#" data-section="powershell-generator">
                         <i class="bi bi-code-slash"></i> AD PowerShell 語法生成
@@ -997,13 +1002,54 @@
                                     <th width="15%">姓名</th>
                                     <th width="12%">角色</th>
                                     <th width="12%">狀態</th>
-                                    <th width="15%">權限</th>
+                                    <th width="15%">角色</th>
                                     <th width="15%">資料庫</th>
                                     <th width="12%">註冊時間</th>
                                     <th width="10%">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="all-accounts-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 角色管理區塊（僅管理員可見） -->
+        <div id="roles-management-section" style="display:none;">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h3 class="mb-0"><i class="bi bi-person-badge-fill"></i> 角色管理</h3>
+                <button class="btn btn-success" onclick="openCreateRoleModal()">
+                    <i class="bi bi-plus-circle"></i> 新增自定義角色
+                </button>
+            </div>
+            <div class="alert alert-info">
+                <i class="bi bi-info-circle-fill"></i>
+                系統內建角色（編輯者、唯讀）<strong>無法修改或刪除</strong>。自定義角色可完整設定每項功能的存取權限。
+            </div>
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="bi bi-person-badge-fill"></i> 所有角色</h5>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>角色名稱</th>
+                                    <th>說明</th>
+                                    <th class="text-center">人員管理</th>
+                                    <th class="text-center">群組管理</th>
+                                    <th class="text-center">權限管理</th>
+                                    <th class="text-center">資料夾</th>
+                                    <th class="text-center">匯出</th>
+                                    <th class="text-center">匯入</th>
+                                    <th class="text-center">資料庫存取</th>
+                                    <th>類型</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="roles-tbody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -2014,17 +2060,17 @@ group_member,,2,4</code></pre>
                         </div>
                         
                         <div class="mb-3">
-                            <label class="form-label fw-bold">權限類型</label>
-                            <select id="create-permission-level" class="form-select" onchange="toggleCreateAccountDatabases()">
-                                <option value="editor">可編輯（完整權限）</option>
-                                <option value="viewer">唯讀：只能瀏覽指定資料庫</option>
+                            <label class="form-label fw-bold">角色 <span class="text-danger">*</span></label>
+                            <select id="create-role-id" class="form-select" onchange="toggleCreateAccountDatabases()">
+                                <option value="">-- 載入中 --</option>
                             </select>
+                            <small class="text-muted">角色決定此帳號在系統內的功能存取範圍</small>
                         </div>
-                        
+
                         <div class="mb-3" id="create-db-select-wrapper" style="display:none;">
                             <label class="form-label fw-bold">允許瀏覽的資料庫（可多選）</label>
                             <select id="create-db-select" class="form-select" multiple size="8"></select>
-                            <small class="text-muted">僅能選擇目前存在的資料庫；若需要新增資料庫請先至「資料庫管理」建立。</small>
+                            <small class="text-muted">此角色的資料庫存取範圍為「指定資料庫」，請選擇允許存取的資料庫</small>
                         </div>
                         
                         <div id="create-account-error" class="alert alert-danger d-none" role="alert"></div>
@@ -2054,16 +2100,15 @@ group_member,,2,4</code></pre>
                         <div id="permission-account-info" class="form-control-plaintext text-primary"></div>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label fw-bold">權限類型</label>
-                        <select id="permission-level-select" class="form-select" onchange="togglePermissionModalDatabases()">
-                            <option value="editor">可編輯（完整權限）</option>
-                            <option value="viewer">唯讀：只能瀏覽指定資料庫</option>
+                        <label class="form-label fw-bold">角色</label>
+                        <select id="permission-role-id" class="form-select" onchange="togglePermissionModalDatabases()">
+                            <option value="">-- 載入中 --</option>
                         </select>
                     </div>
                     <div class="mb-3" id="permission-db-select-wrapper" style="display:none;">
                         <label class="form-label fw-bold">允許瀏覽的資料庫（可多選）</label>
                         <select id="permission-db-select" class="form-select" multiple size="8"></select>
-                        <small class="text-muted">僅能選擇目前存在的資料庫；若需要新增資料庫請先至「資料庫管理」建立。</small>
+                        <small class="text-muted">此角色的資料庫存取範圍為「指定資料庫」，請選擇允許存取的資料庫</small>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -2113,11 +2158,96 @@ group_member,,2,4</code></pre>
         </div>
     </div>
 
+    <!-- 建立/編輯角色 Modal -->
+    <div class="modal fade" id="role-edit-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="role-edit-modal-title"><i class="bi bi-person-badge-fill"></i> 新增自定義角色</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="role-edit-id">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">角色名稱 <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="role-edit-name" placeholder="例：部門管理員">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">說明</label>
+                        <input type="text" class="form-control" id="role-edit-description" placeholder="選填">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">功能權限</label>
+                        <div class="table-responsive">
+                            <table class="table table-bordered table-sm">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>功能模組</th>
+                                        <th class="text-center">啟用</th>
+                                        <th>說明</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><i class="bi bi-person-fill"></i> 人員管理</td>
+                                        <td class="text-center"><input type="checkbox" id="role-perm-users" class="form-check-input"></td>
+                                        <td><small class="text-muted">新增、編輯、刪除人員</small></td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="bi bi-people-fill"></i> 群組管理</td>
+                                        <td class="text-center"><input type="checkbox" id="role-perm-groups" class="form-check-input"></td>
+                                        <td><small class="text-muted">建立群組、管理群組成員</small></td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="bi bi-shield-fill"></i> 權限管理</td>
+                                        <td class="text-center"><input type="checkbox" id="role-perm-permissions" class="form-check-input"></td>
+                                        <td><small class="text-muted">指派資料夾讀寫權限</small></td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="bi bi-folder-fill"></i> 資料夾管理</td>
+                                        <td class="text-center"><input type="checkbox" id="role-perm-folders" class="form-check-input"></td>
+                                        <td><small class="text-muted">新增、編輯、刪除資料夾</small></td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="bi bi-download"></i> 匯出</td>
+                                        <td class="text-center"><input type="checkbox" id="role-perm-export" class="form-check-input"></td>
+                                        <td><small class="text-muted">匯出 CSV / Excel</small></td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="bi bi-upload"></i> 匯入</td>
+                                        <td class="text-center"><input type="checkbox" id="role-perm-import" class="form-check-input"></td>
+                                        <td><small class="text-muted">CSV 匯入人員/群組</small></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">資料庫存取範圍</label>
+                        <select id="role-perm-db-access" class="form-select">
+                            <option value="all">全部資料庫（可自由切換）</option>
+                            <option value="specified">僅限指定資料庫（帳號層級設定）</option>
+                        </select>
+                        <small class="text-muted">選擇「指定資料庫」時，需在帳號設定中個別指定可存取的資料庫</small>
+                    </div>
+                    <div id="role-edit-error" class="alert alert-danger d-none"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" id="role-edit-submit-btn" onclick="submitRoleEdit()">
+                        <i class="bi bi-check-circle"></i> 儲存
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="broadcast-toast-container" class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1080;"></div>
 
     <script>
         // ==================== 認證檢查 ====================
         let currentUser = null;
+        let allRolesCache = [];
         const IDLE_TIMEOUT_MS = 60 * 60 * 1000;
         let idleTimer = null;
         let idleMonitorBound = false;
@@ -2135,7 +2265,20 @@ group_member,,2,4</code></pre>
         ];
 
         function isViewerAccount() {
-            return currentUser && currentUser.permissionLevel === 'viewer';
+            if (!currentUser) return false;
+            if (currentUser.rolePermissions) {
+                const p = currentUser.rolePermissions;
+                return !p.can_manage_users && !p.can_manage_groups &&
+                       !p.can_manage_permissions && !p.can_manage_folders;
+            }
+            return currentUser.permissionLevel === 'viewer';
+        }
+
+        function hasPermission(flag) {
+            if (!currentUser) return false;
+            if (currentUser.role === 'admin') return true;
+            if (currentUser.rolePermissions) return !!currentUser.rolePermissions[flag];
+            return !isViewerAccount();
         }
 
         function showViewerBlockedMessage(featureName) {
@@ -2254,6 +2397,7 @@ group_member,,2,4</code></pre>
                     $('#audit-log-menu-item').hide();
                     $('#usage-statistics-menu-item').hide();
                 }
+                $('#nav-roles-management').toggle(currentUser.role === 'admin');
                 
                 applyViewerModeUI();
                 updateBroadcastPanelVisibility();
@@ -2477,8 +2621,13 @@ group_member,,2,4</code></pre>
                 return;
             }
 
+            if (sec === 'roles-management' && (!currentUser || currentUser.role !== 'admin')) {
+                alert('需要管理員權限');
+                return;
+            }
+
             // 隱藏所有主要區段
-            $('#databases-section, #folders-section, #users-section, #groups-section, #permissions-section, #online-users-section, #system-health-section, #audit-log-section, #usage-statistics-section, #query-section, #import-section, #account-management-section, #powershell-generator-section').hide();
+            $('#databases-section, #folders-section, #users-section, #groups-section, #permissions-section, #online-users-section, #system-health-section, #audit-log-section, #usage-statistics-section, #query-section, #import-section, #account-management-section, #roles-management-section, #powershell-generator-section').hide();
             
             // 停止在線用戶自動刷新
             stopOnlineUsersAutoRefresh();
@@ -2503,6 +2652,8 @@ group_member,,2,4</code></pre>
                 loadQueryPage();
             } else if (sec === 'account-management') {
                 loadAccountManagement();
+            } else if (sec === 'roles-management') {
+                loadRolesManagement();
             } else if (sec === 'powershell-generator') {
                 // 檢查管理員權限
                 if (!currentUser || currentUser.role !== 'admin') {
@@ -4932,27 +5083,176 @@ group_member,,2,4</code></pre>
         // 載入帳號管理頁面
         function loadAccountManagement() {
             if (!currentUser || currentUser.role !== 'admin') return;
-            fetchPermissionDatabaseOptions().then(() => {
+            Promise.all([fetchPermissionDatabaseOptions(), loadRoles()]).then(() => {
                 loadPendingAccounts();
                 loadAllAccounts();
             });
         }
         
+        // 載入角色清單
+        function loadRoles() {
+            return new Promise((resolve) => {
+                $.ajax({
+                    url: '/api/admin/roles',
+                    method: 'GET',
+                    success: function(roles) {
+                        allRolesCache = roles || [];
+                        resolve();
+                    },
+                    error: function() {
+                        allRolesCache = [];
+                        resolve();
+                    }
+                });
+            });
+        }
+
+        // 建立角色下拉選單 HTML
+        function buildRoleOptionsHtml(selectedRoleId) {
+            if (!allRolesCache.length) return '<option value="">（無可用角色）</option>';
+            return allRolesCache
+                .filter(r => r.name !== '系統管理員')
+                .map(r => {
+                    const sel = r.id === selectedRoleId ? 'selected' : '';
+                    const builtinBadge = r.is_builtin ? ' [內建]' : '';
+                    return `<option value="${r.id}" ${sel}>${escapeHtml(r.name)}${builtinBadge}</option>`;
+                }).join('');
+        }
+
+        // 開啟建立角色 Modal
+        function openCreateRoleModal() {
+            $('#role-edit-id').val('');
+            $('#role-edit-modal-title').text('新增自定義角色');
+            $('#role-edit-name').val('').prop('readonly', false);
+            $('#role-edit-description').val('');
+            $('#role-perm-users, #role-perm-groups, #role-perm-permissions, #role-perm-folders, #role-perm-export, #role-perm-import').prop('checked', false);
+            $('#role-perm-db-access').val('all');
+            $('#role-edit-error').addClass('d-none').text('');
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('role-edit-modal'));
+            modal.show();
+        }
+
+        // 開啟編輯角色 Modal
+        function openEditRoleModal(roleId) {
+            const role = allRolesCache.find(r => r.id === roleId);
+            if (!role) return;
+            $('#role-edit-id').val(role.id);
+            $('#role-edit-modal-title').text('編輯角色：' + role.name);
+            $('#role-edit-name').val(role.name);
+            $('#role-edit-description').val(role.description || '');
+            const p = role.permissions || {};
+            $('#role-perm-users').prop('checked', !!p.can_manage_users);
+            $('#role-perm-groups').prop('checked', !!p.can_manage_groups);
+            $('#role-perm-permissions').prop('checked', !!p.can_manage_permissions);
+            $('#role-perm-folders').prop('checked', !!p.can_manage_folders);
+            $('#role-perm-export').prop('checked', !!p.can_export);
+            $('#role-perm-import').prop('checked', !!p.can_import);
+            $('#role-perm-db-access').val(p.database_access === 'specified' ? 'specified' : 'all');
+            $('#role-edit-error').addClass('d-none').text('');
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('role-edit-modal'));
+            modal.show();
+        }
+
+        // 提交角色建立/編輯
+        function submitRoleEdit() {
+            const id = $('#role-edit-id').val();
+            const name = $('#role-edit-name').val().trim();
+            const description = $('#role-edit-description').val().trim();
+            if (!name) {
+                $('#role-edit-error').text('請輸入角色名稱').removeClass('d-none');
+                return;
+            }
+            const permissions = {
+                can_manage_users: $('#role-perm-users').is(':checked'),
+                can_manage_groups: $('#role-perm-groups').is(':checked'),
+                can_manage_permissions: $('#role-perm-permissions').is(':checked'),
+                can_manage_folders: $('#role-perm-folders').is(':checked'),
+                can_export: $('#role-perm-export').is(':checked'),
+                can_import: $('#role-perm-import').is(':checked'),
+                database_access: $('#role-perm-db-access').val()
+            };
+            const url = id ? `/api/admin/roles/${id}` : '/api/admin/roles';
+            const method = id ? 'PUT' : 'POST';
+            $.ajax({
+                url, method,
+                contentType: 'application/json',
+                data: JSON.stringify({ name, description, permissions }),
+                success: function() {
+                    bootstrap.Modal.getInstance(document.getElementById('role-edit-modal')).hide();
+                    loadRoles().then(loadRolesManagement);
+                },
+                error: function(xhr) {
+                    $('#role-edit-error').text(xhr.responseJSON?.error || '儲存失敗').removeClass('d-none');
+                }
+            });
+        }
+
+        // 刪除角色
+        function deleteRole(roleId, roleName) {
+            if (!confirm(`確定要刪除角色「${roleName}」嗎？`)) return;
+            $.ajax({
+                url: `/api/admin/roles/${roleId}`,
+                method: 'DELETE',
+                success: function(res) {
+                    alert(res.message || '已刪除');
+                    loadRoles().then(loadRolesManagement);
+                },
+                error: function(xhr) {
+                    alert('刪除失敗：' + (xhr.responseJSON?.error || '請重試'));
+                }
+            });
+        }
+
+        // 載入角色管理頁面
+        function loadRolesManagement() {
+            loadRoles().then(() => {
+                const permIcon = (v) => v ? '<i class="bi bi-check-circle-fill text-success"></i>' : '<i class="bi bi-x-circle-fill text-danger"></i>';
+                let html = '';
+                allRolesCache.forEach(function(role) {
+                    const p = role.permissions || {};
+                    const builtinBadge = role.is_builtin
+                        ? '<span class="badge bg-secondary">內建</span>'
+                        : '<span class="badge bg-info text-dark">自定義</span>';
+                    const dbAccessText = p.database_access === 'specified'
+                        ? '<span class="badge bg-warning text-dark">指定</span>'
+                        : '<span class="badge bg-success">全部</span>';
+                    const actions = role.is_builtin
+                        ? '<span class="text-muted small">不可修改</span>'
+                        : `<button class="btn btn-sm btn-outline-primary me-1" onclick="openEditRoleModal(${role.id})"><i class="bi bi-pencil"></i></button>
+                           <button class="btn btn-sm btn-danger" onclick="deleteRole(${role.id}, '${(role.name || '').replace(/'/g, "\\'")}')"><i class="bi bi-trash"></i></button>`;
+                    html += `<tr>
+                        <td><strong>${escapeHtml(role.name)}</strong></td>
+                        <td><small class="text-muted">${escapeHtml(role.description || '-')}</small></td>
+                        <td class="text-center">${permIcon(p.can_manage_users)}</td>
+                        <td class="text-center">${permIcon(p.can_manage_groups)}</td>
+                        <td class="text-center">${permIcon(p.can_manage_permissions)}</td>
+                        <td class="text-center">${permIcon(p.can_manage_folders)}</td>
+                        <td class="text-center">${permIcon(p.can_export)}</td>
+                        <td class="text-center">${permIcon(p.can_import)}</td>
+                        <td class="text-center">${dbAccessText}</td>
+                        <td>${builtinBadge}</td>
+                        <td>${actions}</td>
+                    </tr>`;
+                });
+                $('#roles-tbody').html(html || '<tr><td colspan="11" class="text-center text-muted">無角色資料</td></tr>');
+            });
+        }
+
         // 開啟新增使用者模態框
         function openCreateAccountModal() {
             $('#create-account-form')[0].reset();
             $('#create-account-error').addClass('d-none').text('');
             $('#create-db-select-wrapper').hide();
-            
-            // 載入資料庫選項
-            if (!permissionDatabaseOptions.length) {
-                fetchPermissionDatabaseOptions().then(() => {
-                    $('#create-db-select').html(buildDatabaseOptionsHtml([]));
-                });
-            } else {
+
+            // 載入角色選項和資料庫選項
+            const roleP = allRolesCache.length ? Promise.resolve() : loadRoles();
+            const dbP = permissionDatabaseOptions.length ? Promise.resolve() : fetchPermissionDatabaseOptions();
+            Promise.all([roleP, dbP]).then(() => {
+                $('#create-role-id').html(buildRoleOptionsHtml(null));
                 $('#create-db-select').html(buildDatabaseOptionsHtml([]));
-            }
-            
+                toggleCreateAccountDatabases();
+            });
+
             const modalEl = document.getElementById('create-account-modal');
             const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
             modal.show();
@@ -4960,8 +5260,10 @@ group_member,,2,4</code></pre>
         
         // 切換新增帳號的資料庫選擇
         function toggleCreateAccountDatabases() {
-            const level = $('#create-permission-level').val();
-            if (level === 'viewer') {
+            const roleId = parseInt($('#create-role-id').val(), 10);
+            const role = allRolesCache.find(r => r.id === roleId);
+            const needsDb = role && role.permissions && role.permissions.database_access === 'specified';
+            if (needsDb) {
                 $('#create-db-select-wrapper').show();
             } else {
                 $('#create-db-select-wrapper').hide();
@@ -4973,7 +5275,9 @@ group_member,,2,4</code></pre>
             const username = $('#create-username').val().trim();
             const password = $('#create-password').val().trim();
             const fullName = $('#create-full-name').val().trim();
-            const permissionLevel = $('#create-permission-level').val();
+            const roleId = parseInt($('#create-role-id').val(), 10) || null;
+            const selectedRole = allRolesCache.find(r => r.id === roleId);
+            const permissionLevel = selectedRole && selectedRole.permissions && selectedRole.permissions.database_access === 'specified' ? 'viewer' : 'editor';
             
             // 驗證
             if (!username) {
@@ -4996,34 +5300,40 @@ group_member,,2,4</code></pre>
                 return;
             }
             
+            if (!roleId) {
+                showCreateAccountError('請選擇角色');
+                return;
+            }
             if (permissionLevel === 'viewer') {
                 const allowed = ($('#create-db-select').val() || []).filter(Boolean);
                 if (allowed.length === 0) {
-                    showCreateAccountError('唯讀帳號請至少選擇一個可讀取的資料庫');
+                    showCreateAccountError('此角色需要指定允許存取的資料庫，請至少選擇一個');
                     return;
                 }
             }
-            
+
             $('#create-account-error').addClass('d-none').text('');
             
             const payload = {
                 username: username,
                 password: password,
                 full_name: fullName || null,
-                permissionLevel: permissionLevel
+                permissionLevel: permissionLevel,
+                roleId: roleId
             };
-            
+
             if (permissionLevel === 'viewer') {
                 payload.allowedDatabases = ($('#create-db-select').val() || []).filter(Boolean);
             }
-            
+
             $.ajax({
                 url: '/api/admin/accounts/create',
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify(payload),
                 success: function(response) {
-                    alert(`✅ ${response.message}\n\n使用者名稱: ${response.username}\n資料庫: ${response.userDatabase}\n權限: ${response.permissionLevel === 'viewer' ? '唯讀' : '可編輯'}`);
+                    const roleName = selectedRole ? selectedRole.name : (response.permissionLevel === 'viewer' ? '唯讀' : '可編輯');
+                    alert(`✅ ${response.message}\n\n使用者名稱: ${response.username}\n資料庫: ${response.userDatabase}\n角色: ${roleName}`);
                     const modalEl = document.getElementById('create-account-modal');
                     const modal = bootstrap.Modal.getInstance(modalEl);
                     if (modal) modal.hide();
@@ -5897,8 +6207,10 @@ group_member,,2,4</code></pre>
         }
 
         function togglePendingPermissionControls(accountId) {
-            const level = $(`#pending-permission-${accountId}`).val();
-            if (level === 'viewer') {
+            const roleId = parseInt($(`#pending-role-${accountId}`).val(), 10);
+            const role = allRolesCache.find(r => r.id === roleId);
+            const needsDb = role && role.permissions && role.permissions.database_access === 'specified';
+            if (needsDb) {
                 $(`#pending-db-wrapper-${accountId}`).show();
             } else {
                 $(`#pending-db-wrapper-${accountId}`).hide();
@@ -5931,14 +6243,13 @@ group_member,,2,4</code></pre>
                                     <td><small>${createdAt}</small></td>
                                     <td>
                                         <div class="mb-2">
-                                            <select class="form-select form-select-sm" id="pending-permission-${account.id}" onchange="togglePendingPermissionControls(${account.id})">
-                                                <option value="editor" selected>可編輯</option>
-                                                <option value="viewer">唯讀（指定資料庫）</option>
+                                            <select class="form-select form-select-sm" id="pending-role-${account.id}" onchange="togglePendingPermissionControls(${account.id})">
+                                                ${buildRoleOptionsHtml(null)}
                                             </select>
                                         </div>
                                         <div class="viewer-db-wrapper" id="pending-db-wrapper-${account.id}" style="display:none;">
-                                            <select class="form-select form-select-sm pending-db-select" 
-                                                    id="pending-db-${account.id}" 
+                                            <select class="form-select form-select-sm pending-db-select"
+                                                    id="pending-db-${account.id}"
                                                     data-account-id="${account.id}"
                                                     data-default-db="${account.user_database || ''}"
                                                     multiple size="6">
@@ -5995,9 +6306,15 @@ group_member,,2,4</code></pre>
                             statusClass = 'bg-danger';
                         }
                         
-                        const permissionLevel = account.permission_level === 'viewer' ? 
-                            '<span class="badge bg-warning text-dark">唯讀</span>' : 
-                            '<span class="badge bg-primary">可編輯</span>';
+                        let roleBadge = '';
+                        if (account.role_name) {
+                            const isBuiltin = allRolesCache.find(r => r.id === account.role_id)?.is_builtin;
+                            roleBadge = `<span class="badge ${isBuiltin ? 'bg-secondary' : 'bg-info text-dark'}">${escapeHtml(account.role_name)}</span>`;
+                        } else {
+                            roleBadge = account.permission_level === 'viewer'
+                                ? '<span class="badge bg-warning text-dark">唯讀</span>'
+                                : '<span class="badge bg-primary">可編輯</span>';
+                        }
                         const allowedList = account.allowed_databases && account.allowed_databases.length
                             ? account.allowed_databases.join(', ')
                             : '<span class="text-muted">-</span>';
@@ -6026,8 +6343,8 @@ group_member,,2,4</code></pre>
                                 <td>${roleText}</td>
                                 <td><span class="badge ${statusClass}">${statusText}</span></td>
                                 <td>
-                                    ${permissionLevel}
-                                    <div class="small text-muted">允許：${allowedList}</div>
+                                    ${roleBadge}
+                                    ${account.allowed_databases && account.allowed_databases.length ? `<div class="small text-muted">允許：${allowedList}</div>` : ''}
                                 </td>
                                 <td><small><code>${account.user_database || '-'}</code></small></td>
                                 <td><small>${createdAt}</small></td>
@@ -6119,16 +6436,21 @@ group_member,,2,4</code></pre>
             }
             $('#permission-account-id').val(account.id);
             $('#permission-account-info').html(`<strong>${account.username}</strong> (${account.full_name || '未提供'})`);
-            const level = account.permission_level === 'viewer' ? 'viewer' : 'editor';
-            $('#permission-level-select').val(level);
-            $('#permission-db-select').html(buildDatabaseOptionsHtml(account.allowed_databases || []));
-            togglePermissionModalDatabases();
+            // 載入角色選單
+            const roleP = allRolesCache.length ? Promise.resolve() : loadRoles();
+            roleP.then(() => {
+                $('#permission-role-id').html(buildRoleOptionsHtml(account.role_id || null));
+                $('#permission-db-select').html(buildDatabaseOptionsHtml(account.allowed_databases || []));
+                togglePermissionModalDatabases();
+            });
             $('#account-permission-modal').modal('show');
         }
         
         function togglePermissionModalDatabases() {
-            const level = $('#permission-level-select').val();
-            if (level === 'viewer') {
+            const roleId = parseInt($('#permission-role-id').val(), 10);
+            const role = allRolesCache.find(r => r.id === roleId);
+            const needsDb = role && role.permissions && role.permissions.database_access === 'specified';
+            if (needsDb) {
                 $('#permission-db-select-wrapper').show();
             } else {
                 $('#permission-db-select-wrapper').hide();
@@ -6141,12 +6463,14 @@ group_member,,2,4</code></pre>
                 alert('無效的帳號');
                 return;
             }
-            const level = $('#permission-level-select').val();
-            const payload = { accountId, permissionLevel: level };
+            const roleId = parseInt($('#permission-role-id').val(), 10) || null;
+            const selectedRole = allRolesCache.find(r => r.id === roleId);
+            const level = selectedRole && selectedRole.permissions && selectedRole.permissions.database_access === 'specified' ? 'viewer' : 'editor';
+            const payload = { accountId, permissionLevel: level, roleId };
             if (level === 'viewer') {
                 const allowed = ($('#permission-db-select').val() || []).filter(Boolean);
                 if (allowed.length === 0) {
-                    alert('請至少選擇一個允許瀏覽的資料庫');
+                    alert('此角色需要指定資料庫，請至少選擇一個允許存取的資料庫');
                     return;
                 }
                 payload.allowedDatabases = allowed;
@@ -6179,12 +6503,15 @@ group_member,,2,4</code></pre>
             
             const payload = { accountId, action };
             if (action === 'approve') {
-                const level = $(`#pending-permission-${accountId}`).val() || 'editor';
+                const roleId = parseInt($(`#pending-role-${accountId}`).val(), 10) || null;
+                const selectedRole = allRolesCache.find(r => r.id === roleId);
+                const level = selectedRole && selectedRole.permissions && selectedRole.permissions.database_access === 'specified' ? 'viewer' : 'editor';
                 payload.permissionLevel = level;
+                payload.roleId = roleId;
                 if (level === 'viewer') {
                     const allowed = ($(`#pending-db-${accountId}`).val() || []).filter(Boolean);
                     if (allowed.length === 0) {
-                        alert('請至少選擇一個允許瀏覽的資料庫');
+                        alert('此角色需要指定資料庫，請至少選擇一個允許存取的資料庫');
                         return;
                     }
                     payload.allowedDatabases = allowed;
