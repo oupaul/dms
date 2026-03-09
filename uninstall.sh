@@ -19,7 +19,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # 配置變數
-# 自動偵測應用程式名稱（從目錄名稱或 PM2 進程）
+# 自動偵測應用程式名稱（從目錄名稱或 systemd service）
 APP_NAME="folder-permission-system"  # 預設值，會根據實際情況自動調整
 
 # 嘗試自動偵測應用目錄
@@ -203,37 +203,28 @@ fi
 
 echo ""
 
-# 檢查 PM2 進程（自動偵測應用程式名稱）
-if command -v pm2 &> /dev/null; then
-    print_info "PM2 已安裝"
-    
-    # 如果找到應用目錄，從目錄名稱推斷應用程式名稱
-    if [ -n "$APP_DIR" ] && [ "$APP_DIR_EXISTS" = true ]; then
-        DIR_NAME=$(basename "$APP_DIR")
-        APP_NAME="$DIR_NAME"
-        
-        # 嘗試從 ecosystem.config.js 獲取應用名稱（優先）
-        if [ -f "$APP_DIR/ecosystem.config.js" ]; then
-            DETECTED_NAME=$(grep -E "name\s*:" "$APP_DIR/ecosystem.config.js" | head -1 | sed "s/.*name.*:.*['\"]\(.*\)['\"].*/\1/" | tr -d ' ,')
-            if [ -n "$DETECTED_NAME" ]; then
-                APP_NAME="$DETECTED_NAME"
-            fi
-        fi
-    fi
-    
-    if pm2 list | grep -q "$APP_NAME"; then
-        PM2_STATUS=$(pm2 list | grep "$APP_NAME" | awk '{print $10}')
-        echo "  應用名稱：$APP_NAME"
-        echo "  進程狀態：$PM2_STATUS"
-        PM2_RUNNING=true
+# 檢查 systemd 服務（自動偵測應用程式名稱）
+# 如果找到應用目錄，從目錄名稱推斷服務名稱
+if [ -n "$APP_DIR" ] && [ "$APP_DIR_EXISTS" = true ]; then
+    DIR_NAME=$(basename "$APP_DIR")
+    APP_NAME="$DIR_NAME"
+fi
+
+SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
+
+if [ -f "$SERVICE_FILE" ]; then
+    print_info "找到 systemd service：$SERVICE_FILE"
+    SERVICE_STATUS=$(systemctl is-active "$APP_NAME" 2>/dev/null || echo "inactive")
+    echo "  服務名稱：$APP_NAME"
+    echo "  服務狀態：$SERVICE_STATUS"
+    if [ "$SERVICE_STATUS" = "active" ]; then
+        SERVICE_RUNNING=true
     else
-        echo "  應用名稱：$APP_NAME（未找到運行中的進程）"
-        echo "  進程狀態：未運行"
-        PM2_RUNNING=false
+        SERVICE_RUNNING=false
     fi
 else
-    print_warning "PM2 未安裝"
-    PM2_RUNNING=false
+    print_warning "未找到 systemd service：$SERVICE_FILE"
+    SERVICE_RUNNING=false
 fi
 
 echo ""
@@ -315,22 +306,23 @@ fi
 
 print_header "步驟 4/7: 停止應用程式服務"
 
-if [ "$PM2_RUNNING" = true ]; then
-    echo "停止 PM2 進程..."
-    
-    # 停止應用
-    pm2 stop "$APP_NAME" 2>/dev/null || true
-    print_success "已停止進程"
-    
-    # 從 PM2 中刪除
-    pm2 delete "$APP_NAME" 2>/dev/null || true
-    print_success "已從 PM2 中移除"
-    
-    # 保存 PM2 配置
-    pm2 save --force 2>/dev/null || true
-    print_success "已更新 PM2 配置"
+if [ "$SERVICE_RUNNING" = true ]; then
+    echo "停止 systemd 服務..."
+    systemctl stop "$APP_NAME" 2>/dev/null || true
+    print_success "已停止服務"
+fi
+
+if [ -f "$SERVICE_FILE" ]; then
+    echo "停用 systemd 服務..."
+    systemctl disable "$APP_NAME" 2>/dev/null || true
+    print_success "已停用服務（開機不再自動啟動）"
+
+    echo "移除 service 檔案：$SERVICE_FILE"
+    rm -f "$SERVICE_FILE"
+    systemctl daemon-reload
+    print_success "已移除 service 檔案並重新載入 daemon"
 else
-    print_info "沒有運行中的進程"
+    print_info "沒有找到 systemd service 檔案"
 fi
 
 # 檢查端口佔用
@@ -347,7 +339,7 @@ for PORT in "${PORTS[@]}"; do
     fi
 done
 
-print_success "服務停止完成"
+print_success "服務停止與清理完成"
 
 # ============================================================================
 # 步驟 5: 移除自動備份設定
@@ -559,13 +551,6 @@ print_header "步驟 8/9: 清理和驗證"
 
 echo "執行最終清理..."
 
-# 清理 PM2 殘留
-if command -v pm2 &> /dev/null; then
-    echo "清理 PM2 配置..."
-    pm2 save --force 2>/dev/null || true
-    print_success "PM2 配置已更新"
-fi
-
 # 驗證刪除結果
 echo ""
 echo "驗證移除結果..."
@@ -578,12 +563,11 @@ if [ "$REMOVE_MODE" != "stop" ]; then
     fi
 fi
 
-if command -v pm2 &> /dev/null; then
-    if pm2 list | grep -q "$APP_NAME"; then
-        print_warning "警告：PM2 中仍有應用進程"
-    else
-        print_success "PM2 中無殘留進程"
-    fi
+# 驗證 systemd service 已移除
+if [ -f "$SERVICE_FILE" ]; then
+    print_warning "警告：systemd service 檔案仍然存在"
+else
+    print_success "systemd service 已完全移除"
 fi
 
 # 檢查端口
@@ -694,7 +678,7 @@ case "$REMOVE_MODE" in
         echo -e "${GREEN}✅ 服務已停止${NC}"
         echo ""
         echo "已執行："
-        echo "  - 停止 PM2 進程：$APP_NAME"
+        echo "  - 停止 systemd 服務：$APP_NAME"
         echo "  - 釋放佔用端口"
         if [ "$CRON_REMOVED" = true ]; then
             echo "  - 移除自動備份 Cron 任務"
@@ -702,13 +686,14 @@ case "$REMOVE_MODE" in
         echo ""
         echo "保留："
         echo "  - 應用程式目錄：$APP_DIR"
+        echo "  - systemd service 檔案：$SERVICE_FILE"
         echo "  - 所有資料檔案"
         if [ "$REMAINING_BACKUPS" -gt 0 ]; then
             echo "  - $REMAINING_BACKUPS 個自動備份檔案"
         fi
         echo ""
         print_info "如需重新啟動，請執行："
-        echo "  cd $APP_DIR && pm2 start ecosystem.config.js"
+        echo "  sudo systemctl start $APP_NAME"
         echo ""
         ;;
 esac
@@ -737,7 +722,7 @@ if [ "$REMOVE_MODE" = "full" ] || [ "$REMOVE_MODE" = "backup" ]; then
         echo "   sudo chown -R \$USER:\$USER $APP_DIR/databases"
         echo "   sudo chmod -R 775 $APP_DIR/databases"
         echo "   # 重啟服務"
-        echo "   pm2 restart $APP_NAME"
+        echo "   sudo systemctl restart $APP_NAME"
         echo ""
     fi
     
@@ -748,12 +733,11 @@ fi
 
 if [ "$REMOVE_MODE" = "stop" ]; then
     echo "1. 重新啟動服務："
-    echo "   cd $APP_DIR"
-    echo "   pm2 start ecosystem.config.js"
+    echo "   systemctl start $APP_NAME"
     echo ""
     echo "2. 查看服務狀態："
-    echo "   pm2 status"
-    echo "   pm2 logs $APP_NAME"
+    echo "   systemctl status $APP_NAME"
+    echo "   journalctl -u $APP_NAME -f"
     echo ""
 fi
 
@@ -765,21 +749,10 @@ fi
 echo ""
 
 echo "6. 查看系統資源："
-echo "   pm2 list"
+echo "   systemctl list-units --type=service --state=running"
 echo "   free -h"
 echo "   df -h"
 echo ""
-
-# 顯示 PM2 相關提示
-if command -v pm2 &> /dev/null; then
-    REMAINING_APPS=$(pm2 list | grep -c "online\|stopped" || echo "0")
-    if [ "$REMAINING_APPS" -eq 0 ]; then
-        echo "💡 提示："
-        echo "   PM2 中已無應用程式，如不再需要可以卸載："
-        echo "   npm uninstall -g pm2"
-        echo ""
-    fi
-fi
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""

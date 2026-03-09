@@ -195,25 +195,58 @@ echo -e "${GREEN}✅ Node.js 安裝完成${NC}"
 echo ""
 
 # ============================================================================
-# 步驟 3: 安裝 PM2
+# 步驟 3: 設定 systemd 服務
 # ============================================================================
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "步驟 3/8: 安裝 PM2"
+echo "步驟 3/8: 設定 systemd 服務"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-if command -v pm2 &> /dev/null; then
-    echo "PM2 已安裝：$(pm2 --version)"
-else
-    echo "安裝 PM2..."
-    sudo npm install -g pm2
-    
-    # 設定 PM2 開機自動啟動
-    pm2 startup | grep "sudo" | bash
+# 取得 node 執行檔路徑
+NODE_BIN=$(which node)
+if [ -z "$NODE_BIN" ]; then
+    echo -e "${RED}❌ 找不到 node 執行檔，請確認 Node.js 已正確安裝${NC}"
+    exit 1
 fi
 
-echo -e "${GREEN}✅ PM2 安裝完成${NC}"
+# 設定 service 名稱與檔案路徑
+SERVICE_NAME="$APP_NAME"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+
+# 取得執行服務的使用者（不使用 root）
+if [ "$EUID" -eq 0 ]; then
+    # 以 root 執行腳本時，嘗試取得 sudo 原始使用者
+    SERVICE_USER="${SUDO_USER:-root}"
+else
+    SERVICE_USER="$USER"
+fi
+
+echo "建立 systemd service 檔案：$SERVICE_FILE"
+sudo tee "$SERVICE_FILE" > /dev/null << EOF
+[Unit]
+Description=資料夾權限管理系統 ($APP_NAME)
+After=network.target
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+WorkingDirectory=$APP_DIR
+ExecStart=$NODE_BIN $APP_DIR/app.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=$SERVICE_NAME
+Environment=NODE_ENV=production PORT=$APP_PORT
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+
+echo -e "${GREEN}✅ systemd 服務設定完成${NC}"
 echo ""
 
 # ============================================================================
@@ -387,28 +420,21 @@ echo "步驟 7/8: 啟動應用程式"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# 停止現有的應用程式（如果存在）
-if pm2 list | grep -q "$APP_NAME"; then
-    echo "停止現有應用程式..."
-    pm2 stop $APP_NAME
-    pm2 delete $APP_NAME
+# 停止現有服務（如果存在）
+if systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
+    echo "停止現有服務..."
+    sudo systemctl stop "$APP_NAME"
 fi
 
-echo "啟動應用程式..."
-if [ -f "ecosystem.config.js" ]; then
-    pm2 start ecosystem.config.js
-else
-    pm2 start app.js --name $APP_NAME
-fi
-
-echo "保存 PM2 設定..."
-pm2 save
+echo "啟動應用程式服務..."
+sudo systemctl enable "$APP_NAME"
+sudo systemctl start "$APP_NAME"
 
 sleep 3
 
 echo ""
-echo "應用程式狀態："
-pm2 status
+echo "應用程式服務狀態："
+sudo systemctl status "$APP_NAME" --no-pager -l
 
 echo -e "${GREEN}✅ 應用程式啟動完成${NC}"
 echo ""
@@ -435,13 +461,13 @@ echo " 完成"
 echo ""
 
 # 檢查應用程式進程狀態
-echo "檢查應用程式進程..."
-if pm2 list | grep -q "online.*$APP_NAME"; then
-    echo -e "${GREEN}✅ 應用程式進程運行中${NC}"
+echo "檢查應用程式服務狀態..."
+if systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
+    echo -e "${GREEN}✅ 應用程式服務運行中${NC}"
 else
-    echo -e "${YELLOW}⚠️  應用程式進程狀態異常${NC}"
-    echo "PM2 狀態："
-    pm2 list
+    echo -e "${YELLOW}⚠️  應用程式服務狀態異常${NC}"
+    echo "systemd 狀態："
+    sudo systemctl status "$APP_NAME" --no-pager -l
     echo ""
 fi
 
@@ -500,8 +526,8 @@ else
         echo -e "${YELLOW}   未在常用 Port 找到應用程式${NC}"
         echo ""
         echo -e "${YELLOW}   診斷建議：${NC}"
-        echo "   1. 檢查應用程式日誌：pm2 logs $APP_NAME --err"
-        echo "   2. 檢查應用程式狀態：pm2 status"
+        echo "   1. 檢查應用程式日誌：journalctl -u $APP_NAME -n 50"
+        echo "   2. 檢查應用程式狀態：systemctl status $APP_NAME"
         echo "   3. 手動測試：curl -v http://localhost:$APP_PORT"
     fi
 fi
@@ -563,10 +589,10 @@ echo "   sudo ufw allow $APP_PORT/tcp"
 echo "   sudo ufw enable"
 echo ""
 echo "2. 查看應用程式日誌："
-echo "   pm2 logs $APP_NAME"
+echo "   journalctl -u $APP_NAME -f"
 echo ""
 echo "3. 查看應用程式狀態："
-echo "   pm2 status"
+echo "   systemctl status $APP_NAME"
 echo ""
 echo "4. 設定 SSL（可選）："
 echo "   參閱《Ubuntu完整部署指南.md》"

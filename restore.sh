@@ -72,13 +72,8 @@ fi
 # 從目錄名稱推斷應用程式名稱
 APP_NAME=$(basename "$APP_DIR")
 
-# 嘗試從 ecosystem.config.js 獲取應用名稱（優先）
-if [ -f "$APP_DIR/ecosystem.config.js" ]; then
-    DETECTED_NAME=$(grep -E "name\s*:" "$APP_DIR/ecosystem.config.js" | head -1 | sed "s/.*name.*:.*['\"]\(.*\)['\"].*/\1/" | tr -d ' ,')
-    if [ -n "$DETECTED_NAME" ]; then
-        APP_NAME="$DETECTED_NAME"
-    fi
-fi
+# 從目錄名稱推斷 systemd service 名稱
+SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
 
 # ============================================================================
 # 工具函數
@@ -233,6 +228,10 @@ if [ ! -d "$APP_DIR" ] || [ ! -f "$APP_DIR/app.js" ]; then
     fi
 fi
 
+# 更新 service 檔案路徑（可能因搜尋而更新了 APP_NAME）
+APP_NAME=$(basename "$APP_DIR")
+SERVICE_FILE="/etc/systemd/system/${APP_NAME}.service"
+
 print_success "應用目錄存在：$APP_DIR"
 print_info "應用程式名稱：$APP_NAME"
 echo ""
@@ -254,9 +253,10 @@ mkdir -p "$APP_DIR/backups"
 chmod 775 "$APP_DIR/databases" "$APP_DIR/uploads" "$APP_DIR/logs" "$APP_DIR/backups" 2>/dev/null || true
 print_success "目錄準備完成"
 
-# 檢查 PM2
-if ! command -v pm2 &> /dev/null; then
-    print_warning "PM2 未安裝，部分功能可能無法使用"
+# 檢查 systemd service
+if [ ! -f "$SERVICE_FILE" ]; then
+    print_warning "找不到 systemd service 檔案：$SERVICE_FILE"
+    print_warning "請先執行 deploy.sh 完成部署，或手動建立 service 檔案"
 fi
 
 # ============================================================================
@@ -460,16 +460,16 @@ fi
 
 print_header "步驟 5/8: 停止應用程式服務"
 
-if command -v pm2 &> /dev/null; then
-    if pm2 list | grep -q "$APP_NAME"; then
-        echo "停止 PM2 進程..."
-        pm2 stop "$APP_NAME" 2>/dev/null || true
+if [ -f "$SERVICE_FILE" ]; then
+    if systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
+        echo "停止 systemd 服務..."
+        systemctl stop "$APP_NAME" 2>/dev/null || true
         print_success "服務已停止"
     else
         print_info "服務未運行"
     fi
 else
-    print_warning "PM2 未安裝，跳過停止服務"
+    print_warning "找不到 systemd service，跳過停止服務"
 fi
 
 # ============================================================================
@@ -596,33 +596,31 @@ fi
 
 print_header "步驟 8/8: 重啟服務並驗證"
 
-if command -v pm2 &> /dev/null; then
+if [ -f "$SERVICE_FILE" ]; then
     echo "重啟應用服務..."
-    
-    # 重啟服務
-    pm2 restart "$APP_NAME" 2>/dev/null || {
+    systemctl restart "$APP_NAME" 2>/dev/null || {
         echo "嘗試啟動服務..."
-        cd "$APP_DIR"
-        pm2 start ecosystem.config.js
+        systemctl start "$APP_NAME"
     }
-    
+
     # 等待啟動
     echo "等待服務啟動..."
     sleep 3
-    
+
     # 檢查狀態
-    if pm2 list | grep -q "$APP_NAME.*online"; then
+    if systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
         print_success "服務已成功啟動"
         echo ""
-        pm2 status "$APP_NAME"
+        systemctl status "$APP_NAME" --no-pager -l
     else
         print_warning "服務可能未正常啟動，請檢查日誌"
         echo ""
         echo "查看日誌："
-        echo "  pm2 logs $APP_NAME --lines 50"
+        echo "  journalctl -u $APP_NAME -n 50"
     fi
 else
-    print_warning "PM2 未安裝，請手動啟動應用"
+    print_warning "找不到 systemd service 檔案，請手動啟動應用"
+    echo "  若需建立服務，請重新執行 deploy.sh"
 fi
 
 # 驗證資料庫
@@ -685,10 +683,10 @@ echo "   curl http://localhost:$DETECTED_PORT/login.html"
 echo "   或使用瀏覽器訪問 http://your-server-ip:$DETECTED_PORT"
 echo ""
 echo "2. 查看應用日誌："
-echo "   pm2 logs $APP_NAME"
+echo "   journalctl -u $APP_NAME -f"
 echo ""
 echo "3. 檢查服務狀態："
-echo "   pm2 status"
+echo "   systemctl status $APP_NAME"
 echo ""
 echo "4. 如果還原有問題，可以從安全備份復原："
 echo "   cp -r $SAFETY_BACKUP_DIR/databases/* $APP_DIR/databases/"
