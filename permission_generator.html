@@ -389,7 +389,27 @@ OOLAR02	RW	RW	RW	RW	RW	RW	..."></textarea>
                 <label class="form-label"><strong>CSV 輸出內容：</strong></label>
                 <textarea id="csv-output" class="form-control output-textarea" readonly></textarea>
 
-                <div class="mt-3 d-flex gap-2">
+                <div class="alert alert-secondary mt-3 mb-2 py-2">
+                    <strong><i class="bi bi-gear-fill"></i> 匯入模式：</strong>
+                    <div class="d-inline-flex gap-3 ms-2">
+                        <div class="form-check form-check-inline mb-0">
+                            <input class="form-check-input" type="radio" name="direct-import-mode" id="mode-diff-only" value="diff_only" checked>
+                            <label class="form-check-label" for="mode-diff-only">
+                                <strong>差異更新</strong>
+                                <small class="text-muted">（只新增，不移除舊群組成員）</small>
+                            </label>
+                        </div>
+                        <div class="form-check form-check-inline mb-0">
+                            <input class="form-check-input" type="radio" name="direct-import-mode" id="mode-full-replace" value="full_replace">
+                            <label class="form-check-label text-danger" for="mode-full-replace">
+                                <strong>完整取代</strong>
+                                <small class="text-muted">（同步移除不在此表中的舊群組成員，適合更新權限）</small>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-2 d-flex gap-2">
                     <button class="btn btn-primary btn-action" onclick="downloadCSV()">
                         <i class="bi bi-download"></i> 下載 CSV 檔案
                     </button>
@@ -402,12 +422,6 @@ OOLAR02	RW	RW	RW	RW	RW	RW	..."></textarea>
                     <button class="btn btn-info btn-action" onclick="showPreviewTable()">
                         <i class="bi bi-table"></i> 表格預覽
                     </button>
-                </div>
-                
-                <div class="alert alert-info mt-3">
-                    <i class="bi bi-info-circle-fill"></i> 
-                    <strong>直接匯入說明：</strong>
-                    「直接匯入到系統」按鈕會將生成的 CSV 內容直接傳送到主系統進行匯入，無需下載和手動上傳。
                 </div>
             </div>
 
@@ -1508,28 +1522,37 @@ OOLAR02       RW                RO       RW
                 return;
             }
             
+            const importMode = document.querySelector('input[name="direct-import-mode"]:checked')?.value || 'diff_only';
+            const modeLabel = importMode === 'full_replace' ? '完整取代' : '差異更新';
+
             // 顯示確認對話框
-            const confirmMsg = `確定要將生成的 CSV 內容直接匯入到系統嗎？\n\n` +
-                `這將會新增 ${generatedPermissions.length} 筆群組成員關係。\n\n` +
-                `操作說明：\n` +
-                `1. 此操作會將人員加入對應的群組\n` +
-                `2. 不會重複新增已存在的成員關係\n` +
-                `3. 建議先確認資料正確性\n\n` +
-                `是否繼續？`;
-            
+            let confirmMsg = `確定要將生成的 CSV 內容直接匯入到系統嗎？\n\n` +
+                `匯入模式：${modeLabel}\n` +
+                `群組成員異動：${generatedPermissions.length} 筆\n\n`;
+
+            if (importMode === 'full_replace') {
+                confirmMsg += `⚠️ 完整取代模式說明：\n` +
+                    `• 本次 CSV 中有出現的群組，其不在 CSV 中的舊成員將會被移除\n` +
+                    `• 適合用於更新權限（RO 改 RW 時會自動從 RO 群組移除）\n\n`;
+            } else {
+                confirmMsg += `差異更新模式說明：\n` +
+                    `• 只新增群組成員，不移除任何現有成員\n\n`;
+            }
+            confirmMsg += `是否繼續？`;
+
             if (!confirm(confirmMsg)) {
                 return;
             }
-            
+
             // 準備 FormData
             const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
             const formData = new FormData();
             formData.append('file', blob, 'permissions.csv');
-            
+            formData.append('mode', importMode);
+
             // 顯示處理中訊息
-            const processingMsg = '⏳ 正在匯入中，請稍候...';
-            alert(processingMsg);
-            
+            alert('⏳ 正在匯入中，請稍候...');
+
             // 發送到後端
             fetch('/import_csv', {
                 method: 'POST',

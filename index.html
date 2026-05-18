@@ -81,9 +81,12 @@
             color: #0d6efd;
             font-size: 1.1em;
         }
-        .member-list { 
-            max-height: 300px; 
-            overflow-y: auto; 
+        .member-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .query-result-row:hover td {
+            background-color: #e8f4fd !important;
         }
     </style>
 </head>
@@ -918,8 +921,9 @@
                                     <table class="table table-hover table-sm">
                                         <thead class="table-light sticky-top">
                                             <tr>
-                                                <th width="15%">ID</th>
-                                                <th width="85%">群組名稱</th>
+                                                <th width="10%">ID</th>
+                                                <th width="70%">群組名稱</th>
+                                                <th width="20%">操作</th>
                                             </tr>
                                         </thead>
                                         <tbody id="user-groups-table-body"></tbody>
@@ -1173,6 +1177,25 @@
                             <input type="file" name="file" accept=".csv" class="form-control">
                             <small class="form-text text-muted">請確保檔案使用 UTF-8 編碼</small>
                         </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">權限匯入模式</label>
+                            <div class="d-flex gap-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="import-mode" id="mode-diff" value="diff_only" checked>
+                                    <label class="form-check-label" for="mode-diff">
+                                        <strong>差異更新</strong>
+                                        <small class="text-muted d-block">新增/更新權限，不刪除舊有權限</small>
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="import-mode" id="mode-full" value="full_replace">
+                                    <label class="form-check-label" for="mode-full">
+                                        <strong class="text-danger">完整取代</strong>
+                                        <small class="text-muted d-block">以此檔案為準，刪除不在檔案中的舊權限</small>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
                         <button type="button" class="btn btn-primary btn-lg" onclick="doImport(); return false;">
                             <i class="bi bi-upload"></i> 開始匯入
                         </button>
@@ -1180,6 +1203,110 @@
                 </div>
             </div>
             
+            <!-- 權限矩陣 xlsx 匯入 -->
+            <div class="card mb-3 border-warning">
+                <div class="card-header bg-warning text-dark">
+                    <h5 class="mb-0"><i class="bi bi-file-earmark-excel"></i> 從「權限清單 xlsx」匯入（矩陣格式）</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted mb-2">直接上傳從系統匯出的 <code>権限清單_*.xlsx</code>，修改後即可回匯。依矩陣內容更新群組成員（RO/RW）。<br>
+                        <strong class="text-danger">完整取代</strong>：以 xlsx 為準，自動將人員從舊群組移除（例：RO 改 RW 時，會從 RO 群組刪除）。<br>
+                        <strong>差異更新</strong>：只新增群組成員，不移除任何現有成員。</p>
+                    <form id="xlsx-import-form" enctype="multipart/form-data">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-5">
+                                <label class="form-label fw-bold">選擇 xlsx 檔案</label>
+                                <input type="file" name="file" accept=".xlsx" class="form-control">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-bold">匯入模式</label>
+                                <div class="d-flex gap-3 pt-1">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="xlsx-import-mode" id="xlsx-mode-full" value="full_replace" checked>
+                                        <label class="form-check-label text-danger" for="xlsx-mode-full"><strong>完整取代</strong>（建議）</label>
+                                    </div>
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="radio" name="xlsx-import-mode" id="xlsx-mode-diff" value="diff_only">
+                                        <label class="form-check-label" for="xlsx-mode-diff"><strong>差異更新</strong></label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <button type="button" class="btn btn-warning w-100" onclick="doXlsxImport()">
+                                    <i class="bi bi-upload"></i> 匯入 xlsx
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="xlsx-import-result" class="mt-2" style="display:none;"></div>
+                </div>
+            </div>
+
+            <!-- 匯入歷史記錄 -->
+            <div class="card mb-3">
+                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-clock-history"></i> 匯入歷史記錄</h5>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadImportHistory()">
+                        <i class="bi bi-arrow-clockwise"></i> 重新整理
+                    </button>
+                </div>
+                <div class="card-body p-0">
+                    <div class="table-responsive">
+                        <table class="table table-hover table-sm mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th width="5%">#</th>
+                                    <th width="18%">時間</th>
+                                    <th width="12%">操作人</th>
+                                    <th width="18%">檔案名稱</th>
+                                    <th width="10%">模式</th>
+                                    <th width="8%">新增</th>
+                                    <th width="8%">更新</th>
+                                    <th width="8%">刪除</th>
+                                    <th width="8%">略過</th>
+                                    <th width="5%">明細</th>
+                                </tr>
+                            </thead>
+                            <tbody id="import-history-tbody">
+                                <tr><td colspan="10" class="text-center text-muted py-3">載入中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 匯入明細 modal -->
+            <div class="modal fade" id="import-detail-modal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="bi bi-list-ul"></i> 匯入明細 <span id="import-detail-id"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body p-0">
+                            <div class="table-responsive" style="max-height:450px;overflow-y:auto;">
+                                <table class="table table-sm table-hover mb-0">
+                                    <thead class="table-light sticky-top">
+                                        <tr>
+                                            <th width="12%">動作</th>
+                                            <th width="28%">資料夾路徑</th>
+                                            <th width="10%">類型</th>
+                                            <th width="22%">對象</th>
+                                            <th width="14%">舊權限</th>
+                                            <th width="14%">新權限</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="import-detail-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">關閉</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div class="card mb-3">
                 <div class="card-header bg-secondary text-white">
                     <h5 class="mb-0"><i class="bi bi-question-circle"></i> CSV 格式說明</h5>
@@ -2501,6 +2628,8 @@ group_member,,2,4</code></pre>
                 loadUsageStatistics(0);
             } else if (sec === 'query') {
                 loadQueryPage();
+            } else if (sec === 'import') {
+                loadImportHistory();
             } else if (sec === 'account-management') {
                 loadAccountManagement();
             } else if (sec === 'powershell-generator') {
@@ -4045,8 +4174,10 @@ group_member,,2,4</code></pre>
             showImportProgress();
             simulateImportProgress();
 
+            const importMode = $('input[name="import-mode"]:checked').val() || 'diff_only';
             const formData = new FormData();
             formData.append('file', file);
+            formData.append('mode', importMode);
 
             $.ajax({
                 url: '/import_csv', type: 'POST', data: formData,
@@ -4069,20 +4200,25 @@ group_member,,2,4</code></pre>
                 setTimeout(() => {
                     hideImportProgress();
 
-                    const successMsg = `✅ 匯入成功!
+                    const modeLabel = data.mode === 'full_replace' ? '完整取代' : '差異更新';
+                    const successMsg = `✅ 匯入成功！（模式：${modeLabel}）
 
-📊 匯入統計:
-• 資料夾:${data.stats?.folders || 0} 個
-• 人員:${data.stats?.users || 0} 個
-• 群組:${data.stats?.groups || 0} 個
-• 群組成員:${data.stats?.group_members || 0} 個
-• 權限:${data.stats?.permissions || 0} 個
+📊 一般資料統計：
+• 資料夾：${data.stats?.folders || 0} 個
+• 人員：${data.stats?.users || 0} 個
+• 群組：${data.stats?.groups || 0} 個
+• 群組成員：${data.stats?.group_members || 0} 個
 
-💡 提示:
-• 前往各管理頁面查看匯入結果
-• 群組成員關係已建立完成`;
+🔐 權限差異統計：
+• 新增：${data.permStats?.added || 0} 筆
+• 更新：${data.permStats?.updated || 0} 筆
+• 刪除：${data.permStats?.deleted || 0} 筆
+• 略過（無變動）：${data.permStats?.skipped || 0} 筆
+
+📋 本次匯入記錄 ID：#${data.historyId || '-'}`;
 
                     alert(successMsg);
+                    loadImportHistory();
                     // 清空檔案選擇
                     $('#import-form input[name="file"]').val('');
                     // 返回資料夾管理頁面
@@ -4528,9 +4664,10 @@ group_member,,2,4</code></pre>
                         members.sort((a, b) => a.id - b.id);
                         members.forEach(member => {
                             tbody.append(`
-                                <tr>
+                                <tr class="query-result-row" style="cursor:pointer;" title="點擊編輯此人員"
+                                    onclick="navigateToEditUser(${member.id})">
                                     <td>${member.id}</td>
-                                    <td>${member.name}</td>
+                                    <td><i class="bi bi-pencil-square text-primary me-1" style="font-size:0.75rem;"></i>${member.name}</td>
                                     <td>${member.email}</td>
                                 </tr>
                             `);
@@ -4588,12 +4725,39 @@ group_member,,2,4</code></pre>
                         
                         groups.sort((a, b) => a.id - b.id);
                         groups.forEach(group => {
-                            tbody.append(`
-                                <tr>
-                                    <td>${group.id}</td>
-                                    <td>${group.name}</td>
-                                </tr>
-                            `);
+                            const $tr = $('<tr>');
+                            $tr.append(`<td>${group.id}</td>`);
+                            $tr.append(`<td>${group.name}</td>`);
+
+                            const $removeBtn = $('<button>')
+                                .addClass('btn btn-outline-danger btn-sm py-0 px-1')
+                                .attr('title', '移除此群組')
+                                .html('<i class="bi bi-x-lg"></i>')
+                                .on('click', function(e) {
+                                    e.stopPropagation();
+                                    if (!confirm(`確定要將 ${user.name} 從「${group.name}」移除？`)) return;
+                                    $.ajax({
+                                        url: `/api/groups/${group.id}/users`,
+                                        type: 'DELETE',
+                                        contentType: 'application/json',
+                                        data: JSON.stringify({ user_id: userId })
+                                    }).done(() => {
+                                        queryUserGroups();
+                                    }).fail(() => alert('移除失敗'));
+                                });
+
+                            const $editBtn = $('<button>')
+                                .addClass('btn btn-outline-primary btn-sm py-0 px-1 ms-1')
+                                .attr('title', '編輯此人員')
+                                .html('<i class="bi bi-pencil-square"></i>')
+                                .on('click', function(e) {
+                                    e.stopPropagation();
+                                    navigateToEditUser(userId);
+                                });
+
+                            const $td = $('<td>').append($removeBtn).append($editBtn);
+                            $tr.append($td);
+                            tbody.append($tr);
                         });
                         
                         $('#user-groups-result').show();
@@ -4605,6 +4769,154 @@ group_member,,2,4</code></pre>
             }).fail(function(xhr) {
                 console.error('Failed to load users:', xhr);
                 alert('載入人員資訊失敗');
+            });
+        }
+
+        // 查詢頁點擊人員列 → 切換至人員管理並開啟編輯 modal
+        function navigateToEditUser(userId) {
+            showSection('users');
+            $.get(`/api/users/${userId}`).done(function(item) {
+                addItem('users');
+                $('#edit-id').val(userId);
+                $('#name-input').val(item.name || '');
+                $('#email-input').val(item.email || '');
+                $('#department-input').val(item.department || '');
+                $('#company-input').val(item.company || '');
+                $('#title-input').val(item.title || '');
+                $('#phone-input').val(item.phone || '');
+                $('#description-input').val(item.description || '');
+                loadUserGroupsForEdit(userId);
+                $('#modal-title').text('編輯人員');
+            }).fail(() => alert('載入人員資料失敗'));
+        }
+
+        // 查詢頁點擊群組列 → 切換至群組管理並開啟群組成員編輯 modal
+        function navigateToEditGroup(groupId, groupName) {
+            showSection('groups');
+            currentGroupId = groupId;
+            currentGroupName = groupName;
+            $('#group-members-title').text(`編輯 ${groupName} 群組人員`);
+            $('#group-edit-id').val(groupId);
+            const memberList = $('#member-list');
+            memberList.html('<p class="text-muted"><span class="spinner-border spinner-border-sm" role="status"></span> 載入人員清單中...</p>');
+            $.get('/api/users').done(users => {
+                allUsers = users;
+                loadGroupMembers();
+            }).fail(() => {
+                memberList.html('<p class="text-danger">載入人員清單失敗</p>');
+            });
+            $('#group-members-modal').modal('show');
+        }
+
+        // 從權限矩陣 xlsx 匯入
+        function doXlsxImport() {
+            const file = $('#xlsx-import-form input[name="file"]')[0].files[0];
+            if (!file) return alert('請選擇 xlsx 檔案');
+
+            const mode = $('input[name="xlsx-import-mode"]:checked').val() || 'diff_only';
+            const modeLabel = mode === 'full_replace' ? '完整取代' : '差異更新';
+
+            if (mode === 'full_replace') {
+                if (!confirm(`⚠️ 完整取代模式\n\n此 xlsx 涵蓋的資料夾所對應的 RO/RW 群組中，不在 xlsx 內的群組成員將會被移除。\n（例：xlsx 中從 RO 改為 RW 的人員，會自動從 RO 群組刪除並加入 RW 群組）\n\n確定繼續？`)) return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('mode', mode);
+
+            const $result = $('#xlsx-import-result');
+            $result.html('<span class="spinner-border spinner-border-sm"></span> 匯入中...').show();
+
+            $.ajax({
+                url: '/import_permission_matrix_xlsx',
+                type: 'POST',
+                data: formData,
+                processData: false,
+                contentType: false
+            }).done(function(data) {
+                const p = data.permStats || {};
+                $result.html(`
+                    <div class="alert alert-success mb-0">
+                        ✅ 匯入成功（模式：${modeLabel}）｜
+                        新增 <strong>${p.added||0}</strong>、
+                        更新 <strong>${p.updated||0}</strong>、
+                        刪除 <strong>${p.deleted||0}</strong>、
+                        略過 ${p.skipped||0}
+                        ｜記錄 ID：#${data.historyId||'-'}
+                    </div>
+                `).show();
+                loadImportHistory();
+            }).fail(function(xhr) {
+                const msg = xhr.responseJSON?.error || xhr.responseText || '未知錯誤';
+                $result.html(`<div class="alert alert-danger mb-0">❌ 匯入失敗：${msg}</div>`).show();
+            });
+        }
+
+        // 載入匯入歷史清單
+        function loadImportHistory() {
+            $.get('/api/import-history').done(function(rows) {
+                const tbody = $('#import-history-tbody');
+                tbody.empty();
+                if (!rows.length) {
+                    tbody.append('<tr><td colspan="10" class="text-center text-muted py-3">尚無匯入記錄</td></tr>');
+                    return;
+                }
+                rows.forEach(r => {
+                    const modeLabel = r.mode === 'full_replace'
+                        ? '<span class="badge bg-danger">完整取代</span>'
+                        : '<span class="badge bg-info text-dark">差異更新</span>';
+                    tbody.append(`
+                        <tr>
+                            <td>${r.id}</td>
+                            <td><small>${r.imported_at}</small></td>
+                            <td>${r.imported_by}</td>
+                            <td><small class="text-truncate d-inline-block" style="max-width:140px;" title="${r.file_name || ''}">${r.file_name || '-'}</small></td>
+                            <td>${modeLabel}</td>
+                            <td><span class="text-success fw-bold">${r.added}</span></td>
+                            <td><span class="text-warning fw-bold">${r.updated}</span></td>
+                            <td><span class="text-danger fw-bold">${r.deleted}</span></td>
+                            <td><span class="text-muted">${r.skipped}</span></td>
+                            <td><button class="btn btn-xs btn-outline-secondary btn-sm py-0 px-1" onclick="showImportDetail(${r.id})"><i class="bi bi-list-ul"></i></button></td>
+                        </tr>
+                    `);
+                });
+            }).fail(() => {
+                $('#import-history-tbody').html('<tr><td colspan="10" class="text-center text-danger">載入失敗</td></tr>');
+            });
+        }
+
+        // 顯示單次匯入明細
+        function showImportDetail(historyId) {
+            $('#import-detail-id').text(`#${historyId}`);
+            $('#import-detail-tbody').html('<tr><td colspan="6" class="text-center"><span class="spinner-border spinner-border-sm"></span></td></tr>');
+            new bootstrap.Modal(document.getElementById('import-detail-modal')).show();
+            $.get(`/api/import-history/${historyId}/details`).done(function(rows) {
+                const tbody = $('#import-detail-tbody');
+                tbody.empty();
+                if (!rows.length) {
+                    tbody.append('<tr><td colspan="6" class="text-center text-muted">無明細記錄</td></tr>');
+                    return;
+                }
+                const actionMap = {
+                    added:   '<span class="badge bg-success">新增</span>',
+                    updated: '<span class="badge bg-warning text-dark">更新</span>',
+                    deleted: '<span class="badge bg-danger">刪除</span>',
+                    skipped: '<span class="badge bg-secondary">略過</span>'
+                };
+                rows.forEach(d => {
+                    tbody.append(`
+                        <tr>
+                            <td>${actionMap[d.action] || d.action}</td>
+                            <td><small>${d.folder_path || ''}</small></td>
+                            <td><small>${d.target_type === 'group' ? '群組' : '人員'}</small></td>
+                            <td><small>${d.target_name || ''}</small></td>
+                            <td><small class="text-muted">${d.old_permission || '-'}</small></td>
+                            <td><small class="text-primary">${d.new_permission || '-'}</small></td>
+                        </tr>
+                    `);
+                });
+            }).fail(() => {
+                $('#import-detail-tbody').html('<tr><td colspan="6" class="text-center text-danger">載入明細失敗</td></tr>');
             });
         }
 

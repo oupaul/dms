@@ -14,7 +14,7 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 const UPLOAD_DIR = 'uploads';
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
@@ -346,6 +346,32 @@ function initializeTables(database, callback) {
       FOREIGN KEY (folder_id) REFERENCES folders(id),
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (group_id) REFERENCES groups(id)
+    )`);
+
+    // 匯入歷史主表
+    database.run(`CREATE TABLE IF NOT EXISTS import_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      imported_by TEXT NOT NULL,
+      file_name TEXT,
+      mode TEXT NOT NULL DEFAULT 'diff_only',
+      added INTEGER DEFAULT 0,
+      updated INTEGER DEFAULT 0,
+      deleted INTEGER DEFAULT 0,
+      skipped INTEGER DEFAULT 0
+    )`);
+
+    // 匯入歷史明細表
+    database.run(`CREATE TABLE IF NOT EXISTS import_history_detail (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      history_id INTEGER NOT NULL,
+      action TEXT NOT NULL,
+      folder_path TEXT,
+      target_type TEXT,
+      target_name TEXT,
+      old_permission TEXT,
+      new_permission TEXT,
+      FOREIGN KEY (history_id) REFERENCES import_history(id)
     )`, callback);
   });
 }
@@ -3372,7 +3398,14 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
           group_members: 0,
           permissions: 0
         };
-        
+
+        const importMode = req.body.mode === 'full_replace' ? 'full_replace' : 'diff_only';
+        const historyDetails = [];
+        const permStats = { added: 0, updated: 0, deleted: 0, skipped: 0 };
+        const seenPermKeys = new Set();       // 追蹤本次匯入的直接權限 key
+        const seenGroupMemberKeys = new Set(); // 追蹤本次匯入的群組成員 key (group_id|user_id)
+        const affectedGroupIds = new Set();    // 本次有出現的群組，full_replace 時用來清除舊成員
+
         // 定義處理順序（確保依賴關係正確）
         // 順序：folder → user → group → group_member → permission
         const typeOrder = {
@@ -3679,6 +3712,8 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
             }
             
             if (group_id && !isNaN(group_id) && user_id && !isNaN(user_id)) {
+              seenGroupMemberKeys.add(`${group_id}|${user_id}`);
+              affectedGroupIds.add(group_id);
               console.log(`Adding user ${user_id} to group ${group_id}`);
               await new Promise((resolve, reject) => {
                 req.userDb.run('INSERT OR IGNORE INTO group_users (group_id, user_id) VALUES (?, ?)',
@@ -3789,6 +3824,8 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
             // 2. 如果有 folder_id，表示要設定資料夾權限（來自完整資料匯出）
             if (user_id && !isNaN(user_id) && group_id && !isNaN(group_id) && !folder_id) {
               // 來自權限CSV生成器：將人員加入群組
+              seenGroupMemberKeys.add(`${group_id}|${user_id}`);
+              affectedGroupIds.add(group_id);
               console.log(`Adding user ${user_id} to group ${group_id} (from permission CSV generator)`);
 
               await new Promise((resolve, reject) => {
@@ -3808,44 +3845,67 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
                 );
               });
             } else if (folder_id && !isNaN(folder_id) && permission_type) {
-              // 其他情況：建立權限記錄（保留原有邏輯，供其他工具使用）
-              // 只有 group_id（群組對資料夾的權限）
+              // 取得資料夾路徑，供記錄用
+              const folderPathRow = await new Promise(res => {
+                req.userDb.get('SELECT path, name FROM folders WHERE id = ?', [folder_id], (err, r) => res(r || null));
+              });
+              const folderLabel = folderPathRow ? (folderPathRow.path || folderPathRow.name) : String(folder_id);
+
+              const applyDiffPermission = async (fid, uid, gid, ptype, targetType, targetName) => {
+                const permKey = `${fid}|${uid ?? ''}|${gid ?? ''}`;
+                seenPermKeys.add(permKey);
+
+                // 查詢是否已存在
+                const existing = await new Promise(res => {
+                  req.userDb.get(
+                    'SELECT id, permission_type FROM permissions WHERE folder_id=? AND (user_id IS ?) AND (group_id IS ?)',
+                    [fid, uid ?? null, gid ?? null],
+                    (err, r) => res(r || null)
+                  );
+                });
+
+                if (!existing) {
+                  // 新增
+                  await new Promise((resolve, reject) => {
+                    req.userDb.run(
+                      'INSERT INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, ?, ?, ?)',
+                      [fid, uid ?? null, gid ?? null, ptype],
+                      err => { if (err) reject(err); else resolve(); }
+                    );
+                  });
+                  permStats.added++;
+                  importCount++;
+                  stats.permissions++;
+                  historyDetails.push({ action: 'added', folder_path: folderLabel, target_type: targetType, target_name: targetName, old_permission: null, new_permission: ptype });
+                  console.log(`✓ [added] permission: folder ${fid}, ${targetType} ${targetName}, ${ptype}`);
+                } else if (existing.permission_type !== ptype) {
+                  // 更新
+                  await new Promise((resolve, reject) => {
+                    req.userDb.run(
+                      'UPDATE permissions SET permission_type=? WHERE id=?',
+                      [ptype, existing.id],
+                      err => { if (err) reject(err); else resolve(); }
+                    );
+                  });
+                  permStats.updated++;
+                  importCount++;
+                  stats.permissions++;
+                  historyDetails.push({ action: 'updated', folder_path: folderLabel, target_type: targetType, target_name: targetName, old_permission: existing.permission_type, new_permission: ptype });
+                  console.log(`✓ [updated] permission: folder ${fid}, ${targetType} ${targetName}, ${existing.permission_type} → ${ptype}`);
+                } else {
+                  // 相同，略過
+                  permStats.skipped++;
+                  historyDetails.push({ action: 'skipped', folder_path: folderLabel, target_type: targetType, target_name: targetName, old_permission: existing.permission_type, new_permission: ptype });
+                  console.log(`ℹ [skipped] permission already exists: folder ${fid}, ${targetType} ${targetName}, ${ptype}`);
+                }
+              };
+
               if (group_id && !isNaN(group_id)) {
-                await new Promise((resolve, reject) => {
-                  req.userDb.run('INSERT OR IGNORE INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, ?, ?, ?)',
-                    [folder_id, null, group_id, permission_type],
-                    (err) => {
-                      if (err) {
-                        console.error('Error inserting permission:', err);
-                        reject(err);
-                      } else {
-                        console.log(`✓ Inserted permission: folder ${folder_id}, group ${group_id}, type ${permission_type}`);
-                        importCount++;
-                        stats.permissions++;
-                        resolve();
-                      }
-                    }
-                  );
-                });
-              } 
-              // 只有 user_id（人員對資料夾的直接權限）
-              else if (user_id && !isNaN(user_id)) {
-                await new Promise((resolve, reject) => {
-                  req.userDb.run('INSERT OR IGNORE INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, ?, ?, ?)',
-                    [folder_id, user_id, null, permission_type],
-                    (err) => {
-                      if (err) {
-                        console.error('Error inserting permission:', err);
-                        reject(err);
-                      } else {
-                        console.log(`✓ Inserted permission: folder ${folder_id}, user ${user_id}, type ${permission_type}`);
-                        importCount++;
-                        stats.permissions++;
-                        resolve();
-                      }
-                    }
-                  );
-                });
+                const grpName = group_name_raw || String(group_id);
+                await applyDiffPermission(folder_id, null, group_id, permission_type, 'group', grpName);
+              } else if (user_id && !isNaN(user_id)) {
+                const usrName = user_name_raw || String(user_id);
+                await applyDiffPermission(folder_id, user_id, null, permission_type, 'user', usrName);
               } else {
                 console.log('Skipping permission: no valid user_id or group_id specified');
               }
@@ -3857,18 +3917,102 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
           }
         }
         
+        // full_replace：清除本次有出現的群組中，CSV 裡沒有的舊成員（處理 RO→RW 移動）
+        if (importMode === 'full_replace' && affectedGroupIds.size > 0) {
+          for (const gid of affectedGroupIds) {
+            const existingMembers = await new Promise((res, rej) => {
+              req.userDb.all(
+                `SELECT gu.user_id, u.name AS user_name, g.name AS group_name
+                 FROM group_users gu
+                 LEFT JOIN users u ON u.id = gu.user_id
+                 LEFT JOIN groups g ON g.id = gu.group_id
+                 WHERE gu.group_id = ?`,
+                [gid],
+                (err, rows) => { if (err) rej(err); else res(rows); }
+              );
+            });
+            for (const m of existingMembers) {
+              const key = `${gid}|${m.user_id}`;
+              if (!seenGroupMemberKeys.has(key)) {
+                await new Promise((resolve, reject) => {
+                  req.userDb.run('DELETE FROM group_users WHERE group_id = ? AND user_id = ?',
+                    [gid, m.user_id], err => { if (err) reject(err); else resolve(); });
+                });
+                permStats.deleted++;
+                historyDetails.push({ action: 'deleted', folder_path: `group:${m.group_name || gid}`, target_type: 'user', target_name: m.user_name || String(m.user_id), old_permission: 'member', new_permission: null });
+                console.log(`✓ [deleted] group member: group ${gid}, user ${m.user_id} (${m.user_name})`);
+              }
+            }
+          }
+        }
+
+        // full_replace：刪除本次未出現在匯入檔案中的舊直接權限
+        if (importMode === 'full_replace') {
+          const allPerms = await new Promise((res, rej) => {
+            req.userDb.all(
+              `SELECT p.id, p.folder_id, p.user_id, p.group_id, p.permission_type,
+                      f.path AS folder_path, f.name AS folder_name,
+                      u.name AS user_name, g.name AS group_name
+               FROM permissions p
+               LEFT JOIN folders f ON f.id = p.folder_id
+               LEFT JOIN users u ON u.id = p.user_id
+               LEFT JOIN groups g ON g.id = p.group_id`,
+              [],
+              (err, rows) => { if (err) rej(err); else res(rows); }
+            );
+          });
+
+          for (const perm of allPerms) {
+            const permKey = `${perm.folder_id}|${perm.user_id ?? ''}|${perm.group_id ?? ''}`;
+            if (!seenPermKeys.has(permKey)) {
+              await new Promise((resolve, reject) => {
+                req.userDb.run('DELETE FROM permissions WHERE id=?', [perm.id], err => { if (err) reject(err); else resolve(); });
+              });
+              const folderLabel = perm.folder_path || perm.folder_name || String(perm.folder_id);
+              const targetType = perm.user_id ? 'user' : 'group';
+              const targetName = perm.user_name || perm.group_name || '';
+              permStats.deleted++;
+              historyDetails.push({ action: 'deleted', folder_path: folderLabel, target_type: targetType, target_name: targetName, old_permission: perm.permission_type, new_permission: null });
+              console.log(`✓ [deleted] permission: folder ${perm.folder_id}, ${targetType} ${targetName}`);
+            }
+          }
+        }
+
+        // 儲存匯入歷史
+        const historyId = await new Promise((resolve, reject) => {
+          req.userDb.run(
+            'INSERT INTO import_history (imported_by, file_name, mode, added, updated, deleted, skipped) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [req.session.username || 'unknown', req.file.originalname || req.file.filename, importMode, permStats.added, permStats.updated, permStats.deleted, permStats.skipped],
+            function(err) { if (err) reject(err); else resolve(this.lastID); }
+          );
+        });
+
+        for (const d of historyDetails) {
+          await new Promise((resolve, reject) => {
+            req.userDb.run(
+              'INSERT INTO import_history_detail (history_id, action, folder_path, target_type, target_name, old_permission, new_permission) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              [historyId, d.action, d.folder_path, d.target_type, d.target_name, d.old_permission, d.new_permission],
+              err => { if (err) reject(err); else resolve(); }
+            );
+          });
+        }
+
         // 所有操作已循序完成
         console.log(`Import completed: ${importCount} operations`);
         console.log('Import statistics:', stats);
-        
+        console.log('Permission diff stats:', permStats);
+
         // 刪除上傳的檔案
         fs.unlinkSync(req.file.path);
-        
-        res.json({ 
-          success: true, 
+
+        res.json({
+          success: true,
           imported: importCount,
-          count: importCount,  // 向後兼容
-          stats: stats
+          count: importCount,
+          stats: stats,
+          permStats: permStats,
+          historyId: historyId,
+          mode: importMode
         });
       } catch (error) {
         console.error('Import error:', error);
@@ -3886,6 +4030,212 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
       }
       res.status(500).json({ error: 'CSV parse error: ' + error.message });
     });
+});
+
+// 匯入權限矩陣 xlsx（從匯出的權限清單 xlsx 回匯，操作群組成員）
+app.post('/import_permission_matrix_xlsx', withUserDatabase, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+
+  // 修正 multer latin1 編碼問題，還原中文檔名
+  const fileName = Buffer.from(req.file.originalname || '', 'latin1').toString('utf8');
+
+  try {
+    const importMode = req.body.mode === 'full_replace' ? 'full_replace' : 'diff_only';
+    const historyDetails = [];
+    const permStats = { added: 0, updated: 0, deleted: 0, skipped: 0 };
+    // seenGroupMemberKeys: Set<"groupId|userId"> 本次 xlsx 應在的群組成員
+    const seenGroupMemberKeys = new Set();
+    // affectedGroupIds: Set<groupId> 本次 xlsx 涵蓋的 RO/RW 群組（full_replace 時清除多餘成員）
+    const affectedGroupIds = new Set();
+
+    // 1. 讀取 xlsx
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(req.file.path);
+    const ws = workbook.worksheets[0];
+    if (!ws) throw new Error('找不到工作表');
+
+    // 2. 偵測是否含描述欄（B1 = '描述'）
+    const b1 = ws.getRow(1).getCell(2).value;
+    const hasDesc = (b1 && b1.toString().trim() === '描述');
+    const dataStartCol = hasDesc ? 3 : 2;
+
+    // 3. 讀取 4 列標頭，建立欄→資料夾 path 映射（路徑以 "/" 連接，群組用 "_"）
+    const colFolderPath = {};   // col → "A/B/C" 格式
+    const colGroupPath = {};    // col → "A_B_C" 格式（用於對應群組名）
+    const lastCol = ws.columnCount || 300;
+    for (let col = dataStartCol; col <= lastCol; col++) {
+      const parts = [1, 2, 3, 4].map(r => {
+        const v = ws.getRow(r).getCell(col).value;
+        return v ? v.toString().trim() : '';
+      }).filter(v => v !== '');
+      if (parts.length > 0) {
+        colFolderPath[col] = parts.join('/');
+        colGroupPath[col] = parts.join('_');
+      }
+    }
+    if (Object.keys(colFolderPath).length === 0) {
+      throw new Error('無法從 xlsx 標頭解析出資料夾欄位，請確認檔案格式正確');
+    }
+
+    // 4. 載入所有群組，建立 name→group 映射
+    const allGroups = await new Promise((res, rej) => {
+      req.userDb.all('SELECT id, name FROM groups', [], (err, rows) => { if (err) rej(err); else res(rows); });
+    });
+    const groupByName = {};
+    allGroups.forEach(g => { groupByName[g.name] = g; });
+
+    // 5. 為每個資料夾欄建立 RO/RW 群組映射，並登記 affectedGroupIds
+    const colGroups = {}; // col → { roId, rwId, folderPath, groupPath }
+    for (const [col, gpath] of Object.entries(colGroupPath)) {
+      const roGroup = groupByName[`${gpath}_RO`];
+      const rwGroup = groupByName[`${gpath}_RW`];
+      colGroups[col] = {
+        roId: roGroup ? roGroup.id : null,
+        rwId: rwGroup ? rwGroup.id : null,
+        folderPath: colFolderPath[col],
+        groupPath: gpath
+      };
+      if (roGroup) affectedGroupIds.add(roGroup.id);
+      if (rwGroup) affectedGroupIds.add(rwGroup.id);
+    }
+
+    // 6. 載入所有人員，建立 name→id 映射
+    const allUsers = await new Promise((res, rej) => {
+      req.userDb.all('SELECT id, name FROM users', [], (err, rows) => { if (err) rej(err); else res(rows); });
+    });
+    const nameToUserId = {};
+    allUsers.forEach(u => { nameToUserId[u.name.trim()] = u.id; });
+
+    // 7. 處理人員列（第 5 列起）
+    const totalRows = ws.rowCount || 0;
+    for (let rowIdx = 5; rowIdx <= totalRows; rowIdx++) {
+      const rowObj = ws.getRow(rowIdx);
+      const nameCell = rowObj.getCell(1).value;
+      if (!nameCell) continue;
+      const userName = nameCell.toString().trim();
+      if (!userName) continue;
+
+      const userId = nameToUserId[userName];
+      if (!userId) {
+        console.warn(`[xlsx import] 找不到人員: "${userName}"`);
+        continue;
+      }
+
+      for (const [col, grpInfo] of Object.entries(colGroups)) {
+        const cellVal = rowObj.getCell(parseInt(col)).value;
+        const raw = cellVal ? cellVal.toString().trim().toUpperCase() : '';
+        const isRW = raw === 'RW';
+        const isRO = raw === 'RO';
+
+        const targetGroupId = isRW ? grpInfo.rwId : isRO ? grpInfo.roId : null;
+
+        if (targetGroupId) {
+          const key = `${targetGroupId}|${userId}`;
+          seenGroupMemberKeys.add(key);
+
+          // 檢查是否已是成員
+          const existing = await new Promise(resolve => {
+            req.userDb.get('SELECT 1 FROM group_users WHERE group_id=? AND user_id=?',
+              [targetGroupId, userId], (err, row) => resolve(row || null));
+          });
+
+          if (!existing) {
+            await new Promise((resolve, reject) => {
+              req.userDb.run('INSERT OR IGNORE INTO group_users (group_id, user_id) VALUES (?, ?)',
+                [targetGroupId, userId], err => { if (err) reject(err); else resolve(); });
+            });
+            permStats.added++;
+            const permLabel = isRW ? 'RW' : 'RO';
+            historyDetails.push({ action: 'added', folder_path: grpInfo.folderPath, target_type: 'user', target_name: userName, old_permission: null, new_permission: permLabel });
+            console.log(`[xlsx import] added: ${userName} → ${grpInfo.groupPath}_${permLabel}`);
+          } else {
+            permStats.skipped++;
+          }
+        }
+      }
+    }
+
+    // 8. full_replace：清除 affectedGroupIds 中，不在 seenGroupMemberKeys 的舊成員
+    if (importMode === 'full_replace' && affectedGroupIds.size > 0) {
+      for (const gid of affectedGroupIds) {
+        const members = await new Promise((res, rej) => {
+          req.userDb.all(
+            `SELECT gu.user_id, u.name AS user_name, g.name AS group_name
+             FROM group_users gu
+             LEFT JOIN users u ON u.id = gu.user_id
+             LEFT JOIN groups g ON g.id = gu.group_id
+             WHERE gu.group_id = ?`,
+            [gid], (err, rows) => { if (err) rej(err); else res(rows); }
+          );
+        });
+        for (const m of members) {
+          const key = `${gid}|${m.user_id}`;
+          if (!seenGroupMemberKeys.has(key)) {
+            await new Promise((resolve, reject) => {
+              req.userDb.run('DELETE FROM group_users WHERE group_id=? AND user_id=?',
+                [gid, m.user_id], err => { if (err) reject(err); else resolve(); });
+            });
+            permStats.deleted++;
+            historyDetails.push({ action: 'deleted', folder_path: m.group_name || String(gid), target_type: 'user', target_name: m.user_name, old_permission: m.group_name, new_permission: null });
+            console.log(`[xlsx import] deleted: ${m.user_name} from ${m.group_name}`);
+          }
+        }
+      }
+    }
+
+    // 9. 儲存匯入歷史
+    const historyId = await new Promise((resolve, reject) => {
+      req.userDb.run(
+        'INSERT INTO import_history (imported_by, file_name, mode, added, updated, deleted, skipped) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [req.session.username || 'unknown', fileName, importMode, permStats.added, permStats.updated, permStats.deleted, permStats.skipped],
+        function(err) { if (err) reject(err); else resolve(this.lastID); }
+      );
+    });
+    for (const d of historyDetails) {
+      await new Promise((resolve, reject) => {
+        req.userDb.run(
+          'INSERT INTO import_history_detail (history_id, action, folder_path, target_type, target_name, old_permission, new_permission) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [historyId, d.action, d.folder_path, d.target_type, d.target_name, d.old_permission, d.new_permission],
+          err => { if (err) reject(err); else resolve(); }
+        );
+      });
+    }
+
+    fs.unlinkSync(req.file.path);
+
+    console.log(`[xlsx import] 完成: added=${permStats.added} skipped=${permStats.skipped} deleted=${permStats.deleted}`);
+    res.json({ success: true, permStats, historyId, mode: importMode });
+
+  } catch (error) {
+    console.error('[xlsx import] error:', error);
+    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 查詢匯入歷史清單
+app.get('/api/import-history', withUserDatabase, (req, res) => {
+  req.userDb.all(
+    'SELECT * FROM import_history ORDER BY imported_at DESC LIMIT 100',
+    [],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    }
+  );
+});
+
+// 查詢單次匯入的明細
+app.get('/api/import-history/:id/details', withUserDatabase, (req, res) => {
+  const id = parseInt(req.params.id);
+  req.userDb.all(
+    'SELECT * FROM import_history_detail WHERE history_id = ? ORDER BY id ASC',
+    [id],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    }
+  );
 });
 
 app.get('/csv_generator.html', ensureEditorAccess, (req, res) => {
