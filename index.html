@@ -942,49 +942,119 @@
             </div>
         </div>
 
-        <!-- 帳號管理區塊（僅管理員可見） -->
+        <!-- 帳號管理區塊 -->
         <div id="account-management-section" style="display:none;">
             <div class="d-flex justify-content-between align-items-center mb-3">
                 <h3 class="mb-0"><i class="bi bi-shield-fill-check"></i> 帳號管理</h3>
-                <button class="btn btn-success" onclick="openCreateAccountModal()">
-                    <i class="bi bi-person-plus-fill"></i> 新增使用者
-                </button>
             </div>
-            
-            <!-- 待審核帳號 -->
-            <div class="card mb-3">
-                <div class="card-header bg-warning text-dark">
-                    <h5 class="mb-0">
-                        <i class="bi bi-clock-history"></i> 待審核帳號
-                        <span id="pending-count-badge" class="badge bg-danger ms-2">0</span>
+
+            <!-- 我的團隊（db_admin 專用） -->
+            <div id="my-team-card" class="card mb-3 border-info" style="display:none;">
+                <div class="card-header bg-info text-white">
+                    <h5 class="mb-0"><i class="bi bi-people-fill"></i> 我的團隊
+                        <span id="team-count-badge" class="badge bg-light text-dark ms-2">0</span>
                     </h5>
                 </div>
                 <div class="card-body">
-                    <div id="pending-accounts-empty" class="alert alert-success">
-                        <i class="bi bi-check-circle-fill"></i> 目前沒有待審核的帳號
-                    </div>
-                    <div id="pending-accounts-list" style="display: none;">
-                        <div class="table-responsive">
-                            <table class="table table-hover">
-                                <thead class="table-light">
-                                    <tr>
-                                        <th width="10%">編號</th>
-                                        <th width="20%">使用者名稱</th>
-                                        <th width="20%">姓名</th>
-                                    <th width="15%">註冊時間</th>
-                                    <th width="30%">權限設定</th>
-                                    <th width="20%">操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="pending-accounts-tbody"></tbody>
-                            </table>
-                        </div>
+                    <div class="table-responsive">
+                        <table class="table table-hover table-sm">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>姓名</th>
+                                    <th>帳號</th>
+                                    <th>角色</th>
+                                    <th>權限</th>
+                                </tr>
+                            </thead>
+                            <tbody id="my-team-tbody"><tr><td colspan="4" class="text-center text-muted">載入中...</td></tr></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
 
-            <!-- 所有帳號列表 -->
-            <div class="card">
+            <!-- 邀請連結管理 -->
+            <div class="card mb-3 border-success">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="bi bi-envelope-plus-fill"></i> 邀請連結管理</h5>
+                </div>
+                <div class="card-body">
+                    <!-- 建立邀請表單 -->
+                    <div class="row g-3 align-items-end mb-3">
+                        <div class="col-md-3" id="invite-role-col">
+                            <label class="form-label fw-bold">邀請角色</label>
+                            <select id="invite-role-level" class="form-select">
+                                <option value="user">一般帳號</option>
+                                <option value="db_admin" id="invite-db-admin-option" style="display:none;">客戶負責人</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label fw-bold">存取權限</label>
+                            <select id="invite-permission" class="form-select">
+                                <option value="editor">可編輯</option>
+                                <option value="viewer">唯讀</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-bold">可存取資料庫</label>
+                            <select id="invite-databases" class="form-select" multiple size="3"></select>
+                            <small class="text-muted">可複選（Ctrl 鍵）</small>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label fw-bold">有效期限</label>
+                            <select id="invite-expiry" class="form-select">
+                                <option value="7">7 天</option>
+                                <option value="30">30 天</option>
+                                <option value="365">不限期（1 年）</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label fw-bold">備注（選填）</label>
+                            <input type="text" id="invite-note" class="form-control" placeholder="給誰的邀請">
+                        </div>
+                        <div class="col-12">
+                            <button class="btn btn-success" onclick="createInvitation()">
+                                <i class="bi bi-link-45deg"></i> 產生邀請連結
+                            </button>
+                        </div>
+                    </div>
+                    <!-- 產生的邀請連結顯示 -->
+                    <div id="invite-link-result" class="alert alert-success" style="display:none;">
+                        <strong><i class="bi bi-link-45deg"></i> 邀請連結：</strong><br>
+                        <div class="d-flex align-items-center gap-2 mt-1">
+                            <input type="text" id="invite-link-text" class="form-control form-control-sm" readonly>
+                            <button id="copy-invite-btn" class="btn btn-sm btn-outline-success text-nowrap" onclick="copyInviteLink()">
+                                <i class="bi bi-clipboard"></i> 複製
+                            </button>
+                        </div>
+                        <small id="invite-link-expiry" class="text-muted mt-1 d-block"></small>
+                    </div>
+                    <!-- 邀請清單 -->
+                    <hr>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">邀請記錄</h6>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="loadInvitations()"><i class="bi bi-arrow-clockwise"></i></button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>備注</th>
+                                    <th>角色 / 權限</th>
+                                    <th>資料庫</th>
+                                    <th>建立時間</th>
+                                    <th>到期時間</th>
+                                    <th>狀態</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="invitations-tbody"><tr><td colspan="7" class="text-center text-muted py-2">載入中...</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 所有帳號列表（admin 才顯示） -->
+            <div class="card" id="all-accounts-card">
                 <div class="card-header bg-primary text-white">
                     <h5 class="mb-0">
                         <i class="bi bi-people-fill"></i> 所有帳號
@@ -996,15 +1066,14 @@
                         <table class="table table-hover">
                             <thead class="table-light">
                                 <tr>
-                                    <th width="8%">編號</th>
-                                    <th width="15%">使用者名稱</th>
-                                    <th width="15%">姓名</th>
-                                    <th width="12%">角色</th>
-                                    <th width="12%">狀態</th>
-                                    <th width="15%">權限</th>
-                                    <th width="15%">資料庫</th>
-                                    <th width="12%">註冊時間</th>
-                                    <th width="10%">操作</th>
+                                    <th>ID</th>
+                                    <th>帳號 / 姓名</th>
+                                    <th>角色層級</th>
+                                    <th>可發邀請</th>
+                                    <th>權限</th>
+                                    <th>資料庫</th>
+                                    <th>建立時間</th>
+                                    <th>操作</th>
                                 </tr>
                             </thead>
                             <tbody id="all-accounts-tbody"></tbody>
@@ -2355,17 +2424,20 @@ group_member,,2,4</code></pre>
                 const displayName = currentUser.fullName || currentUser.username;
                 $('#user-display-name').text(displayName);
                 
-                let roleText = currentUser.role === 'admin' ? '管理員' : '一般使用者';
-                let roleClass = currentUser.role === 'admin' ? 'text-danger' : 'text-primary';
+                const roleLevelMap = { admin: '最高管理者', db_admin: '客戶負責人', user: '一般帳號' };
+                const rl = currentUser.roleLevel || (currentUser.role === 'admin' ? 'admin' : 'user');
+                let roleText = roleLevelMap[rl] || '一般帳號';
+                let roleClass = currentUser.role === 'admin' ? 'text-danger' : (rl === 'db_admin' ? 'text-warning' : 'text-primary');
                 const permissionText = currentUser.permissionLevel === 'viewer' ? '唯讀' : '可編輯';
                 $('#user-info').html(`
                     <i class="bi bi-person-circle"></i> ${displayName}<br>
                     <small class="${roleClass}"><i class="bi bi-shield-fill"></i> ${roleText}</small><br>
                     <small class="text-muted"><i class="bi bi-key"></i> 權限：${permissionText}</small>
                 `);
-                
-                // 顯示/隱藏管理員選單
+
+                // 顯示/隱藏選單
                 const isAdmin = currentUser.role === 'admin';
+                const canInvite = currentUser.canInvite || isAdmin;
                 if (isAdmin) {
                     $('#admin-menu-item').show();
                     $('#admin-powershell-menu-item').show();
@@ -2374,7 +2446,9 @@ group_member,,2,4</code></pre>
                     $('#audit-log-menu-item').show();
                     $('#usage-statistics-menu-item').show();
                 } else {
-                    $('#admin-menu-item').hide();
+                    // db_admin 或有邀請權限者也顯示帳號管理
+                    if (canInvite) $('#admin-menu-item').show();
+                    else $('#admin-menu-item').hide();
                     $('#admin-powershell-menu-item').hide();
                     $('#online-menu-item').hide();
                     $('#system-health-menu-item').hide();
@@ -5240,13 +5314,208 @@ group_member,,2,4</code></pre>
         }
 
         // ==================== 帳號管理功能 ====================
-        
+
         // 載入帳號管理頁面
         function loadAccountManagement() {
-            if (!currentUser || currentUser.role !== 'admin') return;
+            if (!currentUser) return;
+            const isAdmin = currentUser.role === 'admin';
+            const rl = currentUser.roleLevel || (isAdmin ? 'admin' : 'user');
+            const canInvite = currentUser.canInvite || isAdmin;
+
+            if (!isAdmin && !canInvite) return;
+
             fetchPermissionDatabaseOptions().then(() => {
-                loadPendingAccounts();
-                loadAllAccounts();
+                // 顯示 my-team 卡片（db_admin 或 can_invite 但非最高 admin）
+                if (rl === 'db_admin') {
+                    $('#my-team-card').show();
+                    loadMyTeam();
+                } else {
+                    $('#my-team-card').hide();
+                }
+
+                // 只有 admin 才看到「所有帳號」卡片
+                if (isAdmin) {
+                    $('#all-accounts-card').show();
+                    loadAllAccounts();
+                } else {
+                    $('#all-accounts-card').hide();
+                }
+
+                // 邀請管理所有 canInvite 者都能看
+                loadInvitations();
+                populateInviteDatabases();
+
+                // 「客戶負責人」選項只有 admin 才顯示
+                if (isAdmin) {
+                    $('#invite-db-admin-option').show();
+                } else {
+                    $('#invite-db-admin-option').hide();
+                }
+            });
+        }
+
+        // 填充邀請表單中的資料庫多選
+        function populateInviteDatabases() {
+            const isAdmin = currentUser && currentUser.role === 'admin';
+            let dbList = [];
+            if (isAdmin) {
+                dbList = permissionDatabaseOptions;
+            } else if ((currentUser.allowedDatabases || []).length > 0) {
+                // viewer 型帳號：使用其授權的資料庫清單
+                dbList = currentUser.allowedDatabases;
+            } else if (currentUser.database) {
+                // editor/db_admin：只能邀請到自己的資料庫
+                dbList = [currentUser.database];
+            }
+            const html = dbList.length
+                ? dbList.map(db => `<option value="${db}">${db}</option>`).join('')
+                : '<option value="" disabled>（尚無可選資料庫）</option>';
+            $('#invite-databases').html(html);
+        }
+
+        // 建立邀請連結
+        function createInvitation() {
+            const roleLevel = $('#invite-role-level').val();
+            const permissionLevel = $('#invite-permission').val();
+            const selectedDbs = ($('#invite-databases').val() || []).filter(Boolean);
+            const expiryDays = parseInt($('#invite-expiry').val(), 10) || 7;
+            const note = $('#invite-note').val().trim();
+
+            if (selectedDbs.length === 0) {
+                alert('請至少選擇一個資料庫');
+                return;
+            }
+
+            $.ajax({
+                url: '/api/admin/invitations',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ roleLevel, permissionLevel, allowedDatabases: selectedDbs, expiryDays, note }),
+                success: function(resp) {
+                    $('#invite-link-text').val(resp.link);
+                    const expiry = new Date(resp.expiresAt || resp.expires_at).toLocaleString('zh-TW');
+                    $('#invite-link-expiry').text('有效期至：' + expiry);
+                    $('#invite-link-result').show();
+                    loadInvitations();
+                },
+                error: function(xhr) {
+                    alert('建立邀請失敗：' + (xhr.responseJSON?.error || '請重試'));
+                }
+            });
+        }
+
+        // 複製邀請連結
+        function copyInviteLink() {
+            const link = $('#invite-link-text').val();
+            if (!link) return;
+            navigator.clipboard.writeText(link).then(() => {
+                const btn = $('#copy-invite-btn');
+                btn.html('<i class="bi bi-check2"></i> 已複製');
+                setTimeout(() => btn.html('<i class="bi bi-clipboard"></i> 複製'), 2000);
+            }).catch(() => {
+                $('#invite-link-text').select();
+                document.execCommand('copy');
+            });
+        }
+
+        // 載入邀請清單
+        function loadInvitations() {
+            $.ajax({
+                url: '/api/admin/invitations',
+                method: 'GET',
+                success: function(invitations) {
+                    if (!invitations.length) {
+                        $('#invitations-tbody').html('<tr><td colspan="7" class="text-center text-muted py-2">尚無邀請連結</td></tr>');
+                        return;
+                    }
+                    const now = new Date();
+                    let html = '';
+                    invitations.forEach(function(inv) {
+                        const createdAt = new Date(inv.created_at).toLocaleString('zh-TW');
+                        const expiresAt = new Date(inv.expires_at).toLocaleString('zh-TW');
+                        const dbList = (inv.allowed_databases || []).join('、') || '—';
+                        const roleLabelMap = { admin: '最高管理者', db_admin: '客戶負責人', user: '一般帳號' };
+                        const roleLabel = roleLabelMap[inv.role_level] || inv.role_level;
+                        const permLabel = inv.permission_level === 'viewer' ? '唯讀' : '可編輯';
+
+                        let statusBadge;
+                        if (inv.used_at) {
+                            statusBadge = `<span class="badge bg-secondary">已使用</span><div class="small text-muted">${inv.used_by}</div>`;
+                        } else if (new Date(inv.expires_at) < now) {
+                            statusBadge = '<span class="badge bg-warning text-dark">已過期</span>';
+                        } else {
+                            statusBadge = '<span class="badge bg-success">未使用</span>';
+                        }
+
+                        const canRevoke = !inv.used_at && new Date(inv.expires_at) >= now;
+                        const revokeBtn = canRevoke
+                            ? `<button class="btn btn-sm btn-outline-danger" onclick="revokeInvitation(${inv.id})"><i class="bi bi-x-circle"></i></button>`
+                            : '<span class="text-muted">—</span>';
+
+                        html += `
+                            <tr>
+                                <td><small class="text-muted">${inv.note || '—'}</small></td>
+                                <td>${roleLabel} / ${permLabel}</td>
+                                <td><small>${dbList}</small></td>
+                                <td><small>${createdAt}</small></td>
+                                <td><small>${expiresAt}</small></td>
+                                <td>${statusBadge}</td>
+                                <td>${revokeBtn}</td>
+                            </tr>
+                        `;
+                    });
+                    $('#invitations-tbody').html(html);
+                },
+                error: function(xhr) {
+                    $('#invitations-tbody').html('<tr><td colspan="7" class="text-center text-danger">載入失敗</td></tr>');
+                }
+            });
+        }
+
+        // 撤銷邀請
+        function revokeInvitation(id) {
+            if (!confirm('確定要撤銷這個邀請連結嗎？')) return;
+            $.ajax({
+                url: `/api/admin/invitations/${id}`,
+                method: 'DELETE',
+                success: function() {
+                    loadInvitations();
+                },
+                error: function(xhr) {
+                    alert('撤銷失敗：' + (xhr.responseJSON?.error || '請重試'));
+                }
+            });
+        }
+
+        // 載入我的團隊成員（db_admin 用）
+        function loadMyTeam() {
+            $.ajax({
+                url: '/api/my-team-accounts',
+                method: 'GET',
+                success: function(accounts) {
+                    if (!accounts.length) {
+                        $('#my-team-tbody').html('<tr><td colspan="4" class="text-center text-muted py-2">尚無共享資料庫的帳號</td></tr>');
+                        return;
+                    }
+                    const roleLabelMap = { admin: '最高管理者', db_admin: '客戶負責人', user: '一般帳號' };
+                    let html = '';
+                    accounts.forEach(function(acc) {
+                        const roleLabel = roleLabelMap[acc.role_level || 'user'] || '一般帳號';
+                        const permLabel = acc.permission_level === 'viewer' ? '唯讀' : '可編輯';
+                        html += `
+                            <tr>
+                                <td><strong>${acc.username}</strong></td>
+                                <td>${acc.full_name || '<span class="text-muted">未提供</span>'}</td>
+                                <td>${roleLabel}</td>
+                                <td>${permLabel}</td>
+                            </tr>
+                        `;
+                    });
+                    $('#my-team-tbody').html(html);
+                },
+                error: function() {
+                    $('#my-team-tbody').html('<tr><td colspan="4" class="text-center text-danger">載入失敗</td></tr>');
+                }
             });
         }
         
@@ -6288,58 +6557,52 @@ group_member,,2,4</code></pre>
                 success: function(accounts) {
                     allAccountsCache = accounts;
                     $('#total-accounts-badge').text(accounts.length);
-                    
+
+                    const roleLevelMap = { admin: ['最高管理者', 'bg-danger'], db_admin: ['客戶負責人', 'bg-info'], user: ['一般帳號', 'bg-secondary'] };
+
                     let html = '';
                     accounts.forEach(function(account) {
                         const createdAt = new Date(account.created_at).toLocaleString('zh-TW');
-                        let roleText = account.role === 'admin' ? '<span class="badge bg-danger">管理員</span>' : '<span class="badge bg-secondary">使用者</span>';
-                        let statusText = '';
-                        let statusClass = '';
-                        
-                        if (account.status === 'active') {
-                            statusText = '啟用';
-                            statusClass = 'bg-success';
-                        } else if (account.status === 'pending') {
-                            statusText = '待審核';
-                            statusClass = 'bg-warning text-dark';
-                        } else if (account.status === 'rejected') {
-                            statusText = '已拒絕';
-                            statusClass = 'bg-danger';
-                        }
-                        
-                        const permissionLevel = account.permission_level === 'viewer' ? 
-                            '<span class="badge bg-warning text-dark">唯讀</span>' : 
-                            '<span class="badge bg-primary">可編輯</span>';
+                        const rl = account.role_level || (account.role === 'admin' ? 'admin' : 'user');
+                        const [rlLabel, rlColor] = roleLevelMap[rl] || ['一般帳號', 'bg-secondary'];
+                        const roleBadge = `<span class="badge ${rlColor}">${rlLabel}</span>`;
+
+                        const permissionLevel = account.permission_level === 'viewer'
+                            ? '<span class="badge bg-warning text-dark">唯讀</span>'
+                            : '<span class="badge bg-primary">可編輯</span>';
                         const allowedList = account.allowed_databases && account.allowed_databases.length
                             ? account.allowed_databases.join(', ')
                             : '<span class="text-muted">-</span>';
-                        
+
+                        const canInviteBadge = account.can_invite
+                            ? '<span class="badge bg-success">是</span>'
+                            : '<span class="badge bg-light text-dark border">否</span>';
+
                         let actionButtons = '';
                         const safeUsername = (account.username || '').replace(/'/g, "\\'");
                         if (account.role !== 'admin') {
-                            actionButtons += `<button class="btn btn-sm btn-outline-primary me-1" onclick="openPermissionModal(${account.id})">
+                            actionButtons += `<button class="btn btn-sm btn-outline-primary me-1" title="修改權限" onclick="openPermissionModal(${account.id})">
                                 <i class="bi bi-sliders"></i>
                             </button>`;
-                            actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
+                            actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
                                 <i class="bi bi-key-fill"></i>
                             </button>`;
-                            actionButtons += `<button class="btn btn-sm btn-danger" onclick="deleteAccount(${account.id}, '${account.username}')">
+                            actionButtons += `<button class="btn btn-sm btn-danger" title="刪除帳號" onclick="deleteAccount(${account.id}, '${account.username}')">
                                 <i class="bi bi-trash"></i>
                             </button>`;
                         } else {
                             actionButtons = '<span class="text-muted">-</span>';
                         }
-                        
+
                         html += `
                             <tr>
                                 <td>${account.id}</td>
-                                <td><strong>${account.username}</strong></td>
-                                <td>${account.full_name || '<span class="text-muted">未提供</span>'}</td>
-                                <td>${roleText}</td>
-                                <td><span class="badge ${statusClass}">${statusText}</span></td>
+                                <td><strong>${account.username}</strong><div class="small text-muted">${account.full_name || ''}</div></td>
+                                <td>${roleBadge}</td>
+                                <td>${canInviteBadge}</td>
                                 <td>
                                     ${permissionLevel}
-                                    <div class="small text-muted">允許：${allowedList}</div>
+                                    <div class="small text-muted">${allowedList}</div>
                                 </td>
                                 <td><small><code>${account.user_database || '-'}</code></small></td>
                                 <td><small>${createdAt}</small></td>

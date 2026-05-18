@@ -138,223 +138,173 @@
             <div class="alert alert-info alert-custom" role="alert">
                 <i class="bi bi-info-circle-fill"></i>
                 <strong>提示：</strong>系統預設管理員帳號為 <code>admin</code> / <code>admin123</code><br>
-                <small class="text-muted">一般使用者註冊後需等待管理員審核通過才能登入</small>
+                <small class="text-muted">帳號需透過邀請連結建立，請向管理員索取邀請連結</small>
             </div>
 
             <!-- 訊息區域 -->
             <div id="message-area"></div>
 
-            <!-- 分頁 -->
-            <ul class="nav nav-tabs" role="tablist">
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link active" id="login-tab" data-bs-toggle="tab" data-bs-target="#login-content" type="button" role="tab">
+            <!-- 登入表單（預設顯示） -->
+            <div id="login-section">
+                <form id="login-form">
+                    <div class="mb-3">
+                        <label class="form-label">使用者名稱</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-person"></i></span>
+                            <input type="text" class="form-control" name="username" placeholder="請輸入使用者名稱" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">密碼</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-lock"></i></span>
+                            <input type="password" class="form-control" name="password" placeholder="請輸入密碼" required>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-login w-100">
                         <i class="bi bi-box-arrow-in-right"></i> 登入
                     </button>
-                </li>
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link" id="register-tab" data-bs-toggle="tab" data-bs-target="#register-content" type="button" role="tab">
-                        <i class="bi bi-person-plus"></i> 註冊
+                </form>
+            </div>
+
+            <!-- 邀請建立帳號表單（偵測到 token 時顯示） -->
+            <div id="invite-section" style="display:none;">
+                <div id="invite-info" class="alert alert-info mb-3" style="display:none;"></div>
+                <form id="invite-form">
+                    <div class="mb-3">
+                        <label class="form-label">姓名（選填）</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-card-text"></i></span>
+                            <input type="text" class="form-control" name="full_name" placeholder="請輸入您的姓名">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">使用者名稱 <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-person"></i></span>
+                            <input type="text" class="form-control" name="username" placeholder="僅限英數字和底線" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">密碼 <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-lock"></i></span>
+                            <input type="password" class="form-control" name="password" placeholder="至少 6 個字元" required minlength="6">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">確認密碼 <span class="text-danger">*</span></label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
+                            <input type="password" class="form-control" name="password_confirm" placeholder="請再次輸入密碼" required minlength="6">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-success w-100">
+                        <i class="bi bi-person-plus"></i> 建立帳號
                     </button>
-                </li>
-            </ul>
-
-            <div class="tab-content">
-                <!-- 登入表單 -->
-                <div class="tab-pane fade show active" id="login-content" role="tabpanel">
-                    <form id="login-form">
-                        <div class="mb-3">
-                            <label class="form-label">使用者名稱</label>
-                            <div class="input-group">
-                                <span class="input-group-text">
-                                    <i class="bi bi-person"></i>
-                                </span>
-                                <input type="text" class="form-control" name="username" placeholder="請輸入使用者名稱" required>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">密碼</label>
-                            <div class="input-group">
-                                <span class="input-group-text">
-                                    <i class="bi bi-lock"></i>
-                                </span>
-                                <input type="password" class="form-control" name="password" placeholder="請輸入密碼" required>
-                            </div>
-                        </div>
-                        <button type="submit" class="btn btn-primary btn-login w-100">
-                            <i class="bi bi-box-arrow-in-right"></i> 登入
-                        </button>
-                    </form>
-                </div>
-
-                <!-- 註冊表單 -->
-                <div class="tab-pane fade" id="register-content" role="tabpanel">
-                    <form id="register-form">
-                        <div class="mb-3">
-                            <label class="form-label">使用者名稱 <span class="text-danger">*</span></label>
-                            <div class="input-group">
-                                <span class="input-group-text">
-                                    <i class="bi bi-person"></i>
-                                </span>
-                                <input type="text" class="form-control" name="username" placeholder="請輸入使用者名稱" required>
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">密碼 <span class="text-danger">*</span></label>
-                            <div class="input-group">
-                                <span class="input-group-text">
-                                    <i class="bi bi-lock"></i>
-                                </span>
-                                <input type="password" class="form-control" name="password" placeholder="至少 6 個字元" required minlength="6">
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">確認密碼 <span class="text-danger">*</span></label>
-                            <div class="input-group">
-                                <span class="input-group-text">
-                                    <i class="bi bi-lock-fill"></i>
-                                </span>
-                                <input type="password" class="form-control" name="password_confirm" placeholder="請再次輸入密碼" required minlength="6">
-                            </div>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">姓名（選填）</label>
-                            <div class="input-group">
-                                <span class="input-group-text">
-                                    <i class="bi bi-card-text"></i>
-                                </span>
-                                <input type="text" class="form-control" name="full_name" placeholder="請輸入您的姓名">
-                            </div>
-                        </div>
-                        <button type="submit" class="btn btn-primary btn-register w-100">
-                            <i class="bi bi-person-plus"></i> 註冊
-                        </button>
-                    </form>
-                </div>
+                    <div class="mt-2 text-center">
+                        <small class="text-muted"><a href="/login.html" class="text-muted">已有帳號？返回登入</a></small>
+                    </div>
+                </form>
             </div>
         </div>
     </div>
 
     <script>
+        let inviteToken = null;
+
         $(document).ready(function() {
+            // 偵測邀請 token
+            const params = new URLSearchParams(window.location.search);
+            const token = params.get('token');
+            if (token) {
+                inviteToken = token;
+                validateInviteToken(token);
+            }
+
             // 登入表單提交
             $('#login-form').on('submit', function(e) {
                 e.preventDefault();
-                
                 const formData = {
                     username: $(this).find('input[name="username"]').val(),
                     password: $(this).find('input[name="password"]').val()
                 };
-
                 $.ajax({
                     url: '/api/auth/login',
                     method: 'POST',
                     contentType: 'application/json',
                     data: JSON.stringify(formData),
                     success: function(response) {
-                        showMessage('success', '✅ ' + (response.message || '登入成功！正在跳轉...'));
-                        setTimeout(function() {
-                            window.location.href = '/index.html';
-                        }, 1000);
+                        showMessage('success', '登入成功！正在跳轉...');
+                        setTimeout(function() { window.location.href = '/index.html'; }, 800);
                     },
                     error: function(xhr) {
-                        let error = xhr.responseJSON?.error || '登入失敗，請重試';
-                        let messageType = 'danger';
-                        
-                        // 根據錯誤訊息調整顯示
-                        if (error.includes('pending') || error.includes('等待審核') || error.includes('審核中')) {
-                            error = '<strong>⏳ 帳號審核中</strong><br>' +
-                                   '您的帳號正在等待管理員審核，審核通過後即可登入。<br>' +
-                                   '<small class="text-muted">如有疑問，請聯繫管理員</small>';
-                            messageType = 'warning';
-                        } else if (error.includes('rejected') || error.includes('已被拒絕')) {
-                            error = '<strong>❌ 帳號已被拒絕</strong><br>' +
-                                   '您的註冊申請已被管理員拒絕。<br>' +
-                                   '<small class="text-muted">如有疑問，請聯繫管理員</small>';
-                            messageType = 'danger';
-                        } else if (error.includes('帳號或密碼錯誤')) {
-                            error = '<strong>🔒 登入失敗</strong><br>' +
-                                   '帳號或密碼錯誤，請重新輸入。';
-                            messageType = 'danger';
-                        }
-                        
-                        showMessage(messageType, error);
+                        const error = xhr.responseJSON?.error || '登入失敗，請重試';
+                        showMessage('danger', error);
                     }
                 });
             });
 
-            // 註冊表單提交
-            $('#register-form').on('submit', function(e) {
+            // 邀請建立帳號表單提交
+            $('#invite-form').on('submit', function(e) {
                 e.preventDefault();
-                
                 const password = $(this).find('input[name="password"]').val();
-                const passwordConfirm = $(this).find('input[name="password_confirm"]').val();
-
-                if (password !== passwordConfirm) {
-                    showMessage('danger', '兩次輸入的密碼不一致');
-                    return;
-                }
-
-                const formData = {
-                    username: $(this).find('input[name="username"]').val(),
-                    password: password,
-                    full_name: $(this).find('input[name="full_name"]').val()
-                };
-
+                const confirm = $(this).find('input[name="password_confirm"]').val();
+                if (password !== confirm) { showMessage('danger', '兩次輸入的密碼不一致'); return; }
                 $.ajax({
-                    url: '/api/auth/register',
+                    url: `/api/invite/${inviteToken}/register`,
                     method: 'POST',
                     contentType: 'application/json',
-                    data: JSON.stringify(formData),
+                    data: JSON.stringify({
+                        username: $(this).find('input[name="username"]').val(),
+                        password: password,
+                        full_name: $(this).find('input[name="full_name"]').val()
+                    }),
                     success: function(response) {
-                        let message = response.message || '註冊成功！';
-                        let messageType = 'success';
-                        
-                        // 檢查是否需要審核
-                        if (response.requiresApproval) {
-                            message = '<strong>📝 註冊成功！</strong><br>' + 
-                                     '您的帳號正在等待管理員審核，審核通過後即可登入。<br>' +
-                                     '<small class="text-muted">請稍後再試或聯繫管理員</small>';
-                            messageType = 'info';
-                        } else if (response.isFirstAccount) {
-                            // 預設管理員帳號（admin/admin123）已存在時，第一個註冊的使用者不是管理員
-                            message = '<strong>✅ 註冊成功！</strong><br>' + 
-                                     '您的帳號正在等待管理員審核，審核通過後即可登入。';
-                            messageType = 'info';
-                        }
-                        
-                        showMessage(messageType, message);
-                        
-                        // 清空表單
-                        $('#register-form')[0].reset();
-                        
-                        // 切換到登入頁面
-                        setTimeout(function() {
-                            $('#login-tab').click();
-                        }, 3000);
+                        showMessage('success', '帳號建立成功！請使用您的帳號登入。');
+                        setTimeout(function() { window.location.href = '/login.html'; }, 2000);
                     },
                     error: function(xhr) {
-                        const error = xhr.responseJSON?.error || '註冊失敗，請重試';
-                        showMessage('danger', error);
+                        showMessage('danger', xhr.responseJSON?.error || '建立帳號失敗，請重試');
                     }
                 });
             });
         });
 
-        // 顯示訊息
+        function validateInviteToken(token) {
+            $.ajax({
+                url: `/api/invite/${token}`,
+                method: 'GET',
+                success: function(data) {
+                    $('#login-section').hide();
+                    $('#invite-section').show();
+                    const roleLabel = data.role_level === 'db_admin' ? '客戶負責人' : '一般帳號';
+                    const permLabel = data.permission_level === 'viewer' ? '唯讀' : '可編輯';
+                    const dbList = (data.allowed_databases || []).join('、') || '—';
+                    const expiry = new Date(data.expires_at).toLocaleString('zh-TW');
+                    let infoHtml = `<strong>您已收到邀請</strong>`;
+                    if (data.note) infoHtml += `<br>備注：${data.note}`;
+                    infoHtml += `<br><small>角色：${roleLabel}｜權限：${permLabel}｜到期：${expiry}</small>`;
+                    $('#invite-info').html(infoHtml).show();
+                    // 提示欄也更新
+                    $('.alert-info strong').text('受邀建立帳號');
+                },
+                error: function(xhr) {
+                    const msg = xhr.responseJSON?.error || '邀請連結無效';
+                    showMessage('danger', msg);
+                }
+            });
+        }
+
         function showMessage(type, message) {
-            const alertHtml = `
+            $('#message-area').html(`
                 <div class="alert alert-${type} alert-custom alert-dismissible fade show" role="alert">
                     <i class="bi bi-${type === 'success' ? 'check-circle-fill' : 'exclamation-triangle-fill'}"></i>
                     ${message}
                     <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
                 </div>
-            `;
-            $('#message-area').html(alertHtml);
-            
-            // 自動消失
-            setTimeout(function() {
-                $('.alert').alert('close');
-            }, 5000);
+            `);
+            setTimeout(function() { $('.alert').alert('close'); }, 6000);
         }
     </script>
 </body>

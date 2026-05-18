@@ -12,6 +12,7 @@ const session = require('express-session');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -277,6 +278,12 @@ function initializeTables(database, callback) {
       if (!columnNames.includes('allowed_databases')) {
         database.run("ALTER TABLE accounts ADD COLUMN allowed_databases TEXT");
       }
+      if (!columnNames.includes('role_level')) {
+        database.run("ALTER TABLE accounts ADD COLUMN role_level TEXT DEFAULT 'user'");
+      }
+      if (!columnNames.includes('can_invite')) {
+        database.run("ALTER TABLE accounts ADD COLUMN can_invite INTEGER DEFAULT 0");
+      }
     });
     
     // 資料夾表
@@ -537,6 +544,27 @@ loadDefaultDatabase().then(() => {
       console.log('✓ Broadcast messages table initialized in system database');
     }
   });
+
+  // 邀請連結表
+  db.run(`CREATE TABLE IF NOT EXISTS invitations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT UNIQUE NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL,
+    used_at DATETIME,
+    used_by TEXT,
+    role_level TEXT NOT NULL DEFAULT 'user',
+    permission_level TEXT DEFAULT 'editor',
+    allowed_databases TEXT DEFAULT '[]',
+    note TEXT
+  )`, (err) => {
+    if (err) {
+      console.error('Failed to create invitations table:', err);
+    } else {
+      console.log('✓ Invitations table initialized in system database');
+    }
+  });
 });
 
 // ==================== 認證中介軟體 ====================
@@ -556,6 +584,15 @@ function requireAdmin(req, res, next) {
     next();
   } else {
     res.status(403).json({ error: 'forbidden', message: '需要管理員權限' });
+  }
+}
+
+// 檢查是否有邀請發送權限（admin 或 can_invite=1）
+function requireCanInvite(req, res, next) {
+  if (req.session && req.session.userId && (req.session.role === 'admin' || req.session.canInvite)) {
+    next();
+  } else {
+    res.status(403).json({ error: 'forbidden', message: '您沒有發送邀請連結的權限' });
   }
 }
 
@@ -701,70 +738,9 @@ async function withUserDatabase(req, res, next) {
 
 // ==================== 帳號管理 API ====================
 
-// 註冊
-app.post('/api/auth/register', async (req, res) => {
-  console.log('Hit POST /api/auth/register', req.body);
-  const { username, password, full_name } = req.body;
-  
-  if (!username || !password) {
-    return res.status(400).json({ error: '請提供使用者名稱和密碼' });
-  }
-  
-  if (password.length < 6) {
-    return res.status(400).json({ error: '密碼長度至少需要 6 個字元' });
-  }
-  
-  // 驗證使用者名稱格式（只允許英數字和底線）
-  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-    return res.status(400).json({ error: '使用者名稱只能包含英數字和底線' });
-  }
-  
-  try {
-    // 檢查使用者是否已存在
-    const existingUser = await new Promise((resolve, reject) => {
-      db.get('SELECT id FROM accounts WHERE username = ?', [username], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-    
-    if (existingUser) {
-      return res.status(400).json({ error: '使用者名稱已存在' });
-    }
-    
-    // 雜湊密碼
-    const passwordHash = await argon2.hash(password);
-    
-    // 建立使用者專屬資料庫名稱
-    const userDbName = `user_${username}.db`;
-    
-    // 建立帳號（待審核狀態）
-    await new Promise((resolve, reject) => {
-      db.run(
-        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [username, passwordHash, full_name || null, 'user', 'pending', userDbName, 'editor', null],
-        function(err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
-    
-    // 建立使用者專屬資料庫
-    const userDb = await connectDatabase(userDbName);
-    userDb.close();
-    
-    console.log(`✓ 帳號建立成功（待審核）: ${username}, 資料庫: ${userDbName}`);
-    res.json({ 
-      success: true, 
-      message: '註冊成功！您的帳號正在等待管理員審核，審核通過後即可登入。',
-      requiresApproval: true
-    });
-    
-  } catch (error) {
-    console.error('註冊錯誤:', error);
-    res.status(500).json({ error: error.message });
-  }
+// 舊自助申請已停用，改為邀請制
+app.post('/api/auth/register', (req, res) => {
+  res.status(410).json({ error: '自助申請帳號功能已停用，請向管理員索取邀請連結。' });
 });
 
 // 使用者資料庫連線管理（每個使用者一個連線）
@@ -865,6 +841,8 @@ app.post('/api/auth/login', async (req, res) => {
       req.session.username = user.username;
       req.session.fullName = user.full_name;
       req.session.role = user.role;
+      req.session.roleLevel = user.role_level || (user.role === 'admin' ? 'admin' : 'user');
+      req.session.canInvite = !!(user.can_invite || user.role === 'admin');
       req.session.permissionLevel = permissionLevel;
       req.session.allowedDatabases = permissionLevel === 'viewer' ? allowedDatabases : [];
       req.session.userDatabase = targetDatabase;
@@ -896,14 +874,16 @@ app.post('/api/auth/login', async (req, res) => {
       logAudit(req, 'login', 'account', user.id, username, null, { database: targetDatabase, permissionLevel });
       
       console.log(`✓ 登入成功: ${username}, 資料庫: ${targetDatabase}, 權限: ${permissionLevel}`);
-      res.json({ 
-        success: true, 
+      res.json({
+        success: true,
         message: '登入成功',
         user: {
           id: user.id,
           username: user.username,
           fullName: user.full_name,
           role: user.role,
+          roleLevel: user.role_level || (user.role === 'admin' ? 'admin' : 'user'),
+          canInvite: !!(user.can_invite || user.role === 'admin'),
           database: targetDatabase,
           permissionLevel,
           allowedDatabases: permissionLevel === 'viewer' ? allowedDatabases : []
@@ -1031,6 +1011,8 @@ app.get('/api/auth/status', (req, res) => {
         username: req.session.username,
         fullName: req.session.fullName,
         role: req.session.role,
+        roleLevel: req.session.roleLevel || (req.session.role === 'admin' ? 'admin' : 'user'),
+        canInvite: !!(req.session.canInvite || req.session.role === 'admin'),
         permissionLevel: req.session.permissionLevel || 'editor',
         allowedDatabases: req.session.allowedDatabases || [],
         database: req.session.userDatabase
@@ -1054,23 +1036,15 @@ app.get('/api/auth/has-accounts', (req, res) => {
 // ==================== 管理員 API ====================
 
 // 取得所有待審核的帳號（管理員專用）
+// 舊待審核清單（已停用，改為邀請制，永遠回傳空陣列）
 app.get('/api/admin/pending-accounts', requireAdmin, (req, res) => {
-  db.all(
-    'SELECT id, username, full_name, user_database, created_at FROM accounts WHERE status = ? ORDER BY created_at DESC',
-    ['pending'],
-    (err, rows) => {
-      if (err) {
-        return res.status(500).json({ error: err.message });
-      }
-      res.json(rows || []);
-    }
-  );
+  res.json([]);
 });
 
 // 取得所有帳號（管理員專用）
 app.get('/api/admin/accounts', requireAdmin, (req, res) => {
   db.all(
-    'SELECT id, username, full_name, role, status, user_database, created_at, permission_level, allowed_databases FROM accounts ORDER BY created_at DESC',
+    'SELECT id, username, full_name, role, role_level, can_invite, status, user_database, created_at, permission_level, allowed_databases FROM accounts ORDER BY created_at DESC',
     [],
     (err, rows) => {
       if (err) {
@@ -1079,88 +1053,27 @@ app.get('/api/admin/accounts', requireAdmin, (req, res) => {
       const mapped = (rows || []).map(row => ({
         ...row,
         permission_level: row.permission_level || 'editor',
-        allowed_databases: parseAllowedDatabases(row.allowed_databases)
+        allowed_databases: parseAllowedDatabases(row.allowed_databases),
+        role_level: row.role_level || (row.role === 'admin' ? 'admin' : 'user'),
+        can_invite: !!(row.can_invite || row.role === 'admin')
       }));
       res.json(mapped);
     }
   );
 });
 
-// 審核帳號（批准/拒絕）
-app.post('/api/admin/review-account', requireAdmin, async (req, res) => {
-  const { accountId, action, permissionLevel, allowedDatabases } = req.body; // action: 'approve' or 'reject'
-  
-  if (!accountId || !action) {
-    return res.status(400).json({ error: '缺少必要參數' });
-  }
-  
-  if (action !== 'approve' && action !== 'reject') {
-    return res.status(400).json({ error: '無效的操作' });
-  }
-  
-  const newStatus = action === 'approve' ? 'active' : 'rejected';
-  let finalPermissionLevel = 'editor';
-  let serializedAllowed = null;
-  
-  if (action === 'approve') {
-    if (permissionLevel === 'viewer') {
-      const sanitized = sanitizeAllowedDatabases(Array.isArray(allowedDatabases) ? allowedDatabases : []);
-      if (sanitized.length === 0) {
-        return res.status(400).json({ error: '請至少選擇一個可讀取的資料庫' });
-      }
-      finalPermissionLevel = 'viewer';
-      serializedAllowed = JSON.stringify(sanitized);
-    } else {
-      finalPermissionLevel = 'editor';
-      serializedAllowed = null;
-    }
-  }
-  
-  try {
-    if (action === 'approve') {
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE accounts SET status = ?, permission_level = ?, allowed_databases = ? WHERE id = ? AND status = ?',
-          [newStatus, finalPermissionLevel, serializedAllowed, accountId, 'pending'],
-          function(err) {
-            if (err) reject(err);
-            else if (this.changes === 0) reject(new Error('帳號不存在或狀態已變更'));
-            else resolve();
-          }
-        );
-      });
-    } else {
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE accounts SET status = ? WHERE id = ? AND status = ?',
-          [newStatus, accountId, 'pending'],
-          function(err) {
-            if (err) reject(err);
-            else if (this.changes === 0) reject(new Error('帳號不存在或狀態已變更'));
-            else resolve();
-          }
-        );
-      });
-    }
-    
-    console.log(`✓ 帳號審核完成: ID ${accountId}, 狀態: ${newStatus}`);
-    res.json({ 
-      success: true, 
-      message: action === 'approve' ? '已批准帳號' : '已拒絕帳號'
-    });
-  } catch (error) {
-    console.error('審核帳號失敗:', error);
-    res.status(500).json({ error: error.message });
-  }
+// 舊審核帳號（已停用）
+app.post('/api/admin/review-account', requireAdmin, (req, res) => {
+  res.status(410).json({ error: '審核流程已停用，改為邀請制。' });
 });
 
 // 更新帳號權限（管理員專用）
 app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res) => {
-  const { accountId, permissionLevel, allowedDatabases } = req.body;
-  if (!accountId || !permissionLevel) {
+  const { accountId, permissionLevel, allowedDatabases, roleLevel, canInvite } = req.body;
+  if (!accountId) {
     return res.status(400).json({ error: '缺少必要參數' });
   }
-  
+
   try {
     const account = await new Promise((resolve, reject) => {
       db.get('SELECT id, role FROM accounts WHERE id = ?', [accountId], (err, row) => {
@@ -1168,15 +1081,15 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
         else resolve(row);
       });
     });
-    
+
     if (!account) {
       return res.status(404).json({ error: '帳號不存在' });
     }
-    
+
     if (account.role === 'admin') {
       return res.status(400).json({ error: '無法修改管理員帳號的權限' });
     }
-    
+
     let finalPermissionLevel = permissionLevel === 'viewer' ? 'viewer' : 'editor';
     let sanitized = [];
     let serialized = null;
@@ -1187,11 +1100,27 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
       }
       serialized = JSON.stringify(sanitized);
     }
-    
+
+    // role_level：只允許設定為 'db_admin' 或 'user'（admin 不可透過此 API 降級）
+    const validRoleLevels = ['db_admin', 'user'];
+    const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : null;
+    // db_admin 預設 can_invite=1；user 依傳入值設定
+    const finalCanInvite = finalRoleLevel === 'db_admin' ? 1 : (canInvite ? 1 : 0);
+
+    const updates = ['permission_level = ?', 'allowed_databases = ?'];
+    const params = [finalPermissionLevel, serialized];
+    if (finalRoleLevel !== null) {
+      updates.push('role_level = ?');
+      params.push(finalRoleLevel);
+    }
+    updates.push('can_invite = ?');
+    params.push(finalCanInvite);
+    params.push(accountId);
+
     await new Promise((resolve, reject) => {
       db.run(
-        'UPDATE accounts SET permission_level = ?, allowed_databases = ? WHERE id = ?',
-        [finalPermissionLevel, serialized, accountId],
+        `UPDATE accounts SET ${updates.join(', ')} WHERE id = ?`,
+        params,
         function(err) {
           if (err) reject(err);
           else if (this.changes === 0) reject(new Error('更新失敗'));
@@ -1199,13 +1128,207 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
         }
       );
     });
-    
-    res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: sanitized });
+
+    res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: sanitized, roleLevel: finalRoleLevel, canInvite: !!finalCanInvite });
   } catch (error) {
     console.error('更新帳號權限失敗:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
+// ==================== 邀請連結 API ====================
+
+// 建立邀請連結
+app.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
+  const { roleLevel, permissionLevel, allowedDatabases, note, expiryDays } = req.body;
+  const isAdmin = req.session.role === 'admin';
+  const senderAllowed = req.session.allowedDatabases || [];
+  const senderRoleLevel = req.session.roleLevel || 'user';
+
+  // 允許的 role_level：admin 可設 db_admin；其他只能邀請 user
+  const validRoleLevels = isAdmin ? ['db_admin', 'user'] : ['user'];
+  const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : 'user';
+  const finalPermLevel = permissionLevel === 'viewer' ? 'viewer' : 'editor';
+
+  // 資料庫範圍：非 admin 只能邀請自己有權限的資料庫
+  let finalDbs = Array.isArray(allowedDatabases) ? allowedDatabases : [];
+  if (!isAdmin) {
+    // db_admin 的 allowedDatabases 可能來自 user_database 或 allowed_databases
+    const ownDbs = senderAllowed.length > 0 ? senderAllowed : (req.session.userDatabase ? [req.session.userDatabase] : []);
+    finalDbs = finalDbs.filter(d => ownDbs.includes(d));
+    if (finalDbs.length === 0) {
+      return res.status(400).json({ error: '請選擇至少一個您有權限的資料庫' });
+    }
+  }
+
+  const days = parseInt(expiryDays) || 7;
+  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  const token = crypto.randomUUID();
+
+  try {
+    await new Promise((resolve, reject) => {
+      db.run(
+        'INSERT INTO invitations (token, created_by, expires_at, role_level, permission_level, allowed_databases, note) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [token, req.session.username, expiresAt, finalRoleLevel, finalPermLevel, JSON.stringify(finalDbs), note || null],
+        function(err) { if (err) reject(err); else resolve(this.lastID); }
+      );
+    });
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json({ success: true, token, link: `${baseUrl}/login.html?token=${token}`, expiresAt });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 取得邀請清單
+app.get('/api/admin/invitations', requireCanInvite, (req, res) => {
+  const isAdmin = req.session.role === 'admin';
+  const query = isAdmin
+    ? 'SELECT * FROM invitations ORDER BY created_at DESC'
+    : 'SELECT * FROM invitations WHERE created_by = ? ORDER BY created_at DESC';
+  const params = isAdmin ? [] : [req.session.username];
+  db.all(query, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json((rows || []).map(r => ({
+      ...r,
+      allowed_databases: (() => { try { return JSON.parse(r.allowed_databases || '[]'); } catch { return []; } })(),
+      status: r.used_at ? 'used' : (new Date(r.expires_at) < new Date() ? 'expired' : 'active')
+    })));
+  });
+});
+
+// 撤銷邀請
+app.delete('/api/admin/invitations/:id', requireCanInvite, async (req, res) => {
+  const isAdmin = req.session.role === 'admin';
+  const id = parseInt(req.params.id);
+  try {
+    const inv = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM invitations WHERE id = ?', [id], (err, row) => { if (err) reject(err); else resolve(row); });
+    });
+    if (!inv) return res.status(404).json({ error: '邀請不存在' });
+    if (!isAdmin && inv.created_by !== req.session.username) return res.status(403).json({ error: '只能撤銷自己建立的邀請' });
+    if (inv.used_at) return res.status(400).json({ error: '此邀請已被使用，無法撤銷' });
+    await new Promise((resolve, reject) => {
+      db.run('DELETE FROM invitations WHERE id = ?', [id], err => { if (err) reject(err); else resolve(); });
+    });
+    res.json({ success: true, message: '邀請已撤銷' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 驗證邀請 token（公開，不需登入）
+app.get('/api/invite/:token', async (req, res) => {
+  const { token } = req.params;
+  try {
+    const inv = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM invitations WHERE token = ?', [token], (err, row) => { if (err) reject(err); else resolve(row); });
+    });
+    if (!inv) return res.status(404).json({ error: '邀請連結無效' });
+    if (inv.used_at) return res.status(410).json({ error: '此邀請連結已被使用' });
+    if (new Date(inv.expires_at) < new Date()) return res.status(410).json({ error: '此邀請連結已過期' });
+    res.json({
+      valid: true,
+      note: inv.note,
+      role_level: inv.role_level,
+      permission_level: inv.permission_level,
+      allowed_databases: (() => { try { return JSON.parse(inv.allowed_databases || '[]'); } catch { return []; } })(),
+      expires_at: inv.expires_at
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 透過邀請連結建立帳號（公開）
+app.post('/api/invite/:token/register', async (req, res) => {
+  const { token } = req.params;
+  const { username, password, full_name } = req.body;
+
+  if (!username || !password) return res.status(400).json({ error: '請提供使用者名稱和密碼' });
+  if (password.length < 6) return res.status(400).json({ error: '密碼長度至少需要 6 個字元' });
+  if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(400).json({ error: '使用者名稱只能包含英數字和底線' });
+
+  try {
+    const inv = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM invitations WHERE token = ?', [token], (err, row) => { if (err) reject(err); else resolve(row); });
+    });
+    if (!inv) return res.status(404).json({ error: '邀請連結無效' });
+    if (inv.used_at) return res.status(410).json({ error: '此邀請連結已被使用' });
+    if (new Date(inv.expires_at) < new Date()) return res.status(410).json({ error: '此邀請連結已過期' });
+
+    const existing = await new Promise((resolve, reject) => {
+      db.get('SELECT id FROM accounts WHERE username = ?', [username], (err, row) => { if (err) reject(err); else resolve(row); });
+    });
+    if (existing) return res.status(400).json({ error: '使用者名稱已存在' });
+
+    const passwordHash = await argon2.hash(password);
+    const userDbName = `user_${username}.db`;
+    const isDbAdmin = inv.role_level === 'db_admin';
+    const allowedDbs = (() => { try { return JSON.parse(inv.allowed_databases || '[]'); } catch { return []; } })();
+    // editor 使用 user_database；viewer 使用 allowed_databases
+    const finalPermLevel = inv.permission_level || 'editor';
+    const finalAllowed = finalPermLevel === 'viewer' ? JSON.stringify(allowedDbs) : null;
+    const finalUserDb = finalPermLevel === 'viewer' ? (allowedDbs[0] || userDbName) : userDbName;
+
+    await new Promise((resolve, reject) => {
+      db.run(
+        'INSERT INTO accounts (username, password_hash, full_name, role, role_level, can_invite, status, user_database, permission_level, allowed_databases) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [username, passwordHash, full_name || null, 'user', inv.role_level || 'user', isDbAdmin ? 1 : 0, 'active', finalUserDb, finalPermLevel, finalAllowed],
+        function(err) { if (err) reject(err); else resolve(this.lastID); }
+      );
+    });
+
+    // 建立專屬 DB（editor / db_admin 才需要）
+    if (finalPermLevel !== 'viewer') {
+      const newDb = await connectDatabase(userDbName);
+      newDb.close();
+    }
+
+    // 標記邀請已使用
+    db.run('UPDATE invitations SET used_at = CURRENT_TIMESTAMP, used_by = ? WHERE token = ?', [username, token]);
+
+    console.log(`✓ 透過邀請建立帳號: ${username} (${inv.role_level})`);
+    res.json({ success: true, message: '帳號建立成功，請使用您的帳號登入。' });
+  } catch (error) {
+    console.error('邀請註冊錯誤:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 取得同資料庫範圍的帳號（db_admin 用）
+app.get('/api/my-team-accounts', requireAuth, (req, res) => {
+  const myDb = req.session.userDatabase;
+  const myAllowed = req.session.allowedDatabases || [];
+  const scope = myAllowed.length > 0 ? myAllowed : (myDb ? [myDb] : []);
+  if (scope.length === 0) return res.json([]);
+
+  db.all(
+    'SELECT id, username, full_name, role_level, permission_level, allowed_databases, user_database, status, created_at FROM accounts WHERE status = ? AND role != ?',
+    ['active', 'admin'],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      const result = (rows || []).filter(r => {
+        const dbs = (() => {
+          try { return JSON.parse(r.allowed_databases || '[]'); } catch { return []; }
+        })();
+        const rDbs = dbs.length > 0 ? dbs : (r.user_database ? [r.user_database] : []);
+        return scope.some(d => rDbs.includes(d)) || scope.includes(r.user_database);
+      }).map(r => ({
+        id: r.id,
+        username: r.username,
+        full_name: r.full_name,
+        role_level: r.role_level || 'user',
+        permission_level: r.permission_level || 'editor',
+        status: r.status,
+        created_at: r.created_at
+      }));
+      res.json(result);
+    }
+  );
+});
+
+// ==================== 帳號密碼管理 ====================
 
 // 重設使用者密碼（管理員專用）
 app.post('/api/admin/accounts/reset-password', requireAdmin, async (req, res) => {
