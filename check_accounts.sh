@@ -134,18 +134,19 @@ echo "────────────────────────�
 sqlite3 "$DB_PATH" << EOF
 .mode column
 .headers on
-SELECT 
+SELECT
     id,
     username,
     full_name,
     role,
+    COALESCE(role_level, CASE WHEN role='admin' THEN 'admin' ELSE 'user' END) as role_level,
+    COALESCE(can_invite, 0) as can_invite,
     status,
-    CASE 
+    CASE
         WHEN password_hash LIKE '$argon2%' THEN 'argon2'
         WHEN password_hash LIKE '$2a$%' OR password_hash LIKE '$2b$%' OR password_hash LIKE '$2y$%' THEN 'bcrypt'
         ELSE 'unknown'
     END as hash_type,
-    LENGTH(password_hash) as hash_length,
     permission_level,
     created_at
 FROM accounts
