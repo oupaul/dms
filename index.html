@@ -5387,16 +5387,19 @@ group_member,,2,4</code></pre>
 
         // 填充邀請表單中的資料庫多選
         function populateInviteDatabases() {
-            const isAdmin = currentUser && currentUser.role === 'admin';
+            const rl = currentUser ? (currentUser.roleLevel || 'user') : 'user';
+            const isDbAdmin = rl === 'db_admin';
             let dbList = [];
-            if (isAdmin) {
+            if (!isDbAdmin) {
+                // admin 或 can_invite 工程師：可選所有資料庫
                 dbList = permissionDatabaseOptions;
-            } else if ((currentUser.allowedDatabases || []).length > 0) {
-                // viewer 型帳號：使用其授權的資料庫清單
-                dbList = currentUser.allowedDatabases;
-            } else if (currentUser.database) {
-                // editor/db_admin：只能邀請到自己的資料庫
-                dbList = [currentUser.database];
+            } else {
+                // db_admin：限自身有存取權的資料庫
+                if ((currentUser.allowedDatabases || []).length > 0) {
+                    dbList = currentUser.allowedDatabases;
+                } else if (currentUser.database) {
+                    dbList = [currentUser.database];
+                }
             }
             const html = dbList.length
                 ? dbList.map(db => `<option value="${db}">${db}</option>`).join('')

@@ -1153,15 +1153,16 @@ app.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
   const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : validRoleLevels[0];
   const finalPermLevel = permissionLevel === 'viewer' ? 'viewer' : 'editor';
 
-  // 資料庫範圍：非 admin 只能邀請自己有權限的資料庫
+  // 資料庫範圍：
+  //   admin 或 can_invite 工程師 → 可邀請至任何資料庫
+  //   db_admin → 只能邀請至自身有存取權的資料庫
   let finalDbs = Array.isArray(allowedDatabases) ? allowedDatabases : [];
-  if (!isAdmin) {
-    // db_admin 的 allowedDatabases 可能來自 user_database 或 allowed_databases
+  if (isDbAdmin) {
     const ownDbs = senderAllowed.length > 0 ? senderAllowed : (req.session.userDatabase ? [req.session.userDatabase] : []);
     finalDbs = finalDbs.filter(d => ownDbs.includes(d));
-    if (finalDbs.length === 0) {
-      return res.status(400).json({ error: '請選擇至少一個您有權限的資料庫' });
-    }
+  }
+  if (finalDbs.length === 0) {
+    return res.status(400).json({ error: '請選擇至少一個資料庫' });
   }
 
   const days = parseInt(expiryDays) || 7;
