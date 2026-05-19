@@ -1094,24 +1094,32 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
     }
 
     let finalPermissionLevel = permissionLevel === 'viewer' ? 'viewer' : 'editor';
+
+    // role_level：只允許設定為 'db_admin'、'client_user' 或 'user'（admin 不可透過此 API 降級）
+    const validRoleLevels = ['db_admin', 'client_user', 'user'];
+    const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : null;
+    const isClientRole = finalRoleLevel === 'db_admin' || finalRoleLevel === 'client_user';
+
+    // db_admin 預設 can_invite=1；client_user 強制 0；user 依傳入值設定
+    const finalCanInvite = finalRoleLevel === 'db_admin' ? 1 : (finalRoleLevel === 'client_user' ? 0 : (canInvite ? 1 : 0));
+
     let sanitized = [];
     let serialized = null;
-    if (finalPermissionLevel === 'viewer') {
+    if (finalPermissionLevel === 'viewer' || isClientRole) {
       sanitized = sanitizeAllowedDatabases(Array.isArray(allowedDatabases) ? allowedDatabases : []);
       if (sanitized.length === 0) {
-        return res.status(400).json({ error: '請至少選擇一個可讀取的資料庫' });
+        return res.status(400).json({ error: '請至少選擇一個可存取的資料庫' });
       }
       serialized = JSON.stringify(sanitized);
     }
 
-    // role_level：只允許設定為 'db_admin' 或 'user'（admin 不可透過此 API 降級）
-    const validRoleLevels = ['db_admin', 'user'];
-    const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : null;
-    // db_admin 預設 can_invite=1；user 依傳入值設定
-    const finalCanInvite = finalRoleLevel === 'db_admin' ? 1 : (canInvite ? 1 : 0);
-
     const updates = ['permission_level = ?', 'allowed_databases = ?'];
     const params = [finalPermissionLevel, serialized];
+    // 客戶帳號同步更新 user_database 為第一個允許的資料庫
+    if (isClientRole && sanitized.length > 0) {
+      updates.push('user_database = ?');
+      params.push(sanitized[0]);
+    }
     if (finalRoleLevel !== null) {
       updates.push('role_level = ?');
       params.push(finalRoleLevel);

@@ -2274,7 +2274,7 @@ group_member,,2,4</code></pre>
                         </select>
                     </div>
                     <div class="mb-3" id="permission-db-select-wrapper" style="display:none;">
-                        <label class="form-label fw-bold">允許瀏覽的資料庫（可多選）</label>
+                        <label class="form-label fw-bold" id="permission-db-select-label">可存取的資料庫（可多選）</label>
                         <select id="permission-db-select" class="form-select" multiple size="8"></select>
                         <small class="text-muted">僅能選擇目前存在的資料庫；若需要新增資料庫請先至「資料庫管理」建立。</small>
                     </div>
@@ -6741,8 +6741,9 @@ group_member,,2,4</code></pre>
             $('#permission-account-id').val(account.id);
             $('#permission-account-info').html(`<strong>${account.username}</strong> (${account.full_name || '未提供'})`);
 
-            // 角色層級（只有 user / db_admin 可設定，admin 本身不進此 modal）
-            const rl = account.role_level === 'db_admin' ? 'db_admin' : 'user';
+            // 角色層級（user / db_admin / client_user 均可設定，admin 本身不進此 modal）
+            const validRls = ['db_admin', 'client_user', 'user'];
+            const rl = validRls.includes(account.role_level) ? account.role_level : 'user';
             $('#permission-role-level').val(rl);
             $('#permission-can-invite').prop('checked', !!account.can_invite);
             togglePermissionCanInvite();
@@ -6756,6 +6757,7 @@ group_member,,2,4</code></pre>
 
         function togglePermissionCanInvite() {
             const rl = $('#permission-role-level').val();
+            togglePermissionModalDatabases();
             if (rl === 'db_admin') {
                 $('#permission-can-invite').prop('checked', true).prop('disabled', true);
             } else if (rl === 'client_user') {
@@ -6767,8 +6769,15 @@ group_member,,2,4</code></pre>
 
         function togglePermissionModalDatabases() {
             const level = $('#permission-level-select').val();
-            if (level === 'viewer') {
+            const rl = $('#permission-role-level').val();
+            const isClient = rl === 'db_admin' || rl === 'client_user';
+            if (level === 'viewer' || isClient) {
                 $('#permission-db-select-wrapper').show();
+                if (isClient) {
+                    $('#permission-db-select-label').text('可存取的資料庫（可多選）');
+                } else {
+                    $('#permission-db-select-label').text('允許唯讀的資料庫（可多選）');
+                }
             } else {
                 $('#permission-db-select-wrapper').hide();
             }
@@ -6783,11 +6792,12 @@ group_member,,2,4</code></pre>
             const level = $('#permission-level-select').val();
             const roleLevel = $('#permission-role-level').val();
             const canInvite = $('#permission-can-invite').is(':checked');
+            const isClient = roleLevel === 'db_admin' || roleLevel === 'client_user';
             const payload = { accountId, permissionLevel: level, roleLevel, canInvite };
-            if (level === 'viewer') {
+            if (level === 'viewer' || isClient) {
                 const allowed = ($('#permission-db-select').val() || []).filter(Boolean);
                 if (allowed.length === 0) {
-                    alert('請至少選擇一個允許瀏覽的資料庫');
+                    alert('請至少選擇一個可存取的資料庫');
                     return;
                 }
                 payload.allowedDatabases = allowed;
