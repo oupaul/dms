@@ -5680,7 +5680,7 @@ group_member,,2,4</code></pre>
                         ['Transporter', d.transporterCreated ? '✅ 已建立' : '❌ 未建立'],
                         ['SMTP 主機', d.smtpHost || '—'],
                         ['Port / 加密', `${d.smtpPort || '—'} / ${d.encryption || '—'}`],
-                        ['帳號設定', d.hasAuth ? '✅ 有' : '⚠️ 無（無帳號模式）'],
+                        ['帳號設定', d.hasAuth === null ? 'ℹ️ IP 白名單（無需驗證）' : (d.hasAuth ? '✅ 有' : '⚠️ 無帳號')],
                         ['收件人', Array.isArray(d.to) ? d.to.join(', ') : (d.to || '—')],
                         ['SMTP 連線', d.verifyResult ? `✅ ${d.verifyResult}` : `❌ ${d.verifyError || '未測試'}`]
                     ];

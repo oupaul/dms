@@ -618,9 +618,16 @@ function loadEmailConfig() {
           host: emailConfig.smtp.host,
           port: emailConfig.smtp.port || 587,
           secure: enc === 'tls',
-          ignoreTLS: enc === 'none'
+          ignoreTLS: enc === 'none',
+          connectionTimeout: 15000,
+          greetingTimeout: 15000
         };
-        if (emailConfig.smtp.auth && emailConfig.smtp.auth.user) {
+        // 無加密模式（port 25 IP 白名單）不帶 AUTH，其他模式才帶帳密
+        const hasAuth = enc !== 'none' &&
+          emailConfig.smtp.auth &&
+          emailConfig.smtp.auth.user &&
+          emailConfig.smtp.auth.pass;
+        if (hasAuth) {
           transportOpts.auth = {
             user: emailConfig.smtp.auth.user,
             pass: emailConfig.smtp.auth.pass
@@ -1328,14 +1335,15 @@ app.post('/api/admin/email-config', requireAdmin, async (req, res) => {
 
 // SMTP 連線診斷
 app.get('/api/admin/email-diagnose', requireAdmin, async (req, res) => {
+  const enc = emailConfig.smtp?.encryption || 'starttls';
   const diag = {
     configLoaded: !!emailConfig,
     enabled: !!emailConfig.enabled,
     transporterCreated: !!emailTransporter,
     smtpHost: emailConfig.smtp?.host || null,
     smtpPort: emailConfig.smtp?.port || null,
-    encryption: emailConfig.smtp?.encryption || null,
-    hasAuth: !!(emailConfig.smtp?.auth?.user),
+    encryption: enc,
+    hasAuth: enc === 'none' ? null : !!(emailConfig.smtp?.auth?.user && emailConfig.smtp?.auth?.pass),
     to: emailConfig.to || null,
     verifyResult: null,
     verifyError: null
