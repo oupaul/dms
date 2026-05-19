@@ -13,6 +13,7 @@ const { exec } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 
 const app = express();
 app.set('trust proxy', 1); // 信任 nginx 的 X-Forwarded-Proto，讓 req.protocol 正確回傳 https
@@ -600,6 +601,133 @@ function requireCanInvite(req, res, next) {
 // ==================== 審計日誌和使用時間統計 ====================
 
 // 記錄審計日誌
+// ==================== 電子郵件通知 ====================
+
+const EMAIL_CONFIG_PATH = path.join(__dirname, 'email_config.json');
+let emailConfig = { enabled: false };
+let emailTransporter = null;
+
+function loadEmailConfig() {
+  try {
+    if (fs.existsSync(EMAIL_CONFIG_PATH)) {
+      emailConfig = JSON.parse(fs.readFileSync(EMAIL_CONFIG_PATH, 'utf8'));
+      if (emailConfig.enabled && emailConfig.smtp && emailConfig.smtp.auth) {
+        emailTransporter = nodemailer.createTransport({
+          host: emailConfig.smtp.host,
+          port: emailConfig.smtp.port || 587,
+          secure: !!emailConfig.smtp.secure,
+          auth: {
+            user: emailConfig.smtp.auth.user,
+            pass: emailConfig.smtp.auth.pass
+          }
+        });
+        console.log('✓ 郵件通知已啟用，收件人：', emailConfig.to);
+      } else {
+        console.log('ℹ️  郵件通知未啟用（enabled: false）');
+      }
+    } else {
+      console.log('ℹ️  找不到 email_config.json，郵件通知已停用');
+    }
+  } catch (err) {
+    console.error('讀取郵件設定失敗:', err.message);
+  }
+}
+loadEmailConfig();
+
+const ACTION_LABEL = { create: '新增', update: '修改', delete: '刪除', invite: '發送邀請' };
+const RESOURCE_LABEL = { folder: '資料夾', user: '人員', group: '群組', permission: '權限', invite: '邀請連結' };
+const NOTIFY_RESOURCE_TYPES = ['folder', 'user', 'group', 'permission'];
+const NOTIFY_ACTION_TYPES = ['create', 'update', 'delete'];
+
+function formatJsonForEmail(obj) {
+  if (!obj) return '—';
+  if (typeof obj === 'string') {
+    try { obj = JSON.parse(obj); } catch { return obj; }
+  }
+  const rows = Object.entries(obj)
+    .map(([k, v]) => `<tr><td style="padding:2px 10px 2px 0;color:#555;white-space:nowrap;">${k}</td><td style="padding:2px 0;">${v == null ? '<em style="color:#aaa;">null</em>' : String(v)}</td></tr>`)
+    .join('');
+  return `<table style="border-collapse:collapse;font-size:13px;">${rows}</table>`;
+}
+
+function buildEmailHtml({ actionType, resourceType, resourceName, dbName, username, fullName, oldValue, newValue, extra }) {
+  const actionLabel = ACTION_LABEL[actionType] || actionType;
+  const resourceLabel = RESOURCE_LABEL[resourceType] || resourceType;
+  const now = new Date().toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' });
+
+  const rows = [
+    ['操作時間', now],
+    ['操作人員', fullName ? `${fullName}（${username}）` : username],
+    ['操作類型', `<strong>${actionLabel}</strong>`],
+    ['資源類型', resourceLabel],
+    ['資源名稱', resourceName || '—'],
+    ['資料庫', dbName || '—'],
+  ];
+
+  if (oldValue) rows.push(['異動前', formatJsonForEmail(oldValue)]);
+  if (newValue) rows.push(['異動後', formatJsonForEmail(newValue)]);
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      rows.push([k, v || '—']);
+    }
+  }
+
+  const tableRows = rows.map(([label, value]) =>
+    `<tr>
+      <td style="padding:8px 16px;background:#f8f9fa;font-weight:600;white-space:nowrap;border:1px solid #dee2e6;color:#495057;">${label}</td>
+      <td style="padding:8px 16px;border:1px solid #dee2e6;">${value}</td>
+    </tr>`
+  ).join('');
+
+  return `<!DOCTYPE html>
+<html lang="zh-TW">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:20px;font-family:Arial,'Microsoft JhengHei',sans-serif;background:#f4f6f8;">
+  <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+    <div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:20px 24px;">
+      <h2 style="margin:0;color:#fff;font-size:18px;">📁 資料夾權限文管系統</h2>
+      <p style="margin:4px 0 0;color:rgba(255,255,255,0.85);font-size:14px;">系統異動通知</p>
+    </div>
+    <div style="padding:24px;">
+      <table style="width:100%;border-collapse:collapse;font-size:14px;">
+        ${tableRows}
+      </table>
+    </div>
+    <div style="padding:12px 24px;background:#f8f9fa;border-top:1px solid #dee2e6;font-size:12px;color:#6c757d;">
+      此信件由系統自動發送，請勿直接回覆。
+    </div>
+  </div>
+</body>
+</html>`;
+}
+
+async function sendChangeNotification({ actionType, resourceType, resourceName, dbName, username, fullName, oldValue, newValue, extra }) {
+  if (!emailConfig.enabled || !emailTransporter) return;
+  const events = emailConfig.notifyEvents || {};
+  if (events[resourceType] === false) return;
+
+  const actionLabel = ACTION_LABEL[actionType] || actionType;
+  const resourceLabel = RESOURCE_LABEL[resourceType] || resourceType;
+  const prefix = emailConfig.subjectPrefix || '[DMS]';
+  const subject = `${prefix} ${resourceLabel}${actionLabel}通知 - ${resourceName || ''}`;
+
+  const html = buildEmailHtml({ actionType, resourceType, resourceName, dbName, username, fullName, oldValue, newValue, extra });
+
+  try {
+    await emailTransporter.sendMail({
+      from: emailConfig.from,
+      to: Array.isArray(emailConfig.to) ? emailConfig.to.join(', ') : emailConfig.to,
+      subject,
+      html
+    });
+    console.log(`✓ 通知信件已發送：${subject}`);
+  } catch (err) {
+    console.error('發送通知信件失敗:', err.message);
+  }
+}
+
+// ==================== 審計日誌 ====================
+
 function logAudit(req, actionType, resourceType, resourceId, resourceName, oldValue, newValue) {
   if (!req.session || !req.session.userId) return;
   
@@ -629,6 +757,20 @@ function logAudit(req, actionType, resourceType, resourceId, resourceName, oldVa
       }
     }
   );
+
+  // 發送異動通知信
+  if (NOTIFY_RESOURCE_TYPES.includes(resourceType) && NOTIFY_ACTION_TYPES.includes(actionType)) {
+    sendChangeNotification({
+      actionType,
+      resourceType,
+      resourceName,
+      dbName: req.session.userDatabase || null,
+      username: req.session.username,
+      fullName: req.session.fullName || null,
+      oldValue,
+      newValue
+    });
+  }
 }
 
 // 更新使用時間統計
@@ -1147,6 +1289,59 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
   }
 });
 
+// ==================== 郵件設定 API ====================
+
+// 取得郵件設定（遮蔽密碼）
+app.get('/api/admin/email-config', requireAdmin, (req, res) => {
+  const cfg = { ...emailConfig };
+  if (cfg.smtp && cfg.smtp.auth) {
+    cfg.smtp = { ...cfg.smtp, auth: { ...cfg.smtp.auth, pass: cfg.smtp.auth.pass ? '••••••••' : '' } };
+  }
+  res.json(cfg);
+});
+
+// 更新郵件設定
+app.post('/api/admin/email-config', requireAdmin, async (req, res) => {
+  try {
+    const body = req.body;
+    // 若密碼為遮蔽字元，保留原密碼
+    const newConfig = { ...emailConfig, ...body };
+    if (body.smtp && body.smtp.auth) {
+      const newPass = body.smtp.auth.pass;
+      if (!newPass || newPass === '••••••••') {
+        newConfig.smtp.auth.pass = emailConfig.smtp?.auth?.pass || '';
+      }
+    }
+    fs.writeFileSync(EMAIL_CONFIG_PATH, JSON.stringify(newConfig, null, 2), 'utf8');
+    loadEmailConfig();
+    res.json({ success: true, message: '郵件設定已儲存並重新載入' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 發送測試郵件
+app.post('/api/admin/email-test', requireAdmin, async (req, res) => {
+  if (!emailConfig.enabled || !emailTransporter) {
+    return res.status(400).json({ error: '郵件通知未啟用或設定不完整' });
+  }
+  try {
+    await sendChangeNotification({
+      actionType: 'create',
+      resourceType: 'folder',
+      resourceName: '測試資料夾（Test）',
+      dbName: req.session.userDatabase || 'system.db',
+      username: req.session.username,
+      fullName: req.session.fullName || null,
+      oldValue: null,
+      newValue: { name: '測試資料夾（Test）', path: '/測試資料夾' }
+    });
+    res.json({ success: true, message: `測試信件已發送至 ${emailConfig.to}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ==================== 邀請連結 API ====================
 
 // 建立邀請連結
@@ -1189,7 +1384,28 @@ app.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
       );
     });
     const baseUrl = `${req.protocol}://${req.get('host')}`;
-    res.json({ success: true, token, link: `${baseUrl}/login.html?token=${token}`, expiresAt });
+    const inviteLink = `${baseUrl}/login.html?token=${token}`;
+
+    const roleLabelMap = { admin: '最高管理者', db_admin: '客戶負責人', client_user: '客戶使用者', user: '工程師帳號' };
+    sendChangeNotification({
+      actionType: 'invite',
+      resourceType: 'invite',
+      resourceName: note || `邀請至 ${finalDbs.join('、')}`,
+      dbName: null,
+      username: req.session.username,
+      fullName: req.session.fullName || null,
+      oldValue: null,
+      newValue: null,
+      extra: {
+        '邀請角色': roleLabelMap[finalRoleLevel] || finalRoleLevel,
+        '存取資料庫': finalDbs.join('、'),
+        '到期時間': new Date(expiresAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }),
+        '備注': note || '—',
+        '邀請連結': inviteLink
+      }
+    });
+
+    res.json({ success: true, token, link: inviteLink, expiresAt });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

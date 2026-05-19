@@ -19,6 +19,7 @@
     "express": "^5.1.0",
     "express-session": "^1.18.1",
     "multer": "^2.0.2",
+    "nodemailer": "^8.0.7",
     "sqlite3": "^5.1.7"
   },
   "engines": {

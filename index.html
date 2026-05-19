@@ -1054,6 +1054,69 @@
                 </div>
             </div>
 
+            <!-- 郵件通知設定（admin 才顯示） -->
+            <div class="card mb-3 border-warning" id="email-config-card" style="display:none;">
+                <div class="card-header bg-warning text-dark">
+                    <h5 class="mb-0"><i class="bi bi-envelope-gear-fill"></i> 郵件通知設定</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row g-3">
+                        <div class="col-12">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="email-enabled" role="switch">
+                                <label class="form-check-label fw-bold" for="email-enabled">啟用郵件通知</label>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">SMTP 主機</label>
+                            <input type="text" class="form-control form-control-sm" id="email-smtp-host" placeholder="smtp.gmail.com">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">Port</label>
+                            <input type="number" class="form-control form-control-sm" id="email-smtp-port" value="587">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-semibold">加密</label>
+                            <select class="form-select form-select-sm" id="email-smtp-secure">
+                                <option value="false">STARTTLS（Port 587）</option>
+                                <option value="true">SSL/TLS（Port 465）</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">帳號（Email）</label>
+                            <input type="email" class="form-control form-control-sm" id="email-smtp-user" placeholder="your@gmail.com">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-semibold">密碼 / App Password</label>
+                            <input type="password" class="form-control form-control-sm" id="email-smtp-pass" placeholder="留空表示不修改">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">寄件人顯示名稱</label>
+                            <input type="text" class="form-control form-control-sm" id="email-from" placeholder="DMS系統通知 <your@gmail.com>">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">收件人（多個地址用逗號分隔）</label>
+                            <input type="text" class="form-control form-control-sm" id="email-to" placeholder="admin@example.com, backup@example.com">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-semibold">通知事件</label>
+                            <div class="d-flex flex-wrap gap-3">
+                                <div class="form-check"><input class="form-check-input" type="checkbox" id="email-event-folder" checked><label class="form-check-label" for="email-event-folder">資料夾異動</label></div>
+                                <div class="form-check"><input class="form-check-input" type="checkbox" id="email-event-user" checked><label class="form-check-label" for="email-event-user">人員異動</label></div>
+                                <div class="form-check"><input class="form-check-input" type="checkbox" id="email-event-group" checked><label class="form-check-label" for="email-event-group">群組異動</label></div>
+                                <div class="form-check"><input class="form-check-input" type="checkbox" id="email-event-permission" checked><label class="form-check-label" for="email-event-permission">權限異動</label></div>
+                                <div class="form-check"><input class="form-check-input" type="checkbox" id="email-event-invite" checked><label class="form-check-label" for="email-event-invite">邀請連結發送</label></div>
+                            </div>
+                        </div>
+                        <div class="col-12 d-flex gap-2">
+                            <button class="btn btn-warning" onclick="saveEmailConfig(); return false;"><i class="bi bi-save"></i> 儲存設定</button>
+                            <button class="btn btn-outline-secondary" onclick="sendTestEmail(); return false;"><i class="bi bi-send"></i> 發送測試信</button>
+                        </div>
+                        <div id="email-config-msg" class="col-12" style="display:none;"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- 所有帳號列表（admin 才顯示） -->
             <div class="card" id="all-accounts-card">
                 <div class="card-header bg-primary text-white">
@@ -5362,12 +5425,15 @@ group_member,,2,4</code></pre>
                     $('#my-team-card').hide();
                 }
 
-                // 只有 admin 才看到「所有帳號」卡片
+                // 只有 admin 才看到「所有帳號」和「郵件設定」卡片
                 if (isAdmin) {
                     $('#all-accounts-card').show();
+                    $('#email-config-card').show();
                     loadAllAccounts();
+                    loadEmailConfig();
                 } else {
                     $('#all-accounts-card').hide();
+                    $('#email-config-card').hide();
                 }
 
                 // 邀請管理所有 canInvite 者都能看
@@ -5531,6 +5597,84 @@ group_member,,2,4</code></pre>
                     alert('撤銷失敗：' + (xhr.responseJSON?.error || '請重試'));
                 }
             });
+        }
+
+        // ==================== 郵件通知設定 ====================
+
+        function loadEmailConfig() {
+            $.ajax({
+                url: '/api/admin/email-config',
+                method: 'GET',
+                success: function(cfg) {
+                    $('#email-enabled').prop('checked', !!cfg.enabled);
+                    $('#email-smtp-host').val(cfg.smtp?.host || '');
+                    $('#email-smtp-port').val(cfg.smtp?.port || 587);
+                    $('#email-smtp-secure').val(cfg.smtp?.secure ? 'true' : 'false');
+                    $('#email-smtp-user').val(cfg.smtp?.auth?.user || '');
+                    $('#email-smtp-pass').val('');
+                    $('#email-from').val(cfg.from || '');
+                    const toVal = Array.isArray(cfg.to) ? cfg.to.join(', ') : (cfg.to || '');
+                    $('#email-to').val(toVal);
+                    const events = cfg.notifyEvents || {};
+                    $('#email-event-folder').prop('checked', events.folder !== false);
+                    $('#email-event-user').prop('checked', events.user !== false);
+                    $('#email-event-group').prop('checked', events.group !== false);
+                    $('#email-event-permission').prop('checked', events.permission !== false);
+                    $('#email-event-invite').prop('checked', events.invite !== false);
+                },
+                error: function() {
+                    showEmailConfigMsg('danger', '載入郵件設定失敗');
+                }
+            });
+        }
+
+        function saveEmailConfig() {
+            const toRaw = $('#email-to').val().trim();
+            const toList = toRaw ? toRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+            const payload = {
+                enabled: $('#email-enabled').is(':checked'),
+                smtp: {
+                    host: $('#email-smtp-host').val().trim(),
+                    port: parseInt($('#email-smtp-port').val()) || 587,
+                    secure: $('#email-smtp-secure').val() === 'true',
+                    auth: {
+                        user: $('#email-smtp-user').val().trim(),
+                        pass: $('#email-smtp-pass').val()
+                    }
+                },
+                from: $('#email-from').val().trim(),
+                to: toList,
+                subjectPrefix: '[DMS]',
+                notifyEvents: {
+                    folder: $('#email-event-folder').is(':checked'),
+                    user: $('#email-event-user').is(':checked'),
+                    group: $('#email-event-group').is(':checked'),
+                    permission: $('#email-event-permission').is(':checked'),
+                    invite: $('#email-event-invite').is(':checked')
+                }
+            };
+            $.ajax({
+                url: '/api/admin/email-config',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(payload),
+                success: function(r) { showEmailConfigMsg('success', r.message); },
+                error: function(xhr) { showEmailConfigMsg('danger', xhr.responseJSON?.error || '儲存失敗'); }
+            });
+        }
+
+        function sendTestEmail() {
+            $.ajax({
+                url: '/api/admin/email-test',
+                method: 'POST',
+                success: function(r) { showEmailConfigMsg('success', r.message); },
+                error: function(xhr) { showEmailConfigMsg('danger', xhr.responseJSON?.error || '發送失敗，請確認設定是否正確'); }
+            });
+        }
+
+        function showEmailConfigMsg(type, msg) {
+            $('#email-config-msg').html(`<div class="alert alert-${type} py-2 mb-0">${msg}</div>`).show();
+            setTimeout(() => $('#email-config-msg').fadeOut(), 5000);
         }
 
         // 載入我的團隊成員（db_admin 用）

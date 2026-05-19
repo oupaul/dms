@@ -1,0 +1,22 @@
+{
+  "enabled": false,
+  "smtp": {
+    "host": "smtp.gmail.com",
+    "port": 587,
+    "secure": false,
+    "auth": {
+      "user": "your-email@gmail.com",
+      "pass": "your-app-password"
+    }
+  },
+  "from": "DMS系統通知 <your-email@gmail.com>",
+  "to": ["admin@example.com"],
+  "subjectPrefix": "[DMS]",
+  "notifyEvents": {
+    "folder": true,
+    "user": true,
+    "group": true,
+    "permission": true,
+    "invite": true
+  }
+}
