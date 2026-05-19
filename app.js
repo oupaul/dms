@@ -619,8 +619,8 @@ function loadEmailConfig() {
           port: emailConfig.smtp.port || 587,
           secure: enc === 'tls',
           ignoreTLS: enc === 'none',
-          connectionTimeout: 15000,
-          greetingTimeout: 15000
+          connectionTimeout: 70000,
+          greetingTimeout: 70000
         };
         // 無加密模式（port 25 IP 白名單）不帶 AUTH，其他模式才帶帳密
         const hasAuth = enc !== 'none' &&
