@@ -12,6 +12,7 @@
   "from": "DMS系統通知 <your-email@gmail.com>",
   "to": ["admin@example.com"],
   "subjectPrefix": "[DMS]",
+  "batchMinutes": 15,
   "notifyEvents": {
     "folder": true,
     "user": true,

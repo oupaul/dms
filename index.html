@@ -1099,6 +1099,11 @@
                             <label class="form-label fw-semibold">收件人（多個地址用逗號分隔）</label>
                             <input type="text" class="form-control form-control-sm" id="email-to" placeholder="admin@example.com, backup@example.com">
                         </div>
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold">彙整時間窗口（分鐘）</label>
+                            <input type="number" class="form-control form-control-sm" id="email-batch-minutes" value="15" min="1" max="1440">
+                            <small class="text-muted">第一筆異動後等待此時間，再彙整成一封信發送</small>
+                        </div>
                         <div class="col-12">
                             <label class="form-label fw-semibold">通知事件</label>
                             <div class="d-flex flex-wrap gap-3">
@@ -5618,6 +5623,7 @@ group_member,,2,4</code></pre>
                     $('#email-from').val(cfg.from || '');
                     const toVal = Array.isArray(cfg.to) ? cfg.to.join(', ') : (cfg.to || '');
                     $('#email-to').val(toVal);
+                    $('#email-batch-minutes').val(cfg.batchMinutes || 15);
                     const events = cfg.notifyEvents || {};
                     $('#email-event-folder').prop('checked', events.folder !== false);
                     $('#email-event-user').prop('checked', events.user !== false);
@@ -5650,6 +5656,7 @@ group_member,,2,4</code></pre>
                 from: $('#email-from').val().trim(),
                 to: toList,
                 subjectPrefix: '[DMS]',
+                batchMinutes: parseInt($('#email-batch-minutes').val()) || 15,
                 notifyEvents: {
                     folder: $('#email-event-folder').is(':checked'),
                     user: $('#email-event-user').is(':checked'),
