@@ -2249,8 +2249,23 @@ group_member,,2,4</code></pre>
                         <label class="form-label fw-bold">帳號</label>
                         <div id="permission-account-info" class="form-control-plaintext text-primary"></div>
                     </div>
+                    <!-- 角色層級（admin 才能設定） -->
                     <div class="mb-3">
-                        <label class="form-label fw-bold">權限類型</label>
+                        <label class="form-label fw-bold">角色層級</label>
+                        <select id="permission-role-level" class="form-select" onchange="togglePermissionCanInvite()">
+                            <option value="user">一般帳號</option>
+                            <option value="db_admin">客戶負責人（db_admin）</option>
+                        </select>
+                        <small class="text-muted">客戶負責人可發送邀請連結（限自身資料庫範圍）</small>
+                    </div>
+                    <!-- 可發邀請 -->
+                    <div class="mb-3 form-check" id="can-invite-wrapper">
+                        <input type="checkbox" class="form-check-input" id="permission-can-invite">
+                        <label class="form-check-label" for="permission-can-invite">可發送邀請連結（can_invite）</label>
+                        <div><small class="text-muted">客戶負責人預設勾選且不可取消；一般帳號可由管理員手動授權</small></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">存取權限</label>
                         <select id="permission-level-select" class="form-select" onchange="togglePermissionModalDatabases()">
                             <option value="editor">可編輯（完整權限）</option>
                             <option value="viewer">唯讀：只能瀏覽指定資料庫</option>
@@ -6694,13 +6709,29 @@ group_member,,2,4</code></pre>
             }
             $('#permission-account-id').val(account.id);
             $('#permission-account-info').html(`<strong>${account.username}</strong> (${account.full_name || '未提供'})`);
+
+            // 角色層級（只有 user / db_admin 可設定，admin 本身不進此 modal）
+            const rl = account.role_level === 'db_admin' ? 'db_admin' : 'user';
+            $('#permission-role-level').val(rl);
+            $('#permission-can-invite').prop('checked', !!account.can_invite);
+            togglePermissionCanInvite();
+
             const level = account.permission_level === 'viewer' ? 'viewer' : 'editor';
             $('#permission-level-select').val(level);
             $('#permission-db-select').html(buildDatabaseOptionsHtml(account.allowed_databases || []));
             togglePermissionModalDatabases();
             $('#account-permission-modal').modal('show');
         }
-        
+
+        function togglePermissionCanInvite() {
+            const isDbAdmin = $('#permission-role-level').val() === 'db_admin';
+            if (isDbAdmin) {
+                $('#permission-can-invite').prop('checked', true).prop('disabled', true);
+            } else {
+                $('#permission-can-invite').prop('disabled', false);
+            }
+        }
+
         function togglePermissionModalDatabases() {
             const level = $('#permission-level-select').val();
             if (level === 'viewer') {
@@ -6709,7 +6740,7 @@ group_member,,2,4</code></pre>
                 $('#permission-db-select-wrapper').hide();
             }
         }
-        
+
         function submitPermissionUpdate() {
             const accountId = parseInt($('#permission-account-id').val(), 10);
             if (!accountId) {
@@ -6717,7 +6748,9 @@ group_member,,2,4</code></pre>
                 return;
             }
             const level = $('#permission-level-select').val();
-            const payload = { accountId, permissionLevel: level };
+            const roleLevel = $('#permission-role-level').val();
+            const canInvite = $('#permission-can-invite').is(':checked');
+            const payload = { accountId, permissionLevel: level, roleLevel, canInvite };
             if (level === 'viewer') {
                 const allowed = ($('#permission-db-select').val() || []).filter(Boolean);
                 if (allowed.length === 0) {

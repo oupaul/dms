@@ -841,7 +841,7 @@ app.post('/api/auth/login', async (req, res) => {
       req.session.username = user.username;
       req.session.fullName = user.full_name;
       req.session.role = user.role;
-      req.session.roleLevel = user.role_level || (user.role === 'admin' ? 'admin' : 'user');
+      req.session.roleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
       req.session.canInvite = !!(user.can_invite || user.role === 'admin');
       req.session.permissionLevel = permissionLevel;
       req.session.allowedDatabases = permissionLevel === 'viewer' ? allowedDatabases : [];
@@ -882,7 +882,7 @@ app.post('/api/auth/login', async (req, res) => {
           username: user.username,
           fullName: user.full_name,
           role: user.role,
-          roleLevel: user.role_level || (user.role === 'admin' ? 'admin' : 'user'),
+          roleLevel: user.role === 'admin' ? 'admin' : (user.role_level || 'user'),
           canInvite: !!(user.can_invite || user.role === 'admin'),
           database: targetDatabase,
           permissionLevel,
@@ -1011,7 +1011,7 @@ app.get('/api/auth/status', (req, res) => {
         username: req.session.username,
         fullName: req.session.fullName,
         role: req.session.role,
-        roleLevel: req.session.roleLevel || (req.session.role === 'admin' ? 'admin' : 'user'),
+        roleLevel: req.session.role === 'admin' ? 'admin' : (req.session.roleLevel || 'user'),
         canInvite: !!(req.session.canInvite || req.session.role === 'admin'),
         permissionLevel: req.session.permissionLevel || 'editor',
         allowedDatabases: req.session.allowedDatabases || [],
@@ -1054,7 +1054,7 @@ app.get('/api/admin/accounts', requireAdmin, (req, res) => {
         ...row,
         permission_level: row.permission_level || 'editor',
         allowed_databases: parseAllowedDatabases(row.allowed_databases),
-        role_level: row.role_level || (row.role === 'admin' ? 'admin' : 'user'),
+        role_level: row.role === 'admin' ? 'admin' : (row.role_level || 'user'),
         can_invite: !!(row.can_invite || row.role === 'admin')
       }));
       res.json(mapped);
