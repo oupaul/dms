@@ -813,19 +813,21 @@ app.post('/api/auth/login', async (req, res) => {
     }
     
     const permissionLevel = user.permission_level || 'editor';
+    const userRoleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
+    const isClientRole = userRoleLevel === 'db_admin' || userRoleLevel === 'client_user';
     let allowedDatabases = parseAllowedDatabases(user.allowed_databases);
-    if (permissionLevel === 'viewer') {
+    if (permissionLevel === 'viewer' || isClientRole) {
       allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
       if (allowedDatabases.length === 0) {
-        return res.status(403).json({ 
-          error: '尚未指派可讀取的資料庫',
-          message: '請聯繫管理員設定可讀取的資料庫後再登入。'
+        return res.status(403).json({
+          error: '尚未指派可存取的資料庫',
+          message: '請聯繫管理員設定可存取的資料庫後再登入。'
         });
       }
     }
-    
+
     let targetDatabase = user.user_database;
-    if (permissionLevel === 'viewer') {
+    if (permissionLevel === 'viewer' || isClientRole) {
       targetDatabase = allowedDatabases[0];
     }
     
@@ -845,7 +847,7 @@ app.post('/api/auth/login', async (req, res) => {
       req.session.roleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
       req.session.canInvite = !!(user.can_invite || user.role === 'admin');
       req.session.permissionLevel = permissionLevel;
-      req.session.allowedDatabases = permissionLevel === 'viewer' ? allowedDatabases : [];
+      req.session.allowedDatabases = (permissionLevel === 'viewer' || isClientRole) ? allowedDatabases : [];
       req.session.userDatabase = targetDatabase;
       
       // 記錄活動會話到系統資料庫（在線用戶追蹤）
@@ -887,7 +889,7 @@ app.post('/api/auth/login', async (req, res) => {
           canInvite: !!(user.can_invite || user.role === 'admin'),
           database: targetDatabase,
           permissionLevel,
-          allowedDatabases: permissionLevel === 'viewer' ? allowedDatabases : []
+          allowedDatabases: (permissionLevel === 'viewer' || isClientRole) ? allowedDatabases : []
         }
       });
     } catch (dbError) {
@@ -1269,12 +1271,24 @@ app.post('/api/invite/:token/register', async (req, res) => {
 
     const passwordHash = await argon2.hash(password);
     const userDbName = `user_${username}.db`;
+    const isClient = inv.role_level === 'db_admin' || inv.role_level === 'client_user';
     const isDbAdmin = inv.role_level === 'db_admin';
     const allowedDbs = (() => { try { return JSON.parse(inv.allowed_databases || '[]'); } catch { return []; } })();
-    // editor 使用 user_database；viewer 使用 allowed_databases
     const finalPermLevel = inv.permission_level || 'editor';
-    const finalAllowed = finalPermLevel === 'viewer' ? JSON.stringify(allowedDbs) : null;
-    const finalUserDb = finalPermLevel === 'viewer' ? (allowedDbs[0] || userDbName) : userDbName;
+
+    let finalUserDb, finalAllowed;
+    if (isClient) {
+      // 客戶帳號：使用邀請指定的資料庫，不建立個人資料庫
+      if (allowedDbs.length === 0) {
+        return res.status(400).json({ error: '邀請未指定可存取的資料庫，請聯繫管理員重新發送邀請' });
+      }
+      finalUserDb = allowedDbs[0];
+      finalAllowed = JSON.stringify(allowedDbs);
+    } else {
+      // 工程師帳號：viewer 使用 allowed_databases，editor 使用個人資料庫
+      finalUserDb = finalPermLevel === 'viewer' ? (allowedDbs[0] || userDbName) : userDbName;
+      finalAllowed = finalPermLevel === 'viewer' ? JSON.stringify(allowedDbs) : null;
+    }
 
     await new Promise((resolve, reject) => {
       db.run(
@@ -1284,8 +1298,8 @@ app.post('/api/invite/:token/register', async (req, res) => {
       );
     });
 
-    // 建立專屬 DB（editor / db_admin 才需要）
-    if (finalPermLevel !== 'viewer') {
+    // 只有工程師 editor 帳號才建立個人資料庫
+    if (!isClient && finalPermLevel !== 'viewer') {
       const newDb = await connectDatabase(userDbName);
       newDb.close();
     }
@@ -5160,19 +5174,21 @@ app.post('/api/databases/switch', requireAuth, async (req, res) => {
     const username = req.session.username;
     const isAdmin = req.session.role === 'admin';
     const permissionLevel = req.session.permissionLevel || 'editor';
-    const allowedForViewer = req.session.allowedDatabases || [];
-    
-    if (permissionLevel === 'viewer' && !isAdmin) {
-      if (!allowedForViewer.includes(name)) {
+    const sessionRoleLevel = req.session.roleLevel || 'user';
+    const isClientRole = sessionRoleLevel === 'db_admin' || sessionRoleLevel === 'client_user';
+    const allowedForRestricted = req.session.allowedDatabases || [];
+
+    if (!isAdmin && (permissionLevel === 'viewer' || isClientRole)) {
+      if (!allowedForRestricted.includes(name)) {
         return res.status(403).json({ error: '此帳號無法切換到該資料庫' });
       }
     } else if (!isAdmin) {
       const requiredPrefix = `user_${username}_`;
       // 或者是他們最初註冊時的資料庫 user_{username}.db
       const initialDb = `user_${username}.db`;
-      
+
       if (!name.startsWith(requiredPrefix) && name !== initialDb) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: '權限不足',
           message: `您只能切換到自己的資料庫（以 "${requiredPrefix}" 開頭或 "${initialDb}"）`
         });
