@@ -4365,6 +4365,19 @@ app.get('/api/import-history/:id/details', withUserDatabase, (req, res) => {
   );
 });
 
+// login.html 為公開頁（不需登入），同時相容 public/ 和根目錄兩種部署位置
+app.get('/login.html', (req, res) => {
+  const inPublic = path.join(__dirname, 'public', 'login.html');
+  const inRoot   = path.join(__dirname, 'login.html');
+  const target   = fs.existsSync(inPublic) ? inPublic : inRoot;
+  res.sendFile(target, (err) => {
+    if (err) {
+      console.error('SendFile login.html error:', err);
+      res.status(404).send('login.html not found');
+    }
+  });
+});
+
 app.get('/csv_generator.html', ensureEditorAccess, (req, res) => {
   res.sendFile(path.join(__dirname, 'public/csv_generator.html'), (err) => {
     if (err) {
