@@ -15,6 +15,7 @@ const execAsync = promisify(exec);
 const crypto = require('crypto');
 
 const app = express();
+app.set('trust proxy', 1); // 信任 nginx 的 X-Forwarded-Proto，讓 req.protocol 正確回傳 https
 const PORT = process.env.PORT || 5000;
 const UPLOAD_DIR = 'uploads';
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
