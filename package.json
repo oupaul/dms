@@ -11,7 +11,7 @@
     "update-deps": "npm update --save"
   },
   "dependencies": {
-    "argon2": "^0.31.2",
+    "argon2": "^0.44.0",
     "body-parser": "^2.2.0",
     "csv-parser": "^3.2.0",
     "csv-writer": "^1.6.0",
@@ -20,7 +20,7 @@
     "express-session": "^1.18.1",
     "multer": "^2.0.2",
     "nodemailer": "^8.0.7",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^6.0.1"
   },
   "engines": {
     "node": ">=20.0.0",
