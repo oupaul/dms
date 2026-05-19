@@ -611,16 +611,22 @@ function loadEmailConfig() {
   try {
     if (fs.existsSync(EMAIL_CONFIG_PATH)) {
       emailConfig = JSON.parse(fs.readFileSync(EMAIL_CONFIG_PATH, 'utf8'));
-      if (emailConfig.enabled && emailConfig.smtp && emailConfig.smtp.auth) {
-        emailTransporter = nodemailer.createTransport({
+      if (emailConfig.enabled && emailConfig.smtp) {
+        const enc = emailConfig.smtp.encryption ||
+          (emailConfig.smtp.ignoreTLS ? 'none' : (emailConfig.smtp.secure ? 'tls' : 'starttls'));
+        const transportOpts = {
           host: emailConfig.smtp.host,
           port: emailConfig.smtp.port || 587,
-          secure: !!emailConfig.smtp.secure,
-          auth: {
+          secure: enc === 'tls',
+          ignoreTLS: enc === 'none'
+        };
+        if (emailConfig.smtp.auth && emailConfig.smtp.auth.user) {
+          transportOpts.auth = {
             user: emailConfig.smtp.auth.user,
             pass: emailConfig.smtp.auth.pass
-          }
-        });
+          };
+        }
+        emailTransporter = nodemailer.createTransport(transportOpts);
         console.log('✓ 郵件通知已啟用，收件人：', emailConfig.to);
       } else {
         console.log('ℹ️  郵件通知未啟用（enabled: false）');

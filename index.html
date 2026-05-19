@@ -1078,8 +1078,9 @@
                         <div class="col-md-3">
                             <label class="form-label fw-semibold">加密</label>
                             <select class="form-select form-select-sm" id="email-smtp-secure">
-                                <option value="false">STARTTLS（Port 587）</option>
-                                <option value="true">SSL/TLS（Port 465）</option>
+                                <option value="starttls">STARTTLS（Port 587）</option>
+                                <option value="tls">SSL/TLS（Port 465）</option>
+                                <option value="none">無加密（Port 25）</option>
                             </select>
                         </div>
                         <div class="col-md-6">
@@ -5609,7 +5610,8 @@ group_member,,2,4</code></pre>
                     $('#email-enabled').prop('checked', !!cfg.enabled);
                     $('#email-smtp-host').val(cfg.smtp?.host || '');
                     $('#email-smtp-port').val(cfg.smtp?.port || 587);
-                    $('#email-smtp-secure').val(cfg.smtp?.secure ? 'true' : 'false');
+                    const enc = cfg.smtp?.encryption || (cfg.smtp?.ignoreTLS ? 'none' : (cfg.smtp?.secure ? 'tls' : 'starttls'));
+                    $('#email-smtp-secure').val(enc);
                     $('#email-smtp-user').val(cfg.smtp?.auth?.user || '');
                     $('#email-smtp-pass').val('');
                     $('#email-from').val(cfg.from || '');
@@ -5636,7 +5638,9 @@ group_member,,2,4</code></pre>
                 smtp: {
                     host: $('#email-smtp-host').val().trim(),
                     port: parseInt($('#email-smtp-port').val()) || 587,
-                    secure: $('#email-smtp-secure').val() === 'true',
+                    encryption: $('#email-smtp-secure').val(),
+                    secure: $('#email-smtp-secure').val() === 'tls',
+                    ignoreTLS: $('#email-smtp-secure').val() === 'none',
                     auth: {
                         user: $('#email-smtp-user').val().trim(),
                         pass: $('#email-smtp-pass').val()
