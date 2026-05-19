@@ -1326,13 +1326,54 @@ app.post('/api/admin/email-config', requireAdmin, async (req, res) => {
   }
 });
 
-// 發送測試郵件
+// SMTP 連線診斷
+app.get('/api/admin/email-diagnose', requireAdmin, async (req, res) => {
+  const diag = {
+    configLoaded: !!emailConfig,
+    enabled: !!emailConfig.enabled,
+    transporterCreated: !!emailTransporter,
+    smtpHost: emailConfig.smtp?.host || null,
+    smtpPort: emailConfig.smtp?.port || null,
+    encryption: emailConfig.smtp?.encryption || null,
+    hasAuth: !!(emailConfig.smtp?.auth?.user),
+    to: emailConfig.to || null,
+    verifyResult: null,
+    verifyError: null
+  };
+
+  if (!emailTransporter) {
+    diag.verifyError = '尚未建立 transporter（請確認 enabled:true 且設定正確）';
+    return res.json(diag);
+  }
+
+  try {
+    await emailTransporter.verify();
+    diag.verifyResult = 'OK — SMTP 連線成功';
+  } catch (err) {
+    diag.verifyError = err.message;
+  }
+
+  res.json(diag);
+});
+
+// 發送測試郵件（直接丟出錯誤，不吞例外）
 app.post('/api/admin/email-test', requireAdmin, async (req, res) => {
   if (!emailConfig.enabled || !emailTransporter) {
-    return res.status(400).json({ error: '郵件通知未啟用或設定不完整' });
+    return res.status(400).json({ error: '郵件通知未啟用或設定不完整，請先確認設定並儲存' });
   }
+
+  // 先驗證 SMTP 連線
   try {
-    await sendChangeNotification({
+    await emailTransporter.verify();
+  } catch (err) {
+    return res.status(502).json({ error: `SMTP 連線失敗：${err.message}` });
+  }
+
+  // 發送測試信
+  try {
+    const prefix = emailConfig.subjectPrefix || '[DMS]';
+    const toList = Array.isArray(emailConfig.to) ? emailConfig.to.join(', ') : (emailConfig.to || '');
+    const html = buildEmailHtml({
       actionType: 'create',
       resourceType: 'folder',
       resourceName: '測試資料夾（Test）',
@@ -1342,9 +1383,15 @@ app.post('/api/admin/email-test', requireAdmin, async (req, res) => {
       oldValue: null,
       newValue: { name: '測試資料夾（Test）', path: '/測試資料夾' }
     });
-    res.json({ success: true, message: `測試信件已發送至 ${emailConfig.to}` });
+    await emailTransporter.sendMail({
+      from: emailConfig.from,
+      to: toList,
+      subject: `${prefix} 系統測試信件`,
+      html
+    });
+    res.json({ success: true, message: `測試信件已成功發送至 ${toList}` });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: `寄信失敗：${err.message}` });
   }
 });
 

@@ -1109,8 +1109,9 @@
                                 <div class="form-check"><input class="form-check-input" type="checkbox" id="email-event-invite" checked><label class="form-check-label" for="email-event-invite">邀請連結發送</label></div>
                             </div>
                         </div>
-                        <div class="col-12 d-flex gap-2">
+                        <div class="col-12 d-flex gap-2 flex-wrap">
                             <button class="btn btn-warning" onclick="saveEmailConfig(); return false;"><i class="bi bi-save"></i> 儲存設定</button>
+                            <button class="btn btn-outline-info" onclick="diagnoseEmail(); return false;"><i class="bi bi-wifi"></i> 測試 SMTP 連線</button>
                             <button class="btn btn-outline-secondary" onclick="sendTestEmail(); return false;"><i class="bi bi-send"></i> 發送測試信</button>
                         </div>
                         <div id="email-config-msg" class="col-12" style="display:none;"></div>
@@ -5664,6 +5665,32 @@ group_member,,2,4</code></pre>
                 data: JSON.stringify(payload),
                 success: function(r) { showEmailConfigMsg('success', r.message); },
                 error: function(xhr) { showEmailConfigMsg('danger', xhr.responseJSON?.error || '儲存失敗'); }
+            });
+        }
+
+        function diagnoseEmail() {
+            showEmailConfigMsg('info', '<i class="bi bi-hourglass-split"></i> 正在測試 SMTP 連線...');
+            $.ajax({
+                url: '/api/admin/email-diagnose',
+                method: 'GET',
+                success: function(d) {
+                    const rows = [
+                        ['設定已載入', d.configLoaded ? '✅ 是' : '❌ 否'],
+                        ['通知已啟用', d.enabled ? '✅ 是' : '❌ 否'],
+                        ['Transporter', d.transporterCreated ? '✅ 已建立' : '❌ 未建立'],
+                        ['SMTP 主機', d.smtpHost || '—'],
+                        ['Port / 加密', `${d.smtpPort || '—'} / ${d.encryption || '—'}`],
+                        ['帳號設定', d.hasAuth ? '✅ 有' : '⚠️ 無（無帳號模式）'],
+                        ['收件人', Array.isArray(d.to) ? d.to.join(', ') : (d.to || '—')],
+                        ['SMTP 連線', d.verifyResult ? `✅ ${d.verifyResult}` : `❌ ${d.verifyError || '未測試'}`]
+                    ];
+                    const table = rows.map(([k, v]) =>
+                        `<tr><td class="fw-semibold pe-3 text-nowrap">${k}</td><td>${v}</td></tr>`
+                    ).join('');
+                    const type = d.verifyResult ? 'success' : 'danger';
+                    showEmailConfigMsg(type, `<table class="mb-0 small">${table}</table>`);
+                },
+                error: function(xhr) { showEmailConfigMsg('danger', xhr.responseJSON?.error || '診斷失敗'); }
             });
         }
 
