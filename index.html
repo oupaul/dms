@@ -5688,9 +5688,9 @@ group_member,,2,4</code></pre>
                         `<tr><td class="fw-semibold pe-3 text-nowrap">${k}</td><td>${v}</td></tr>`
                     ).join('');
                     const type = d.verifyResult ? 'success' : 'danger';
-                    showEmailConfigMsg(type, `<table class="mb-0 small">${table}</table>`);
+                    showEmailConfigMsg(type, `<table class="mb-0 small">${table}</table>`, true);
                 },
-                error: function(xhr) { showEmailConfigMsg('danger', xhr.responseJSON?.error || '診斷失敗'); }
+                error: function(xhr) { showEmailConfigMsg('danger', xhr.responseJSON?.error || '診斷失敗', true); }
             });
         }
 
@@ -5703,9 +5703,14 @@ group_member,,2,4</code></pre>
             });
         }
 
-        function showEmailConfigMsg(type, msg) {
-            $('#email-config-msg').html(`<div class="alert alert-${type} py-2 mb-0">${msg}</div>`).show();
-            setTimeout(() => $('#email-config-msg').fadeOut(), 5000);
+        let _emailMsgTimer = null;
+        function showEmailConfigMsg(type, msg, persist) {
+            if (_emailMsgTimer) { clearTimeout(_emailMsgTimer); _emailMsgTimer = null; }
+            $('#email-config-msg').stop(true).show()
+                .html(`<div class="alert alert-${type} py-2 mb-0">${msg}</div>`);
+            if (!persist) {
+                _emailMsgTimer = setTimeout(() => { $('#email-config-msg').fadeOut(); _emailMsgTimer = null; }, 6000);
+            }
         }
 
         // 載入我的團隊成員（db_admin 用）
