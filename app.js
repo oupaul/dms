@@ -1145,9 +1145,12 @@ app.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
   const senderAllowed = req.session.allowedDatabases || [];
   const senderRoleLevel = req.session.roleLevel || 'user';
 
-  // 允許的 role_level：admin 可設 db_admin；其他只能邀請 user
-  const validRoleLevels = isAdmin ? ['db_admin', 'user'] : ['user'];
-  const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : 'user';
+  // 允許的 role_level：
+  //   db_admin → 只能邀請 client_user（自己客戶公司的使用者）
+  //   admin 或 can_invite 工程師 → 可邀請 db_admin、user、client_user
+  const isDbAdmin = senderRoleLevel === 'db_admin';
+  const validRoleLevels = isDbAdmin ? ['client_user'] : ['db_admin', 'user', 'client_user'];
+  const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : validRoleLevels[0];
   const finalPermLevel = permissionLevel === 'viewer' ? 'viewer' : 'editor';
 
   // 資料庫範圍：非 admin 只能邀請自己有權限的資料庫
