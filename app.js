@@ -328,6 +328,10 @@ function initializeTables(database, callback) {
       if (!columnNames.includes('description')) {
         database.run('ALTER TABLE users ADD COLUMN description TEXT');
       }
+      if (!columnNames.includes('account_key')) {
+        database.run('ALTER TABLE users ADD COLUMN account_key TEXT');
+        database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_key ON users(account_key) WHERE account_key IS NOT NULL');
+      }
     });
     
     // 群組表
@@ -335,7 +339,16 @@ function initializeTables(database, callback) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL
     )`);
-    
+
+    // 新增 description 欄位（若不存在）
+    database.all("PRAGMA table_info(groups)", [], (err, columns) => {
+      if (err) return;
+      const columnNames = columns.map(col => col.name);
+      if (!columnNames.includes('description')) {
+        database.run("ALTER TABLE groups ADD COLUMN description TEXT DEFAULT ''");
+      }
+    });
+
     // 群組成員關聯表
     database.run(`CREATE TABLE IF NOT EXISTS group_users (
       group_id INTEGER NOT NULL,
@@ -460,6 +473,32 @@ async function loadDefaultDatabase() {
   }
 }
 
+// 系統保留的資料庫名稱，不列入一般資料庫管理
+const SYSTEM_DB_NAMES = new Set(['system.db', 'admin.db']);
+
+// 自動掃描 databases/ 目錄，將尚未登記的 .db 檔案加入 databases 表
+function syncDatabaseRegistry() {
+  let files;
+  try {
+    files = fs.readdirSync(DB_DIR).filter(f => f.endsWith('.db') && !SYSTEM_DB_NAMES.has(f) && !f.startsWith('deleted_'));
+  } catch (e) {
+    console.error('syncDatabaseRegistry 掃描失敗:', e.message);
+    return;
+  }
+  if (files.length === 0) return;
+
+  const stmt = db.prepare(`INSERT OR IGNORE INTO databases (name, display_name, created_by, created_at) VALUES (?, ?, ?, ?)`);
+  files.forEach(name => {
+    // 從 user_<name>.db 推算 created_by
+    const createdBy = name.startsWith('user_') ? name.slice(5).replace(/\.db$/i, '') : null;
+    const displayName = createdBy ? null : name.replace(/\.db$/i, '');
+    const stat = (() => { try { return fs.statSync(path.join(DB_DIR, name)); } catch { return null; } })();
+    const createdAt = stat ? stat.birthtime.toISOString() : new Date().toISOString();
+    stmt.run(name, displayName, createdBy, createdAt);
+  });
+  stmt.finalize(() => console.log(`✓ 資料庫登記同步完成（共 ${files.length} 個）`));
+}
+
 // 啟動時載入預設資料庫
 loadDefaultDatabase().then(() => {
   console.log('Database initialized!');
@@ -566,6 +605,23 @@ loadDefaultDatabase().then(() => {
     } else {
       console.log('✓ Invitations table initialized in system database');
     }
+  });
+
+  // 資料庫登記表
+  db.run(`CREATE TABLE IF NOT EXISTS databases (
+    name TEXT PRIMARY KEY,
+    display_name TEXT,
+    created_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    description TEXT
+  )`, (err) => {
+    if (err) {
+      console.error('Failed to create databases table:', err);
+      return;
+    }
+    console.log('✓ Databases registry table initialized');
+    // 自動掃描現有 .db 檔案並登記（跳過系統保留檔）
+    syncDatabaseRegistry();
   });
 });
 
@@ -727,7 +783,7 @@ function queueChangeNotification(change) {
 
   if (!_batchTimer) {
     const minutes = emailConfig.batchMinutes || 15;
-    _batchTimer = setTimeout(flushBatch, minutes * 60 * 1000);
+    _batchTimer = setTimeout(() => flushBatch().catch(err => console.error('批次發送失敗:', err.message)), minutes * 60 * 1000);
     console.log(`📧 彙整計時器啟動（${minutes} 分鐘後發送，目前 ${_pendingChanges.length} 筆）`);
   }
 }
@@ -788,22 +844,44 @@ async function flushBatch() {
   </div>
 </body></html>`;
 
-  try {
-    await emailTransporter.sendMail({
-      from: emailConfig.from,
-      to: Array.isArray(emailConfig.to) ? emailConfig.to.join(', ') : emailConfig.to,
-      subject,
-      html
-    });
-    console.log(`✓ 彙整通知已發送：${subject}`);
-  } catch (err) {
-    console.error('發送彙整通知失敗:', err.message);
+  if (!emailTransporter) {
+    console.error('flushBatch: emailTransporter 未初始化，無法發送');
+    throw new Error('郵件傳輸器未初始化，請確認 SMTP 設定');
   }
+
+  const toAddr = Array.isArray(emailConfig.to) ? emailConfig.to.join(', ') : emailConfig.to;
+  console.log(`📧 準備發送彙整信 → to:${toAddr}  subject:${subject}`);
+  const info = await emailTransporter.sendMail({
+    from: emailConfig.from,
+    to: toAddr,
+    subject,
+    html
+  });
+  console.log(`✓ 彙整通知已發送：${subject}  messageId:${info.messageId}  response:${info.response}`);
+  return { to: toAddr, subject, messageId: info.messageId, response: info.response, count: changes.length };
 }
 
 // 保留單筆發送供測試信件使用
 async function sendChangeNotification(change) {
   queueChangeNotification(change);
+}
+
+// 三段式人員查詢：account_key → email → name
+function lookupUserId(userDb, keyword) {
+  return new Promise((resolve) => {
+    // 1. account_key 完全符合
+    userDb.get('SELECT id FROM users WHERE account_key = ?', [keyword], (err, row) => {
+      if (row) return resolve(row.id);
+      // 2. email 完全符合
+      userDb.get('SELECT id FROM users WHERE email = ?', [keyword], (err2, row2) => {
+        if (row2) return resolve(row2.id);
+        // 3. name 完全符合（最後手段）
+        userDb.get('SELECT id FROM users WHERE name = ?', [keyword], (err3, row3) => {
+          resolve(row3 ? row3.id : null);
+        });
+      });
+    });
+  });
 }
 
 // ==================== 審計日誌 ====================
@@ -1037,8 +1115,9 @@ app.post('/api/auth/login', async (req, res) => {
     const permissionLevel = user.permission_level || 'editor';
     const userRoleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
     const isClientRole = userRoleLevel === 'db_admin' || userRoleLevel === 'client_user';
+    const isEngineer = userRoleLevel === 'engineer';
     let allowedDatabases = parseAllowedDatabases(user.allowed_databases);
-    if (permissionLevel === 'viewer' || isClientRole) {
+    if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
       allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
       if (allowedDatabases.length === 0) {
         return res.status(403).json({
@@ -1049,7 +1128,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     let targetDatabase = user.user_database;
-    if (permissionLevel === 'viewer' || isClientRole) {
+    if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
       targetDatabase = allowedDatabases[0];
     }
     
@@ -1069,7 +1148,7 @@ app.post('/api/auth/login', async (req, res) => {
       req.session.roleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
       req.session.canInvite = !!(user.can_invite || user.role === 'admin');
       req.session.permissionLevel = permissionLevel;
-      req.session.allowedDatabases = (permissionLevel === 'viewer' || isClientRole) ? allowedDatabases : [];
+      req.session.allowedDatabases = (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : [];
       req.session.userDatabase = targetDatabase;
       
       // 記錄活動會話到系統資料庫（在線用戶追蹤）
@@ -1111,7 +1190,7 @@ app.post('/api/auth/login', async (req, res) => {
           canInvite: !!(user.can_invite || user.role === 'admin'),
           database: targetDatabase,
           permissionLevel,
-          allowedDatabases: (permissionLevel === 'viewer' || isClientRole) ? allowedDatabases : []
+          allowedDatabases: (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : []
         }
       });
     } catch (dbError) {
@@ -1317,17 +1396,18 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
 
     let finalPermissionLevel = permissionLevel === 'viewer' ? 'viewer' : 'editor';
 
-    // role_level：只允許設定為 'db_admin'、'client_user' 或 'user'（admin 不可透過此 API 降級）
-    const validRoleLevels = ['db_admin', 'client_user', 'user'];
+    // role_level：只允許設定為 'db_admin'、'client_user'、'engineer' 或 'user'（admin 不可透過此 API 降級）
+    const validRoleLevels = ['db_admin', 'client_user', 'engineer', 'user'];
     const finalRoleLevel = validRoleLevels.includes(roleLevel) ? roleLevel : null;
     const isClientRole = finalRoleLevel === 'db_admin' || finalRoleLevel === 'client_user';
+    const isEngineer = finalRoleLevel === 'engineer';
 
-    // db_admin 預設 can_invite=1；client_user 強制 0；user 依傳入值設定
+    // db_admin 預設 can_invite=1；client_user 強制 0；engineer 依傳入值；user 依傳入值
     const finalCanInvite = finalRoleLevel === 'db_admin' ? 1 : (finalRoleLevel === 'client_user' ? 0 : (canInvite ? 1 : 0));
 
     let sanitized = [];
     let serialized = null;
-    if (finalPermissionLevel === 'viewer' || isClientRole) {
+    if (finalPermissionLevel === 'viewer' || isClientRole || isEngineer) {
       sanitized = sanitizeAllowedDatabases(Array.isArray(allowedDatabases) ? allowedDatabases : []);
       if (sanitized.length === 0) {
         return res.status(400).json({ error: '請至少選擇一個可存取的資料庫' });
@@ -1337,8 +1417,8 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
 
     const updates = ['permission_level = ?', 'allowed_databases = ?'];
     const params = [finalPermissionLevel, serialized];
-    // 客戶帳號同步更新 user_database 為第一個允許的資料庫
-    if (isClientRole && sanitized.length > 0) {
+    // 客戶帳號或工程師帳號同步更新 user_database 為第一個允許的資料庫
+    if ((isClientRole || isEngineer) && sanitized.length > 0) {
       updates.push('user_database = ?');
       params.push(sanitized[0]);
     }
@@ -1397,6 +1477,24 @@ app.post('/api/admin/email-config', requireAdmin, async (req, res) => {
     res.json({ success: true, message: '郵件設定已儲存並重新載入' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// 取得待發彙整數量，並可立即觸發發送
+app.get('/api/admin/email-pending', requireAdmin, (req, res) => {
+  res.json({ pending: _pendingChanges.length, timerActive: !!_batchTimer, batchMinutes: emailConfig.batchMinutes || 15 });
+});
+
+app.post('/api/admin/email-flush', requireAdmin, async (req, res) => {
+  if (_batchTimer) { clearTimeout(_batchTimer); _batchTimer = null; }
+  const count = _pendingChanges.length;
+  if (count === 0) return res.json({ success: true, message: '目前沒有待發的通知' });
+  try {
+    const result = await flushBatch();
+    res.json({ success: true, message: `已發送 ${result.count} 筆通知`, to: result.to, subject: result.subject, messageId: result.messageId, smtpResponse: result.response });
+  } catch (err) {
+    console.error('email-flush 失敗:', err.message);
+    res.status(500).json({ error: `發送失敗：${err.message}` });
   }
 });
 
@@ -2076,24 +2174,15 @@ app.delete('/api/admin/accounts/:id', requireAdmin, async (req, res) => {
       return res.status(404).json({ error: '帳號不存在' });
     }
     
-    // 刪除帳號
+    // 刪除帳號（資料庫檔案不動，由管理員在資料庫管理中獨立處理）
     await new Promise((resolve, reject) => {
       db.run('DELETE FROM accounts WHERE id = ?', [id], function(err) {
         if (err) reject(err);
         else resolve();
       });
     });
-    
-    // 刪除使用者資料庫檔案（選用，可能保留作為備份）
-    const dbPath = path.join(DB_DIR, account.user_database);
-    if (fs.existsSync(dbPath)) {
-      // 備份後刪除
-      const backupPath = path.join(DB_DIR, `deleted_${Date.now()}_${account.user_database}`);
-      fs.renameSync(dbPath, backupPath);
-      console.log(`✓ 資料庫已備份: ${backupPath}`);
-    }
-    
-    console.log(`✓ 帳號已刪除: ID ${id}`);
+
+    console.log(`✓ 帳號已刪除: ID ${id}（資料庫檔案保留）`);
     res.json({ success: true, message: '帳號已刪除' });
   } catch (error) {
     console.error('刪除帳號失敗:', error);
@@ -2799,15 +2888,14 @@ app.get('/api/users/:id', withUserDatabase, (req, res) => {
 
 app.post('/api/users', withUserDatabase, (req, res) => {
   console.log('Hit POST /api/users', req.body);
-  const { name, email, department, company, title, phone, description } = req.body;
+  const { name, email, department, company, title, phone, description, account_key } = req.body;
   req.userDb.run(
-    'INSERT INTO users (name, email, department, company, title, phone, description) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-    [name, email, department || null, company || null, title || null, phone || null, description || null], 
+    'INSERT INTO users (name, email, department, company, title, phone, description, account_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [name, email, department || null, company || null, title || null, phone || null, description || null, account_key || null],
     function(err) {
       if (err) return res.status(500).json({ error: err.message });
       const userId = this.lastID;
-      // 記錄審計日誌
-      logAudit(req, 'create', 'user', userId, name, null, { name, email, department, company, title, phone, description });
+      logAudit(req, 'create', 'user', userId, name, null, { name, email, department, company, title, phone, description, account_key });
       res.json({ id: userId });
     }
   );
@@ -2815,21 +2903,19 @@ app.post('/api/users', withUserDatabase, (req, res) => {
 
 app.put('/api/users/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;
-  const { name, email, department, company, title, phone, description } = req.body;
+  const { name, email, department, company, title, phone, description, account_key } = req.body;
   console.log('Hit PUT /api/users/' + id, req.body);
-  
-  // 先獲取舊值
-  req.userDb.get('SELECT name, email, department, company, title, phone, description FROM users WHERE id = ?', [id], (err, oldUser) => {
+
+  req.userDb.get('SELECT name, email, department, company, title, phone, description, account_key FROM users WHERE id = ?', [id], (err, oldUser) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!oldUser) return res.status(404).json({ error: 'Not found' });
-    
+
     req.userDb.run(
-      'UPDATE users SET name = ?, email = ?, department = ?, company = ?, title = ?, phone = ?, description = ? WHERE id = ?', 
-      [name, email, department || null, company || null, title || null, phone || null, description || null, id], 
-      (err2) => {
-        if (err2 || this.changes === 0) return res.status(500).json({ error: err2 ? err2.message : 'Not found' });
-        // 記錄審計日誌
-        logAudit(req, 'update', 'user', parseInt(id), name, oldUser, { name, email, department, company, title, phone, description });
+      'UPDATE users SET name = ?, email = ?, department = ?, company = ?, title = ?, phone = ?, description = ?, account_key = ? WHERE id = ?',
+      [name, email, department || null, company || null, title || null, phone || null, description || null, account_key || null, id],
+      function(err2) {
+        if (err2) return res.status(500).json({ error: err2.message });
+        logAudit(req, 'update', 'user', parseInt(id), name, oldUser, { name, email, department, company, title, phone, description, account_key });
         res.json({ success: true });
       }
     );
@@ -2983,30 +3069,30 @@ app.get('/api/groups/:id', withUserDatabase, (req, res) => {
 
 app.post('/api/groups', withUserDatabase, (req, res) => {
   console.log('Hit POST /api/groups', req.body);
-  const { name } = req.body;
-  req.userDb.run('INSERT INTO groups (name) VALUES (?)', [name], function(err) {
+  const { name, description } = req.body;
+  req.userDb.run('INSERT INTO groups (name, description) VALUES (?, ?)', [name, description || ''], function(err) {
     if (err) return res.status(500).json({ error: err.message });
     const groupId = this.lastID;
     // 記錄審計日誌
-    logAudit(req, 'create', 'group', groupId, name, null, { name });
+    logAudit(req, 'create', 'group', groupId, name, null, { name, description });
     res.json({ id: groupId });
   });
 });
 
 app.put('/api/groups/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;
-  const { name } = req.body;
-  console.log('Hit PUT /api/groups/' + id, { name });
-  
+  const { name, description } = req.body;
+  console.log('Hit PUT /api/groups/' + id, { name, description });
+
   // 先獲取舊值
-  req.userDb.get('SELECT name FROM groups WHERE id = ?', [id], (err, oldGroup) => {
+  req.userDb.get('SELECT name, description FROM groups WHERE id = ?', [id], (err, oldGroup) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!oldGroup) return res.status(404).json({ error: 'Not found' });
-    
-    req.userDb.run('UPDATE groups SET name = ? WHERE id = ?', [name, id], (err2) => {
-      if (err2 || this.changes === 0) return res.status(500).json({ error: err2 ? err2.message : 'Not found' });
+
+    req.userDb.run('UPDATE groups SET name = ?, description = ? WHERE id = ?', [name, description !== undefined ? description : (oldGroup.description || ''), id], (err2) => {
+      if (err2) return res.status(500).json({ error: err2.message });
       // 記錄審計日誌
-      logAudit(req, 'update', 'group', parseInt(id), name, oldGroup, { name });
+      logAudit(req, 'update', 'group', parseInt(id), name, oldGroup, { name, description });
       res.json({ success: true });
     });
   });
@@ -3219,6 +3305,70 @@ app.delete('/api/groups/:id/users', withUserDatabase, (req, res) => {
       }, null);
       
       res.json({ success: true });
+    });
+  });
+});
+
+// API: 取得群組的資料夾權限清單
+app.get('/api/groups/:id/permissions', withUserDatabase, (req, res) => {
+  const { id } = req.params;
+  req.userDb.all(`
+    SELECT p.id, p.permission_type, p.folder_id,
+           f.name as folder_name, f.path as folder_path
+    FROM permissions p
+    LEFT JOIN folders f ON p.folder_id = f.id
+    WHERE p.group_id = ?
+    ORDER BY f.path
+  `, [id], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows || []);
+  });
+});
+
+// API: 將群組資料夾權限套用到全體成員
+app.post('/api/groups/:id/apply-permissions', withUserDatabase, requireAuth, (req, res) => {
+  const groupId = parseInt(req.params.id);
+  const db = req.userDb;
+
+  // 取得群組成員
+  db.all('SELECT user_id FROM group_users WHERE group_id = ?', [groupId], (err, members) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (members.length === 0) return res.json({ applied: 0, skipped: 0, message: '群組無成員' });
+
+    // 取得群組的資料夾權限
+    db.all('SELECT folder_id, permission_type FROM permissions WHERE group_id = ?', [groupId], (err2, groupPerms) => {
+      if (err2) return res.status(500).json({ error: err2.message });
+      if (groupPerms.length === 0) return res.json({ applied: 0, skipped: 0, message: '群組無資料夾權限' });
+
+      let applied = 0, skipped = 0, errors = 0;
+      const total = members.length * groupPerms.length;
+      let done = 0;
+
+      if (total === 0) return res.json({ applied: 0, skipped: 0 });
+
+      members.forEach(({ user_id }) => {
+        groupPerms.forEach(({ folder_id, permission_type }) => {
+          // 檢查使用者是否已有該資料夾的個人權限
+          db.get('SELECT id FROM permissions WHERE user_id = ? AND folder_id = ? AND group_id IS NULL', [user_id, folder_id], (err3, existing) => {
+            done++;
+            if (err3) { errors++; }
+            else if (existing) { skipped++; }
+            else {
+              db.run('INSERT INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, ?, NULL, ?)',
+                [folder_id, user_id, permission_type], (err4) => {
+                  if (err4) errors++;
+                  else applied++;
+                });
+            }
+            if (done === total) {
+              // 等待插入完成
+              setTimeout(() => {
+                res.json({ applied, skipped, errors, message: `已套用 ${applied} 筆，略過 ${skipped} 筆（已存在）` });
+              }, 100);
+            }
+          });
+        });
+      });
     });
   });
 });
@@ -3559,12 +3709,13 @@ app.get('/export_users_csv', withUserDatabase, (req, res) => {
     
     // 手動建立 CSV 內容，並加入 UTF-8 BOM
     const BOM = '\uFEFF';
-    const headers = ['type', 'name', 'email', 'department', 'company', 'title', 'phone', 'description'];
+    const headers = ['type', 'account_key', 'name', 'email', 'department', 'company', 'title', 'phone', 'description'];
     let csvContent = BOM + headers.join(',') + '\n';
-    
+
     (rows || []).forEach(row => {
       const values = [
         'user',
+        row.account_key || '',
         row.name || '',
         row.email || '',
         row.department || '',
@@ -3596,6 +3747,377 @@ app.get('/export_users_csv', withUserDatabase, (req, res) => {
       }
     });
   });
+});
+
+// multer 上傳處理（所有需要 file upload 的端點共用）
+const upload = multer({ dest: UPLOAD_DIR });
+
+// 下載資料夾 Excel 範本（3 sheet，階層欄位格式）
+app.get('/download_folders_template', withUserDatabase, (req, res) => {
+  const MAX_LEVELS = 6;
+  const wb = new ExcelJS.Workbook();
+
+  // ─── Sheet 1：填寫清單 ────────────────────────────────────────────
+  const ws1 = wb.addWorksheet('填寫清單');
+  ws1.columns = Array.from({ length: MAX_LEVELS }, (_, i) => ({
+    header: `第${['一','二','三','四','五','六'][i]}層`,
+    key: `l${i + 1}`,
+    width: 20
+  }));
+  const hdr1 = ws1.getRow(1);
+  hdr1.font = { bold: true };
+  hdr1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+  // 提示列（灰色斜體）
+  const hint = ws1.getRow(2);
+  hint.getCell(1).value = '← 請從第 3 列開始填寫。每一欄代表一個階層，同一行代表一條完整路徑。請參考「範例資料」工作表。';
+  hint.font = { italic: true, color: { argb: 'FF999999' } };
+  ws1.mergeCells(2, 1, 2, MAX_LEVELS);
+
+  // ─── Sheet 2：欄位說明 ────────────────────────────────────────────
+  const ws2 = wb.addWorksheet('欄位說明');
+  ws2.columns = [
+    { header: '項目', key: 'item', width: 20 },
+    { header: '說明', key: 'desc', width: 60 },
+  ];
+  ws2.getRow(1).font = { bold: true };
+  ws2.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } };
+  [
+    ['格式', `每行代表一條「從根到最末層」的完整路徑。每欄填一個層級名稱。`],
+    ['第一層', '根資料夾名稱（必填）'],
+    ['第二～六層', '子資料夾名稱（有幾層填幾欄，其餘留空）'],
+    ['留空欄', '同一行中，某層留空表示該行到上一層為止'],
+    ['重複父路徑', '相同的上層路徑只需填一次（系統自動去重，不會重複建立）'],
+    ['最大層數', `${MAX_LEVELS} 層（如需更多層請聯繫管理員）`],
+    ['注意事項', '同一層不建議出現相同名稱的資料夾（系統會警告）'],
+  ].forEach(r => ws2.addRow({ item: r[0], desc: r[1] }));
+
+  // ─── Sheet 3：範例資料 ────────────────────────────────────────────
+  const ws3 = wb.addWorksheet('範例資料');
+  // 直接重新定義欄位（不複製 ws1.columns 物件，避免 key 對應失效）
+  ws3.columns = Array.from({ length: MAX_LEVELS }, (_, i) => ({
+    header: `第${['一','二','三','四','五','六'][i]}層`,
+    key: `l${i + 1}`,
+    width: 20
+  }));
+  ws3.getRow(1).font = { bold: true };
+  ws3.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } };
+
+  // 說明列（row 2）
+  const exNote = ws3.getRow(2);
+  exNote.getCell(1).value = '※ 每行代表一條完整路徑。有幾層就填幾欄，其餘留空。相同的父路徑系統自動去重，不會重複建立。';
+  exNote.font = { italic: true, color: { argb: 'FF888888' } };
+  ws3.mergeCells(2, 1, 2, MAX_LEVELS);
+
+  // 範例資料（用陣列格式直接對應欄位，不依賴 key 對應）
+  const exRows = [
+    // 格式：[第一層, 第二層, 第三層, 第四層, 第五層, 第六層]
+    ['Share', '管理部', '財務組', '',      '', ''],
+    ['Share', '管理部', '人事組', '',      '', ''],
+    ['Share', '技術部', '前端組', '專案A', '', ''],
+    ['Share', '技術部', '前端組', '專案B', '', ''],
+    ['Share', '技術部', '後端組', '',      '', ''],
+    ['Share', '業務部', '',       '',      '', ''],
+    ['Archive', '2024', 'Q1',    '',      '', ''],
+    ['Archive', '2024', 'Q2',    '',      '', ''],
+    ['Archive', '2025', '',      '',      '', ''],
+  ];
+  // 從 row 3 開始寫入（row1=標題、row2=說明文字）
+  exRows.forEach((arr, i) => {
+    const row = ws3.getRow(3 + i);
+    arr.forEach((val, colIdx) => { row.getCell(colIdx + 1).value = val; });
+    // 用不同淺色區分兩個根（Share=藍、Archive=黃）
+    const bg = arr[0] === 'Archive' ? 'FFFFF2CC' : 'FFDAE8FC';
+    row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+    row.commit();
+  });
+
+  // 說明文字（底部，空一行後）
+  const noteRowNum = 3 + exRows.length + 1;
+  const note = ws3.getRow(noteRowNum);
+  note.getCell(1).value = '※ 相同的上層（如 Share、Share/管理部）只需列出最末層路徑，系統自動建立父資料夾。根資料夾（第一層）不同顏色僅供閱讀區分。';
+  note.font = { italic: true, color: { argb: 'FF666666' } };
+  note.commit();
+  ws3.mergeCells(noteRowNum, 1, noteRowNum, MAX_LEVELS);
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="folders_template.xlsx"');
+  wb.xlsx.write(res).then(() => res.end()).catch(err => {
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
+// 匯入資料夾 xlsx（階層欄位格式，與範本對應）
+app.post('/import_folders_xlsx', withUserDatabase, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(req.file.path);
+
+    // 讀第一個 sheet
+    const ws = wb.worksheets[0];
+    if (!ws) return res.status(400).json({ error: '找不到工作表' });
+
+    // 確認欄數（最多 MAX_LEVELS 欄）
+    const MAX_LEVELS = 6;
+
+    // 收集所有路徑（每行），從第 3 列開始（第 1 列為標題，第 2 列為提示說明）
+    const paths = []; // [ ['Share','管理部','財務組'], ... ]
+    for (let rowIdx = 3; rowIdx <= ws.rowCount; rowIdx++) {
+      const row = ws.getRow(rowIdx);
+      const parts = [];
+      for (let col = 1; col <= MAX_LEVELS; col++) {
+        const v = row.getCell(col).value;
+        const s = v ? v.toString().trim() : '';
+        if (!s) break;
+        parts.push(s);
+      }
+      if (parts.length > 0) paths.push(parts);
+    }
+
+    if (paths.length === 0) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ error: '工作表中沒有有效資料（請從第 3 列開始填寫）' });
+    }
+
+    // 轉換為 CSV 格式字串（複用 import_csv 的邏輯）
+    // 先建立去重路徑節點
+    const pathMap = {};   // fullPath → tempId
+    const nodes   = [];   // { tempId, name, parentTempId }
+    let tempId = 1;
+
+    paths.forEach(parts => {
+      let parentTempId = '';
+      let currentPath  = '';
+      parts.forEach(part => {
+        currentPath = currentPath ? currentPath + '/' + part : part;
+        if (!pathMap.hasOwnProperty(currentPath)) {
+          pathMap[currentPath] = tempId;
+          nodes.push({ tempId, name: part, parentTempId });
+          tempId++;
+        }
+        parentTempId = pathMap[currentPath];
+      });
+    });
+
+    // 依賴排序：父節點在前
+    const sorted  = [];
+    const done    = new Set();
+    function visit(n) {
+      if (done.has(n.tempId)) return;
+      if (n.parentTempId) {
+        const parent = nodes.find(x => x.tempId === n.parentTempId);
+        if (parent) visit(parent);
+      }
+      sorted.push(n);
+      done.add(n.tempId);
+    }
+    nodes.forEach(visit);
+
+    // 建立 tempId → CSV 行號的映射（從 1 開始）
+    const tempToRow = {};
+    sorted.forEach((n, i) => { tempToRow[n.tempId] = i + 1; });
+
+    // 逐筆寫入資料庫
+    const tempToDbId = {};  // tempId → 資料庫真實 id
+    let inserted = 0, skipped = 0;
+    for (const n of sorted) {
+      // 找 parent 在資料庫的真實 id
+      const parentDbId = n.parentTempId ? (tempToDbId[n.parentTempId] || null) : null;
+
+      const result = await new Promise((resolve, reject) => {
+        req.userDb.run(
+          'INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, ?)',
+          [n.name, parentDbId],
+          function(err) { if (err) reject(err); else resolve(this); }
+        );
+      });
+
+      if (result.lastID) {
+        tempToDbId[n.tempId] = result.lastID;
+        inserted++;
+      } else {
+        // 已存在，查出真實 id（用 name + parent_id 查）
+        const existing = await new Promise((resolve, reject) => {
+          req.userDb.get(
+            'SELECT id FROM folders WHERE name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))',
+            [n.name, parentDbId, parentDbId],
+            (err, row) => { if (err) reject(err); else resolve(row); }
+          );
+        });
+        if (existing) tempToDbId[n.tempId] = existing.id;
+        skipped++;
+      }
+    }
+
+    fs.unlink(req.file.path, () => {});
+    res.json({ success: true, stats: { total: nodes.length, inserted, skipped } });
+
+  } catch (err) {
+    console.error('[import_folders_xlsx]', err);
+    fs.unlink(req.file.path, () => {});
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 下載人員 Excel 範本（3 sheet）
+app.get('/download_users_template', withUserDatabase, (req, res) => {
+  const wb = new ExcelJS.Workbook();
+
+  // ─── Sheet 1：填寫清單 ───────────────────────────────────────────
+  const ws1 = wb.addWorksheet('填寫清單');
+  ws1.columns = [
+    { header: '帳號(account_key)', key: 'account_key', width: 20 },
+    { header: '姓名',              key: 'name',        width: 16 },
+    { header: 'Email',             key: 'email',       width: 28 },
+    { header: '部門',              key: 'department',  width: 16 },
+    { header: '公司',              key: 'company',     width: 16 },
+    { header: '職稱',              key: 'title',       width: 16 },
+    { header: '電話',              key: 'phone',       width: 16 },
+    { header: '說明',              key: 'description', width: 24 },
+  ];
+  // 標頭樣式
+  ws1.getRow(1).font = { bold: true };
+  ws1.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E1F2' } };
+
+  // ─── Sheet 2：欄位說明 ──────────────────────────────────────────
+  const ws2 = wb.addWorksheet('欄位說明');
+  ws2.columns = [
+    { header: '欄位名稱', key: 'col', width: 22 },
+    { header: '說明',     key: 'desc', width: 50 },
+    { header: '必填',     key: 'req',  width: 8  },
+  ];
+  ws2.getRow(1).font = { bold: true };
+  ws2.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4D6' } };
+  [
+    ['帳號(account_key)', 'NAS / AD 登入帳號（SamAccountName），建議填寫，作為唯一比對鍵', '建議'],
+    ['姓名',              '人員真實姓名，系統顯示用',                                       '必填'],
+    ['Email',             '電子郵件，用於通知及查詢',                                        '建議'],
+    ['部門',              '所屬部門名稱',                                                    '選填'],
+    ['公司',              '所屬公司名稱',                                                    '選填'],
+    ['職稱',              '職位頭銜',                                                        '選填'],
+    ['電話',              '聯絡電話',                                                        '選填'],
+    ['說明',              '備注說明',                                                        '選填'],
+  ].forEach(r => ws2.addRow({ col: r[0], desc: r[1], req: r[2] }));
+
+  // ─── Sheet 3：範例資料 ──────────────────────────────────────────
+  const ws3 = wb.addWorksheet('範例資料');
+  ws3.columns = ws1.columns.map(c => ({ ...c }));
+  ws3.getRow(1).font = { bold: true };
+  ws3.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2EFDA' } };
+  [
+    { account_key: 'john.doe',  name: '王大明', email: 'john.doe@example.com',  department: '資訊部', company: '範例公司', title: '工程師', phone: '0912-345678', description: '' },
+    { account_key: 'jane.smith',name: '李小美', email: 'jane.smith@example.com', department: '業務部', company: '範例公司', title: '業務專員', phone: '0923-456789', description: '兼任PM' },
+  ].forEach(r => ws3.addRow(r));
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="users_template.xlsx"');
+  wb.xlsx.write(res).then(() => res.end()).catch(err => {
+    console.error('Template gen error:', err);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
+  });
+});
+
+// 匯入人員 xlsx（從範本格式匯入，以 account_key / email / name 去重）
+app.post('/import_users_xlsx', withUserDatabase, upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const mode = req.body.mode === 'update' ? 'update' : 'skip'; // 'skip' = INSERT OR IGNORE, 'update' = 更新已存在
+
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(req.file.path);
+
+    // 讀第一個 sheet（填寫清單）
+    const ws = wb.worksheets[0];
+    if (!ws) return res.status(400).json({ error: '找不到工作表' });
+
+    // 讀標頭列（第 1 列）建立 col→key 映射
+    const headerRow = ws.getRow(1);
+    const colMap = {}; // colNumber → field key
+    const headerAliases = {
+      '帳號(account_key)': 'account_key', '帳號': 'account_key', 'account_key': 'account_key',
+      '姓名': 'name', 'name': 'name',
+      'email': 'email', 'Email': 'email',
+      '部門': 'department', 'department': 'department',
+      '公司': 'company', 'company': 'company',
+      '職稱': 'title', 'title': 'title',
+      '電話': 'phone', 'phone': 'phone',
+      '說明': 'description', 'description': 'description',
+    };
+    headerRow.eachCell((cell, colNumber) => {
+      const h = (cell.value || '').toString().trim();
+      if (headerAliases[h]) colMap[colNumber] = headerAliases[h];
+    });
+
+    const stats = { inserted: 0, updated: 0, skipped: 0, errors: 0 };
+    const rowCount = ws.rowCount;
+
+    for (let rowIdx = 2; rowIdx <= rowCount; rowIdx++) {
+      const row = ws.getRow(rowIdx);
+      const data = {};
+      row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+        const key = colMap[colNumber];
+        if (key) data[key] = (cell.value || '').toString().trim();
+      });
+
+      if (!data.name && !data.account_key) continue; // 空行跳過
+
+      // 查找現有人員：account_key → email → name
+      let existingId = null;
+      if (data.account_key) {
+        const r = await new Promise(resolve => req.userDb.get('SELECT id FROM users WHERE account_key = ?', [data.account_key], (e, row) => resolve(row || null)));
+        if (r) existingId = r.id;
+      }
+      if (!existingId && data.email) {
+        const r = await new Promise(resolve => req.userDb.get('SELECT id FROM users WHERE email = ?', [data.email], (e, row) => resolve(row || null)));
+        if (r) existingId = r.id;
+      }
+      if (!existingId && data.name) {
+        const r = await new Promise(resolve => req.userDb.get('SELECT id FROM users WHERE name = ?', [data.name], (e, row) => resolve(row || null)));
+        if (r) existingId = r.id;
+      }
+
+      if (existingId) {
+        if (mode === 'update') {
+          await new Promise((resolve, reject) => {
+            req.userDb.run(
+              `UPDATE users SET name=COALESCE(?,name), email=COALESCE(?,email), department=COALESCE(?,department),
+               company=COALESCE(?,company), title=COALESCE(?,title), phone=COALESCE(?,phone),
+               description=COALESCE(?,description), account_key=COALESCE(?,account_key) WHERE id=?`,
+              [data.name||null, data.email||null, data.department||null, data.company||null,
+               data.title||null, data.phone||null, data.description||null, data.account_key||null, existingId],
+              err => { if (err) reject(err); else resolve(); }
+            );
+          });
+          stats.updated++;
+        } else {
+          stats.skipped++;
+        }
+      } else {
+        try {
+          await new Promise((resolve, reject) => {
+            req.userDb.run(
+              'INSERT INTO users (name, email, department, company, title, phone, description, account_key) VALUES (?,?,?,?,?,?,?,?)',
+              [data.name||null, data.email||null, data.department||null, data.company||null,
+               data.title||null, data.phone||null, data.description||null, data.account_key||null],
+              err => { if (err) reject(err); else resolve(); }
+            );
+          });
+          stats.inserted++;
+        } catch (e) {
+          console.warn(`[import_users_xlsx] row ${rowIdx} insert error:`, e.message);
+          stats.errors++;
+        }
+      }
+    }
+
+    fs.unlink(req.file.path, () => {});
+    res.json({ success: true, stats });
+  } catch (err) {
+    console.error('[import_users_xlsx] error:', err);
+    fs.unlink(req.file.path, () => {});
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 匯出群組 CSV (UTF-8 with BOM)
@@ -3861,7 +4383,6 @@ app.get('/export_full_csv', ensureEditorAccess, withUserDatabase, async (req, re
 });
 
 // 匯入 CSV (改用 Promise 確保操作完成)
-const upload = multer({ dest: UPLOAD_DIR });
 app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
   console.log('Hit /import_csv');
   if (!req.file) return res.status(400).json({ error: 'No file' });
@@ -3948,11 +4469,12 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
             const title = row.title || row.Title || null;
             const phone = row.phone || row.Phone || null;
             const description = row.description || row.Description || null;
-            
+            const account_key = row.account_key || row.Account_Key || row['帳號'] || null;
+
             await new Promise((resolve, reject) => {
               req.userDb.run(
-                'INSERT OR IGNORE INTO users (name, email, department, company, title, phone, description) VALUES (?, ?, ?, ?, ?, ?, ?)', 
-                [name, email, department, company, title, phone, description], 
+                'INSERT OR IGNORE INTO users (name, email, department, company, title, phone, description, account_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                [name, email, department, company, title, phone, description, account_key || null],
                 (err) => {
                   if (err) reject(err);
                   else {
@@ -4187,23 +4709,13 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
             // 如果沒有 user_id 但有 user_name，根據名稱查找
             if (!user_id && user_name_raw && typeof user_name_raw === 'string' && user_name_raw.trim() !== '') {
               const userNameClean = user_name_raw.trim();
-              console.log(`Looking up user ID for name: "${userNameClean}"`);
-              const userRow = await new Promise((res) => {
-                req.userDb.get('SELECT id FROM users WHERE name = ?', [userNameClean], (err, row) => {
-                  if (err) {
-                    console.error('Error looking up user:', err);
-                    res(null);
-                  } else {
-                    res(row);
-                  }
-                });
-              });
-              
-              if (userRow) {
-                user_id = userRow.id;
-                console.log(`✓ Found user ID ${user_id} for name "${userNameClean}"`);
+              console.log(`Looking up user ID for: "${userNameClean}"`);
+              const foundId = await lookupUserId(req.userDb, userNameClean);
+              if (foundId) {
+                user_id = foundId;
+                console.log(`✓ Found user ID ${user_id} for "${userNameClean}"`);
               } else {
-                console.warn(`⚠ User "${userNameClean}" not found, skipping group member`);
+                console.warn(`⚠ User "${userNameClean}" not found (tried account_key/email/name), skipping`);
               }
             }
             
@@ -4268,22 +4780,13 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
             
             // 如果沒有 user_id 但有 user_name，嘗試從人員名稱查找 ID
             if (!user_id_raw && user_name_raw) {
-              console.log(`Looking up user ID for name: "${user_name_raw}"`);
-              const userRow = await new Promise((res) => {
-                req.userDb.get('SELECT id FROM users WHERE name = ?', [user_name_raw], (err, row) => {
-                  if (err) {
-                    console.error('Error looking up user:', err);
-                    res(null);
-                  } else {
-                    res(row);
-                  }
-                });
-              });
-              if (userRow) {
-                user_id_raw = userRow.id;
-                console.log(`✓ Found user ID ${user_id_raw} for name "${user_name_raw}"`);
+              console.log(`Looking up user ID for: "${user_name_raw}"`);
+              const foundId = await lookupUserId(req.userDb, user_name_raw);
+              if (foundId) {
+                user_id_raw = foundId;
+                console.log(`✓ Found user ID ${user_id_raw} for "${user_name_raw}"`);
               } else {
-                console.warn(`⚠ User not found for name: "${user_name_raw}"`);
+                console.warn(`⚠ User "${user_name_raw}" not found (tried account_key/email/name), skipping`);
               }
             }
             
@@ -4595,12 +5098,17 @@ app.post('/import_permission_matrix_xlsx', withUserDatabase, upload.single('file
       if (rwGroup) affectedGroupIds.add(rwGroup.id);
     }
 
-    // 6. 載入所有人員，建立 name→id 映射
+    // 6. 載入所有人員，建立多鍵→id 映射（支援 name / email / account_key）
     const allUsers = await new Promise((res, rej) => {
-      req.userDb.all('SELECT id, name FROM users', [], (err, rows) => { if (err) rej(err); else res(rows); });
+      req.userDb.all('SELECT id, name, email, account_key FROM users', [], (err, rows) => { if (err) rej(err); else res(rows); });
     });
     const nameToUserId = {};
-    allUsers.forEach(u => { nameToUserId[u.name.trim()] = u.id; });
+    // 依精確度低→高順序寫入，後者覆蓋前者（account_key 最精確，最後寫入保證優先）
+    allUsers.forEach(u => {
+      if (u.name)        nameToUserId[u.name.trim()]        = u.id;
+      if (u.email)       nameToUserId[u.email.trim()]       = u.id;
+      if (u.account_key) nameToUserId[u.account_key.trim()] = u.id;
+    });
 
     // 7. 處理人員列（第 5 列起）
     const totalRows = ws.rowCount || 0;
@@ -5385,81 +5893,90 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
 
 // 取得所有資料庫列表
 app.get('/api/databases', requireAuth, (req, res) => {
-  try {
-    const files = fs.readdirSync(DB_DIR);
-    const userDatabase = req.session.userDatabase; // 當前使用者的資料庫
-    const username = req.session.username;
-    const isAdmin = req.session.role === 'admin';
-    const permissionLevel = req.session.permissionLevel || 'editor';
-    const allowedForViewer = req.session.allowedDatabases || [];
-    const isViewer = permissionLevel === 'viewer' && !isAdmin;
-    
-    let databases = files
-      .filter(f => f.endsWith('.db'))
-      .map(f => {
-        const dbPath = path.join(DB_DIR, f);
-        const stats = fs.statSync(dbPath);
-        return {
-          name: f,
-          size: stats.size,
-          modified: stats.mtime,
-          isCurrent: f === userDatabase
-        };
-      });
-    
-    if (isViewer) {
-      databases = databases.filter(db => allowedForViewer.includes(db.name));
-    }
-    
-    const enriched = databases.map(db => {
-      const owner = getDatabaseOwner(db.name);
-      const ownerLabel = owner || '系統';
-      const isOwner = !!owner && owner === username;
-      
-      let canSwitch = isAdmin;
-      let canRename = isAdmin;
-      let canDelete = isAdmin;
-      
-      if (!isAdmin) {
-        if (isViewer) {
-          canSwitch = true; // viewer 只能切換到被授權的資料庫
-          canRename = false;
-          canDelete = false;
-        } else {
-          canSwitch = isOwner;
-          canRename = isOwner;
-          canDelete = isOwner;
-        }
+  const userDatabase = req.session.userDatabase;
+  const username = req.session.username;
+  const isAdmin = req.session.role === 'admin';
+  const permissionLevel = req.session.permissionLevel || 'editor';
+  const allowedForViewer = req.session.allowedDatabases || [];
+  const isViewer = permissionLevel === 'viewer' && !isAdmin;
+  const sessionRoleLevelDb = req.session.roleLevel || 'user';
+  const isEngineerDb = sessionRoleLevelDb === 'engineer' && !isAdmin;
+
+  // 從 databases registry 取得 metadata
+  db.all('SELECT name, display_name, created_by, description FROM databases', [], (regErr, regRows) => {
+    const regMap = {};
+    if (!regErr && regRows) regRows.forEach(r => { regMap[r.name] = r; });
+
+    try {
+      const files = fs.readdirSync(DB_DIR);
+      let databases = files
+        .filter(f => f.endsWith('.db') && !f.startsWith('deleted_'))
+        .map(f => {
+          const dbPath = path.join(DB_DIR, f);
+          const stats = fs.statSync(dbPath);
+          const reg = regMap[f] || {};
+          return {
+            name: f,
+            display_name: reg.display_name || null,
+            created_by: reg.created_by || getDatabaseOwner(f),
+            description: reg.description || null,
+            size: stats.size,
+            modified: stats.mtime,
+            isCurrent: f === userDatabase
+          };
+        });
+
+      if (isViewer) {
+        databases = databases.filter(d => allowedForViewer.includes(d.name));
+      } else if (isEngineerDb) {
+        databases = databases.filter(d => allowedForViewer.includes(d.name));
       }
-      
-      return {
-        ...db,
-        owner: ownerLabel,
-        isOwner,
-        canSwitch,
-        canRename,
-        canDelete,
-        canCopy: true
-      };
-    });
-    
-    res.json({ 
-      databases: enriched, 
-      current: userDatabase,
-      isAdmin: isAdmin,
-      username: username,
-      permissionLevel,
-      allowedDatabases: isViewer ? allowedForViewer : [],
-      message: isViewer
-        ? '此帳號為唯讀模式，僅能檢視被授權的資料庫'
-        : (isAdmin 
-            ? '管理員可查看並管理所有資料庫' 
-            : '您可以查看所有資料庫；僅能管理自己的資料庫，其他人的資料庫可複製以便參考')
-    });
-  } catch (err) {
-    console.error('Failed to list databases:', err);
-    res.status(500).json({ error: err.message });
-  }
+
+      const enriched = databases.map(d => {
+        const owner = d.created_by;
+        const ownerLabel = owner || '系統';
+        const isOwner = !!owner && owner === username;
+
+        let canSwitch = isAdmin;
+        let canRename = isAdmin;
+        let canDelete = isAdmin;
+
+        if (!isAdmin) {
+          if (isViewer) {
+            canSwitch = true;
+            canRename = false;
+            canDelete = false;
+          } else if (isEngineerDb) {
+            canSwitch = true;   // engineer 可切換到被授權的資料庫（已過濾）
+            canRename = false;
+            canDelete = false;
+          } else {
+            canSwitch = isOwner;
+            canRename = isOwner;
+            canDelete = isOwner;
+          }
+        }
+
+        return { ...d, owner: ownerLabel, isOwner, canSwitch, canRename, canDelete, canCopy: true };
+      });
+
+      res.json({
+        databases: enriched,
+        current: userDatabase,
+        isAdmin,
+        username,
+        permissionLevel,
+        allowedDatabases: (isViewer || isEngineerDb) ? allowedForViewer : [],
+        message: isViewer
+          ? '此帳號為唯讀模式，僅能檢視被授權的資料庫'
+          : (isEngineerDb ? '工程師帳號可存取被授權的資料庫，僅供編輯，無法管理資料庫'
+          : (isAdmin ? '管理員可查看並管理所有資料庫' : '您可以查看所有資料庫；僅能管理自己的資料庫，其他人的資料庫可複製以便參考'))
+      });
+    } catch (err) {
+      console.error('Failed to list databases:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
 });
 
 // 新增資料庫
@@ -5499,18 +6016,18 @@ app.post('/api/databases', requireAuth, async (req, res) => {
     // 建立新資料庫
     const newDb = await connectDatabase(name);
     newDb.close((err) => {
-      if (err) {
-        console.error('Failed to close new database:', err);
-      }
+      if (err) console.error('Failed to close new database:', err);
     });
-    
+
+    // 登記到 databases registry
+    const { display_name, description } = req.body;
+    db.run(
+      'INSERT OR IGNORE INTO databases (name, display_name, created_by, description) VALUES (?, ?, ?, ?)',
+      [name, display_name || null, username, description || null]
+    );
+
     console.log(`✓ 使用者 ${username} 創建資料庫: ${name}`);
-    res.json({ 
-      success: true,
-      message: '資料庫建立成功', 
-      name: name,
-      isAdmin: isAdmin
-    });
+    res.json({ success: true, message: '資料庫建立成功', name, isAdmin });
   } catch (err) {
     console.error('Failed to create database:', err);
     res.status(500).json({ error: err.message });
@@ -5530,9 +6047,10 @@ app.post('/api/databases/switch', requireAuth, async (req, res) => {
     const permissionLevel = req.session.permissionLevel || 'editor';
     const sessionRoleLevel = req.session.roleLevel || 'user';
     const isClientRole = sessionRoleLevel === 'db_admin' || sessionRoleLevel === 'client_user';
+    const isEngineerSwitch = sessionRoleLevel === 'engineer';
     const allowedForRestricted = req.session.allowedDatabases || [];
 
-    if (!isAdmin && (permissionLevel === 'viewer' || isClientRole)) {
+    if (!isAdmin && (permissionLevel === 'viewer' || isClientRole || isEngineerSwitch)) {
       if (!allowedForRestricted.includes(name)) {
         return res.status(403).json({ error: '此帳號無法切換到該資料庫' });
       }
@@ -5626,7 +6144,8 @@ app.delete('/api/databases', requireAuth, (req, res) => {
     
     // 刪除檔案
     fs.unlinkSync(dbPath);
-    
+    db.run('DELETE FROM databases WHERE name = ?', [name]);
+
     res.json({ message: '資料庫已刪除', name });
   } catch (err) {
     console.error('Failed to delete database:', err);
@@ -5679,7 +6198,9 @@ app.post('/api/databases/copy', requireAuth, (req, res) => {
     
     // 複製檔案
     fs.copyFileSync(sourcePath, targetPath);
-    
+    // registry：複製的 DB 由操作者擁有
+    db.run('INSERT OR IGNORE INTO databases (name, created_by) VALUES (?, ?)', [target, req.session.username]);
+
     res.json({ message: '資料庫已複製', source, target });
   } catch (err) {
     console.error('Failed to copy database:', err);
@@ -5738,12 +6259,48 @@ app.post('/api/databases/rename', requireAuth, (req, res) => {
     
     // 重新命名
     fs.renameSync(oldPath, newPath);
-    
+
+    // registry：更新名稱，選擇性更新擁有者
+    const { newOwner } = req.body;
+    const ownerUpdate = (newOwner && req.session.role === 'admin') ? newOwner : undefined;
+    db.run(
+      ownerUpdate
+        ? 'UPDATE databases SET name = ?, created_by = ? WHERE name = ?'
+        : 'UPDATE databases SET name = ? WHERE name = ?',
+      ownerUpdate ? [newName, ownerUpdate, oldName] : [newName, oldName],
+      function() {
+        if (this.changes === 0) {
+          db.run('INSERT OR IGNORE INTO databases (name, created_by) VALUES (?, ?)', [newName, ownerUpdate || req.session.username]);
+        }
+      }
+    );
+
     res.json({ message: '資料庫已重新命名', oldName, newName });
   } catch (err) {
     console.error('Failed to rename database:', err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// 更新資料庫 metadata（display_name / created_by / description）
+app.patch('/api/admin/databases/:name', requireAdmin, (req, res) => {
+  const { name } = req.params;
+  const { display_name, created_by, description } = req.body;
+  db.run(
+    `INSERT INTO databases (name, created_by, display_name, description) VALUES (?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       display_name = CASE WHEN ? IS NOT NULL THEN ? ELSE display_name END,
+       created_by   = CASE WHEN ? IS NOT NULL THEN ? ELSE created_by END,
+       description  = CASE WHEN ? IS NOT NULL THEN ? ELSE description END`,
+    [name, created_by ?? req.session.username, display_name ?? null, description ?? null,
+     display_name ?? null, display_name ?? null,
+     created_by ?? null, created_by ?? null,
+     description ?? null, description ?? null],
+    function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ success: true, name, display_name, created_by, description });
+    }
+  );
 });
 
 // 自動生成群組並指派權限（優化版本 - 批次處理）
