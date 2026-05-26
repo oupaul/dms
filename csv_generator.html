@@ -96,25 +96,34 @@
 
         <!-- 輸入方法選擇 -->
         <div class="row mb-4">
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <div class="card method-card active" data-method="paste">
                     <div class="card-body text-center">
                         <i class="bi bi-clipboard-check fs-1 text-primary"></i>
                         <h5 class="card-title mt-2">從 Excel 貼上</h5>
-                        <p class="card-text small">從 Excel 或試算表複製後直接貼上</p>
+                        <p class="card-text small">階層欄位格式，貼上自動解析</p>
                     </div>
                 </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
                 <div class="card method-card" data-method="tree">
                     <div class="card-body text-center">
                         <i class="bi bi-diagram-3 fs-1 text-success"></i>
                         <h5 class="card-title mt-2">階層式輸入</h5>
-                        <p class="card-text small">使用縮排表示資料夾階層</p>
+                        <p class="card-text small">縮排或 tree 指令輸出，即時預覽</p>
                     </div>
                 </div>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3">
+                <div class="card method-card" data-method="path">
+                    <div class="card-body text-center">
+                        <i class="bi bi-hdd-network fs-1 text-danger"></i>
+                        <h5 class="card-title mt-2">路徑格式</h5>
+                        <p class="card-text small">貼上 Windows / Linux NAS 路徑清單</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
                 <div class="card method-card" data-method="visual">
                     <div class="card-body text-center">
                         <i class="bi bi-ui-checks fs-1 text-warning"></i>
@@ -174,10 +183,10 @@
                     <div class="row">
                         <div class="col-md-6">
                             <label class="form-label fw-bold">Excel 資料貼上區：</label>
-                            <textarea id="excel-paste-area" class="form-control folder-input-area" 
-                                placeholder="請從 Excel 複製資料後貼上...&#10;&#10;範例格式（階層欄位）：&#10;Share	董事長	&#10;	總經理	&#10;	管理部	財務&#10;		人事"></textarea>
+                            <textarea id="excel-paste-area" class="form-control folder-input-area"
+                                placeholder="請從 Excel 複製資料後貼上...&#10;&#10;範例格式（階層欄位）：&#10;Share	董事長	&#10;	總經理	&#10;	管理部	財務&#10;		人事&#10;&#10;貼上後會自動解析↓"></textarea>
                             <button class="btn btn-primary mt-2" onclick="parseExcelData()">
-                                <i class="bi bi-arrow-right-circle"></i> 解析資料
+                                <i class="bi bi-arrow-right-circle"></i> 手動解析
                             </button>
                         </div>
                         <div class="col-md-6">
@@ -222,10 +231,10 @@
                     <div class="row">
                         <div class="col-md-6">
                             <label class="form-label fw-bold">階層式輸入：</label>
-                            <textarea id="tree-input-area" class="form-control folder-input-area" 
-                                placeholder="請使用縮排輸入資料夾結構...&#10;&#10;範例：&#10;總公司&#10;  業務部&#10;    業務一組&#10;    業務二組&#10;  行銷部&#10;  研發部&#10;    前端組&#10;    後端組"></textarea>
+                            <textarea id="tree-input-area" class="form-control folder-input-area"
+                                placeholder="支援縮排格式或 tree 指令輸出（即時預覽）：&#10;&#10;【縮排格式】&#10;總公司&#10;  業務部&#10;    業務一組&#10;  研發部&#10;&#10;【tree 指令格式】&#10;├── 業務部&#10;│   ├── 業務一組&#10;│   └── 業務二組&#10;└── 研發部"></textarea>
                             <button class="btn btn-success mt-2" onclick="parseTreeData()">
-                                <i class="bi bi-arrow-right-circle"></i> 解析資料
+                                <i class="bi bi-arrow-right-circle"></i> 手動解析
                             </button>
                         </div>
                         <div class="col-md-6">
@@ -239,7 +248,64 @@
             </div>
         </div>
 
-        <!-- 方法 3: 視覺化編輯 -->
+        <!-- 方法 3: 路徑格式 -->
+        <div id="method-path" class="method-section" style="display:none;">
+            <div class="card">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="mb-0"><i class="bi bi-hdd-network"></i> 方法三：路徑格式（Windows / Linux NAS）</h5>
+                </div>
+                <div class="card-body">
+                    <div class="example-box">
+                        <strong><i class="bi bi-lightbulb"></i> 使用說明：</strong>
+                        <p class="mb-1 mt-2">每行貼上一條路徑，系統自動辨識分隔符並建立階層。伺服器位址、磁碟代號、掛載點會自動略去。</p>
+                        <div class="row mt-2">
+                            <div class="col-md-6">
+                                <div class="alert alert-secondary py-2 mb-2">
+                                    <small><strong>🪟 Windows UNC / 磁碟路徑：</strong><br>
+                                    <code>\\NAS01\Share\管理部\財務組</code><br>
+                                    <code>\\Server\Data\技術部</code><br>
+                                    <code>D:\Share\業務部\業務一組</code></small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="alert alert-secondary py-2 mb-2">
+                                    <small><strong>🐧 Linux / Synology / QNAP：</strong><br>
+                                    <code>/volume1/Share/管理部/財務組</code><br>
+                                    <code>/mnt/nas/Data/技術部</code><br>
+                                    <code>/shares/公司/業務部</code></small>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="alert alert-info py-2 mb-0">
+                            <small>💡 <strong>去重機制：</strong>相同路徑段只建立一個資料夾節點，貼上再多路徑也不會重複。貼上後自動解析。</small>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">路徑清單貼上區：</label>
+                            <textarea id="path-input-area" class="form-control folder-input-area"
+                                placeholder="每行一條路徑，貼上後自動解析↓&#10;&#10;範例（Windows）：&#10;\\NAS01\Share\管理部\財務組&#10;\\NAS01\Share\管理部\人事組&#10;\\NAS01\Share\技術部&#10;&#10;範例（Linux NAS）：&#10;/volume1/Share/管理部/財務組&#10;/volume1/Share/管理部/人事組&#10;/volume1/Share/技術部"></textarea>
+                            <div class="mt-2 d-flex gap-2">
+                                <button class="btn btn-danger" onclick="parsePathData()">
+                                    <i class="bi bi-arrow-right-circle"></i> 手動解析
+                                </button>
+                                <button class="btn btn-outline-secondary btn-sm" onclick="$('#path-input-area').val(''); $('#path-preview').html(\'<span class=\"text-muted\">解析後的資料夾結構會顯示在這裡...</span>\');">
+                                    清除
+                                </button>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-bold">預覽（樹狀結構）：</label>
+                            <div id="path-preview" class="tree-preview">
+                                <span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 方法 4: 視覺化編輯 -->
         <div id="method-visual" class="method-section" style="display:none;">
             <div class="card">
                 <div class="card-header bg-warning">
@@ -372,6 +438,30 @@
             const input = $('#excel-paste-area').val().trim();
             if (!input) {
                 alert('請先貼上 Excel 資料');
+                return;
+            }
+
+            // ── 智能偵測：若內容是 tree / 路徑格式，自動轉交對應方法 ──
+            const looksLikeTree = /[│├└]|[|`+][-─]{2,}|\|--/.test(input);
+            const looksLikePath = /^(\\\\|\/|[A-Za-z]:[\\\/])/.test(input) ||
+                                  input.split('\n').some(l => /[\/\\].+[\/\\]/.test(l.trim()));
+
+            if (looksLikePath) {
+                $('#path-input-area').val($('#excel-paste-area').val());
+                $('.method-card').removeClass('active');
+                $('.method-card[data-method="path"]').addClass('active');
+                $('.method-section').hide();
+                $('#method-path').show();
+                parsePathData();
+                return;
+            }
+            if (looksLikeTree) {
+                $('#tree-input-area').val($('#excel-paste-area').val());
+                $('.method-card').removeClass('active');
+                $('.method-card[data-method="tree"]').addClass('active');
+                $('.method-section').hide();
+                $('#method-tree').show();
+                parseTreeData();
                 return;
             }
 
@@ -814,8 +904,10 @@
             if (confirm('確定要清除所有資料重新開始？')) {
                 $('#excel-paste-area').val('');
                 $('#tree-input-area').val('');
+                $('#path-input-area').val('');
                 $('#paste-preview').html('<span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>');
                 $('#tree-preview').html('<span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>');
+                $('#path-preview').html('<span class="text-muted">解析後的資料夾結構會顯示在這裡...</span>');
                 $('#csv-output').val('');
                 $('#csv-output-section').hide();
                 parsedData = [];
@@ -993,6 +1085,194 @@
                 alert(errorMsg);
             });
         }
+        // =====================================================================
+        // 優化 1：debounce 工具
+        // =====================================================================
+        function debounce(fn, delay) {
+            let timer;
+            return function(...args) {
+                clearTimeout(timer);
+                timer = setTimeout(() => fn.apply(this, args), delay);
+            };
+        }
+
+        // =====================================================================
+        // 優化 1：自動觸發解析（貼上 / 輸入）
+        // =====================================================================
+        document.getElementById('excel-paste-area').addEventListener('input', debounce(function() {
+            if (this.value.trim()) parseExcelData();
+        }, 400));
+
+        document.getElementById('tree-input-area').addEventListener('input', debounce(function() {
+            if (this.value.trim()) parseTreeData();
+        }, 400));
+
+        document.getElementById('path-input-area').addEventListener('input', debounce(function() {
+            if (this.value.trim()) parsePathData();
+        }, 400));
+
+        // =====================================================================
+        // 優化 2：tree 指令字元過濾（方法二前置處理）
+        // =====================================================================
+        function stripTreeChars(input) {
+            return input.split('\n').map(line => {
+                // 計算深度：每個連續的 tree 前綴段 = 一層
+                // 支援：│   ├──  └──  |--  `--  +--  \--
+                let depth = 0;
+                let remaining = line;
+
+                // 第一步：剝掉「接續線」段（每段 = 一層）
+                // 接續線: "│   " "|   " "    "（4 空格）
+                while (/^[│|]\s{1,4}/.test(remaining) || /^\s{4}/.test(remaining)) {
+                    depth++;
+                    remaining = remaining.replace(/^([│|]\s{1,4}|\s{4})/, '');
+                }
+
+                // 第二步：剝掉「分支符號」→ 這一項本身也是深度 +1
+                // 支援 Unicode：├── └──   ASCII：|-- `-- +-- \--
+                const branchMatch = remaining.match(/^([│├└|`+\\][─\-─]{1,}|[├└][─\-─]*)\s*/);
+                if (branchMatch) {
+                    depth++;
+                    remaining = remaining.slice(branchMatch[0].length);
+                } else if (/^[-]{2,}\s/.test(remaining)) {
+                    // 純 -- 開頭（某些工具）
+                    depth++;
+                    remaining = remaining.replace(/^[-]{2,}\s*/, '');
+                }
+
+                remaining = remaining.trim();
+                if (!remaining) return null;
+                return '  '.repeat(depth) + remaining;
+            }).filter(l => l !== null).join('\n');
+        }
+
+        // 覆寫 parseTreeData，前置 stripTreeChars
+        const _origParseTreeData = parseTreeData;
+        parseTreeData = function() {
+            const raw = $('#tree-input-area').val();
+            // 偵測 Unicode 或 ASCII tree 字元（│├└ 或 |-- `-- +-- ）
+            if (/[│├└]|[|`+\\][-─]{2,}/.test(raw)) {
+                const converted = stripTreeChars(raw);
+                // 暫存轉換結果，不改動 textarea
+                const origVal = $('#tree-input-area').val();
+                $('#tree-input-area').val(converted);
+                _origParseTreeData();
+                $('#tree-input-area').val(origVal);
+            } else {
+                _origParseTreeData();
+            }
+        };
+
+        // =====================================================================
+        // 優化 3：路徑格式解析（Windows + Linux NAS）
+        // =====================================================================
+        function parsePathData() {
+            const input = $('#path-input-area').val().trim();
+            if (!input) return;
+
+            // 智能偵測：若貼的是 tree 格式，轉交方法二
+            if (/[│├└]|[|`+][-─]{2,}|\|--/.test(input)) {
+                $('#tree-input-area').val($('#path-input-area').val());
+                $('.method-card').removeClass('active');
+                $('.method-card[data-method="tree"]').addClass('active');
+                $('.method-section').hide();
+                $('#method-tree').show();
+                parseTreeData();
+                return;
+            }
+
+            const lines = input.split('\n').map(l => l.trim()).filter(l => l);
+            if (lines.length === 0) { alert('請先貼上路徑清單'); return; }
+
+            // 辨識分隔符
+            const hasForward  = lines.some(l => l.includes('/'));
+            const hasBackward = lines.some(l => l.includes('\\'));
+
+            function splitPath(line) {
+                // Windows UNC: 只剝掉開頭 \\ ，其餘全部保留為路徑段
+                // （不自動剝除 server/share，使用者貼入的就是想要的路徑）
+                line = line.replace(/^\\\\/, '');
+                // Windows 磁碟代號: C:\ D:\  → 去掉磁碟代號
+                line = line.replace(/^[A-Za-z]:[\\\/]/, '');
+                // Linux 掛載點前綴: /volume1、/mnt、/media、/shares → 去掉掛載根段
+                line = line.replace(/^\/(volume\d*|mnt|media|shares?)(\/[^\/]+)?(?=\/)/, '');
+                // 去掉開頭分隔符
+                line = line.replace(/^[\/\\]+/, '');
+                // 依分隔符切割
+                return line.split(/[\/\\]/).map(s => s.trim()).filter(s => s);
+            }
+
+            const pathMap  = {};   // fullPath → id
+            const folders  = [];
+            let idCounter  = 1;
+
+            lines.forEach(line => {
+                const parts = splitPath(line);
+                let parentId    = '';
+                let currentPath = '';
+
+                parts.forEach(part => {
+                    currentPath = currentPath ? currentPath + '/' + part : part;
+                    if (!pathMap.hasOwnProperty(currentPath)) {
+                        const id = idCounter++;
+                        pathMap[currentPath] = id;
+                        folders.push({ id, name: part, parent_id: parentId });
+                    }
+                    parentId = pathMap[currentPath];
+                });
+            });
+
+            if (folders.length === 0) {
+                $('#path-preview').html('<span class="text-danger">⚠️ 無法解析路徑，請確認格式正確</span>');
+                return;
+            }
+
+            parsedData = folders;
+            displayTreePreview($('#path-preview'), parsedData);
+            generateCSV();
+        }
+
+        // =====================================================================
+        // 優化 4：generateCSV 加入同層重複名稱警告
+        // =====================================================================
+        const _origGenerateCSV = generateCSV;
+        generateCSV = function() {
+            _origGenerateCSV();   // 先跑原始邏輯產生 CSV
+
+            // 再做重複名稱偵測
+            if (!parsedData || parsedData.length === 0) return;
+
+            // 建立 parent_id → [name…] 的映射
+            const siblingMap = {};
+            parsedData.forEach(item => {
+                const pid = String(item.parent_id || '');
+                if (!siblingMap[pid]) siblingMap[pid] = [];
+                siblingMap[pid].push(item.name.trim().toLowerCase());
+            });
+
+            const dupWarnings = [];
+            Object.entries(siblingMap).forEach(([pid, names]) => {
+                const seen = {};
+                names.forEach(n => { seen[n] = (seen[n] || 0) + 1; });
+                Object.entries(seen).forEach(([n, count]) => {
+                    if (count > 1) {
+                        const parentName = pid
+                            ? (parsedData.find(d => String(d.id || d.dbId) === pid) || {}).name || `ID:${pid}`
+                            : '根目錄';
+                        dupWarnings.push(`⚠️ 「${n}」在「${parentName}」下出現 ${count} 次`);
+                    }
+                });
+            });
+
+            if (dupWarnings.length > 0) {
+                const existing = $('#csv-stats').html();
+                $('#csv-stats').html(existing +
+                    `<div class="alert alert-warning mt-2 mb-0 py-2">
+                        <strong>⚠️ 偵測到同層重複名稱：</strong><br>
+                        <small>${dupWarnings.join('<br>')}</small>
+                    </div>`);
+            }
+        };
     </script>
 </body>
 </html>

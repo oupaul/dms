@@ -121,6 +121,33 @@
             text-align: center;
             font-weight: 500;
         }
+        .btn-microsoft {
+            background: #0078d4;
+            border: none;
+            padding: 12px;
+            font-weight: 600;
+            transition: transform 0.2s;
+            color: white;
+        }
+        .btn-microsoft:hover {
+            background: #106ebe;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 120, 212, 0.4);
+            color: white;
+        }
+        .sso-divider {
+            display: flex;
+            align-items: center;
+            margin: 16px 0;
+            color: #adb5bd;
+            font-size: 13px;
+        }
+        .sso-divider::before, .sso-divider::after {
+            content: '';
+            flex: 1;
+            border-top: 1px solid #dee2e6;
+        }
+        .sso-divider span { margin: 0 10px; }
     </style>
 </head>
 <body>
@@ -146,6 +173,20 @@
 
             <!-- 登入表單（預設顯示） -->
             <div id="login-section">
+                <!-- M365 SSO 按鈕（檢查後動態顯示） -->
+                <div id="sso-section" style="display:none;">
+                    <a href="/auth/microsoft" class="btn btn-microsoft w-100">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 23 23" style="margin-right:8px;vertical-align:-3px;">
+                            <rect x="0" y="0" width="11" height="11" fill="#f25022"/>
+                            <rect x="12" y="0" width="11" height="11" fill="#7fba00"/>
+                            <rect x="0" y="12" width="11" height="11" fill="#00a4ef"/>
+                            <rect x="12" y="12" width="11" height="11" fill="#ffb900"/>
+                        </svg>
+                        使用 Microsoft 帳號登入
+                    </a>
+                    <div class="sso-divider"><span>或使用帳號密碼</span></div>
+                </div>
+
                 <form id="login-form">
                     <div class="mb-3">
                         <label class="form-label">使用者名稱</label>
@@ -213,9 +254,33 @@
     <script>
         let inviteToken = null;
 
+        const SSO_ERROR_MESSAGES = {
+            ms_auth_cancelled: 'Microsoft 登入已取消。',
+            ms_auth_failed: 'Microsoft 登入失敗，請再試一次。',
+            ms_no_email: '無法取得 Microsoft 帳號的 Email，請聯繫管理員。',
+            ms_no_linked_account: '此 Microsoft 帳號尚未綁定 DMS 帳號，請聯繫管理員設定。',
+            ms_no_database: '帳號尚未指派可存取的資料庫，請聯繫管理員。',
+            sso_disabled: 'SSO 功能目前未啟用。',
+            sso_error: 'SSO 服務暫時無法使用，請改用帳號密碼登入。',
+        };
+
         $(document).ready(function() {
-            // 偵測邀請 token
+            // 顯示 SSO 錯誤訊息
             const params = new URLSearchParams(window.location.search);
+            const ssoError = params.get('error');
+            if (ssoError && SSO_ERROR_MESSAGES[ssoError]) {
+                showMessage('danger', SSO_ERROR_MESSAGES[ssoError]);
+                history.replaceState(null, '', '/login.html');
+            }
+
+            // 檢查 SSO 是否啟用，若是則顯示 Microsoft 按鈕
+            $.get('/api/auth/sso-status', function(data) {
+                if (data.enabled) {
+                    $('#sso-section').show();
+                }
+            });
+
+            // 偵測邀請 token
             const token = params.get('token');
             if (token) {
                 inviteToken = token;

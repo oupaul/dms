@@ -521,28 +521,31 @@
                 // 第6欄：部門
                 const name = parts[0] ? parts[0].trim() : '';
                 const email = parts[1] ? parts[1].trim() : '';
-                const description = parts[3] ? parts[3].trim() : '';
+                // AD 第4欄通常是「描述」欄，實務上常填入 SamAccountName（NAS登入帳號）→ 存為 account_key
+                const account_key = parts[3] ? parts[3].trim() : '';
                 const company = parts[4] ? parts[4].trim() : '';
                 const department = parts[5] ? parts[5].trim() : '';
 
                 if (name && email) {
                     parsedData.push({
+                        account_key: account_key || '',
                         name: name,
                         email: email,
                         department: department || '',
                         company: company || '',
-                        description: description || '',
+                        description: '',
                         title: '',  // AD 預設沒有職稱，保留空白
                         phone: ''   // AD 預設沒有電話，保留空白
                     });
                 } else if (name) {
                     // 如果只有姓名沒有Email，也加入但標記為無Email
                     parsedData.push({
+                        account_key: account_key || '',
                         name: name,
                         email: '',
                         department: department || '',
                         company: company || '',
-                        description: description || '',
+                        description: '',
                         title: '',
                         phone: ''
                     });
@@ -620,7 +623,7 @@
                     
                     // 智能判斷：檢查第二欄是否已經是完整的 Email 格式
                     const isCompleteEmail = accountOrEmail.includes('@');
-                    
+
                     if (isCompleteEmail) {
                         // 如果已經包含 @，直接使用（不論何種模式）
                         email = accountOrEmail;
@@ -632,7 +635,10 @@
                         email = accountOrEmail;
                     }
 
+                    // 若第二欄不含 @ 則視為 SamAccountName → 記入 account_key
+                    const account_key = isCompleteEmail ? '' : accountOrEmail;
                     parsedData.push({
+                        account_key: account_key || '',
                         name: name,
                         email: email || '',
                         department: department || '',
@@ -718,9 +724,11 @@
                 const description = $(this).find('.user-description-input').val().trim();
                 
                 let email = '';
+                let account_key = '';
                 if (isAuto) {
-                    // 自動生成模式：讀取帳號並生成 Email
+                    // 自動生成模式：讀取帳號並生成 Email，帳號存為 account_key
                     const account = $(this).find('.user-account-input').val().trim();
+                    account_key = account;
                     email = generateEmail(account);
                 } else {
                     // 手動輸入模式：直接讀取 Email
@@ -729,6 +737,7 @@
 
                 if (name) {
                     parsedData.push({
+                        account_key: account_key || '',
                         name: name,
                         email: email || '',
                         department: department || '',
@@ -757,13 +766,14 @@
                 return;
             }
 
-            let html = '<div class="table-responsive"><table class="table table-sm table-bordered preview-table"><thead class="table-light"><tr><th>#</th><th>姓名</th><th>Email</th><th>部門</th><th>公司</th><th>職稱</th><th>電話</th><th>描述</th></tr></thead><tbody>';
-            
+            let html = '<div class="table-responsive"><table class="table table-sm table-bordered preview-table"><thead class="table-light"><tr><th>#</th><th>帳號</th><th>姓名</th><th>Email</th><th>部門</th><th>公司</th><th>職稱</th><th>電話</th><th>描述</th></tr></thead><tbody>';
+
             data.forEach((item, index) => {
                 const displayValue = (value) => value ? value : '<span class="text-muted text-small">（空）</span>';
-                
+
                 html += `<tr>
                     <td>${index + 1}</td>
+                    <td>${displayValue(item.account_key)}</td>
                     <td>${item.name}</td>
                     <td>${displayValue(item.email)}</td>
                     <td>${displayValue(item.department)}</td>
@@ -785,8 +795,8 @@
                 return;
             }
 
-            let csvContent = 'type,name,email,department,company,title,phone,description\n';
-            
+            let csvContent = 'type,account_key,name,email,department,company,title,phone,description\n';
+
             parsedData.forEach(item => {
                 const escapeCSV = (value) => {
                     if (!value) return '';
@@ -795,6 +805,7 @@
                         : value;
                 };
                 
+                const account_key = escapeCSV(item.account_key || '');
                 const name = escapeCSV(item.name);
                 const email = escapeCSV(item.email);
                 const department = escapeCSV(item.department || '');
@@ -802,8 +813,8 @@
                 const title = escapeCSV(item.title || '');
                 const phone = escapeCSV(item.phone || '');
                 const description = escapeCSV(item.description || '');
-                
-                csvContent += `user,${name},${email},${department},${company},${title},${phone},${description}\n`;
+
+                csvContent += `user,${account_key},${name},${email},${department},${company},${title},${phone},${description}\n`;
             });
 
             $('#csv-output').val(csvContent);
@@ -811,6 +822,7 @@
 
             // 顯示統計
             const totalCount = parsedData.length;
+            const withAccountKeyCount = parsedData.filter(item => item.account_key).length;
             const withEmailCount = parsedData.filter(item => item.email).length;
             const withDepartmentCount = parsedData.filter(item => item.department).length;
             const withCompanyCount = parsedData.filter(item => item.company).length;
@@ -826,6 +838,7 @@
                     <div class="col-md-6">
                         <small>
                             <strong>必填欄位：</strong><br>
+                            🔑 帳號(account_key)：${withAccountKeyCount} / ${totalCount}<br>
                             ✉️ Email：${withEmailCount} / ${totalCount}<br>
                         </small>
                     </div>

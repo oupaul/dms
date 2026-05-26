@@ -14,6 +14,12 @@ const { promisify } = require('util');
 const execAsync = promisify(exec);
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+let msal = null;
+try {
+  msal = require('@azure/msal-node');
+} catch (e) {
+  console.warn('⚠️  @azure/msal-node 未安裝，M365 SSO 功能停用（若需啟用請執行 npm install）');
+}
 
 const app = express();
 app.set('trust proxy', 1); // 信任 nginx 的 X-Forwarded-Proto，讓 req.protocol 正確回傳 https
@@ -29,11 +35,11 @@ app.use(session({
   secret: 'your-secret-key-change-this-in-production',
   resave: false,
   saveUninitialized: false,
-  cookie: { 
-    secure: false, // 如果使用 HTTPS 設為 true
+  cookie: {
+    secure: true,      // 站台為 HTTPS，必須設 true（trust proxy: 1 已設定）
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 小時
-    sameSite: 'lax' // 允許跨頁面導航時保持 session
+    sameSite: 'lax'   // 允許 OAuth redirect 後帶回 cookie
   }
 }));
 
@@ -153,6 +159,23 @@ app.use((req, res, next) => {
   next();
 });
 
+// ==================== 本地時間工具（Asia/Taipei, CST +08:00）====================
+// toISOString() 固定輸出 UTC；toLocaleString() 依賴 ICU 資料且格式不穩定。
+// Taiwan 永遠 UTC+8（無夏令時），用純算術位移最可靠，不依賴任何 locale 支援。
+const TZ_OFFSET_MS = 8 * 60 * 60 * 1000; // +08:00 in ms
+
+function toLocalISO(date) {
+  // 將任意 Date 轉成 'YYYY-MM-DDTHH:mm:ss+08:00' 字串
+  const p = n => String(n).padStart(2, '0');
+  const local = new Date(date.getTime() + TZ_OFFSET_MS);
+  return `${local.getUTCFullYear()}-${p(local.getUTCMonth()+1)}-${p(local.getUTCDate())}` +
+         `T${p(local.getUTCHours())}:${p(local.getUTCMinutes())}:${p(local.getUTCSeconds())}+08:00`;
+}
+function nowISO()       { return toLocalISO(new Date()); }
+function todayString()  { return nowISO().slice(0, 10); }          // 'YYYY-MM-DD'
+function nowFileStamp() { return nowISO().replace(/[:.]/g, '-').slice(0, 19); } // 'YYYY-MM-DDTHH-mm-ss'
+// =============================================================================
+
 // 多資料庫管理
 let db = null; // 當前使用的資料庫連線
 let currentDbName = 'permissions.db'; // 當前資料庫名稱
@@ -231,7 +254,7 @@ ensureDatabaseDirectory();
 // 初始化資料庫連線
 function connectDatabase(dbName) {
   const dbPath = path.join(DB_DIR, dbName);
-  
+
   return new Promise((resolve, reject) => {
     const database = new sqlite3.Database(dbPath, (err) => {
       if (err) {
@@ -240,15 +263,23 @@ function connectDatabase(dbName) {
         return;
       }
       console.log(`Connected to database: ${dbName}`);
-      
-      // 初始化資料表結構
-      initializeTables(database, (initErr) => {
-        if (initErr) {
-          console.error('Table initialization error:', initErr);
-          reject(initErr);
-          return;
-        }
-        resolve(database);
+
+      // 設定 busy_timeout，避免多連線時 SQLITE_BUSY 錯誤造成操作中斷
+      database.run('PRAGMA busy_timeout = 5000', () => {
+        // 啟用 WAL 模式，提升並發讀寫效能
+        database.run('PRAGMA journal_mode = WAL', (walErr) => {
+          if (walErr) console.warn(`WAL mode warning for ${dbName}:`, walErr.message);
+
+          // 初始化資料表結構
+          initializeTables(database, (initErr) => {
+            if (initErr) {
+              console.error('Table initialization error:', initErr);
+              reject(initErr);
+              return;
+            }
+            resolve(database);
+          });
+        });
       });
     });
   });
@@ -268,6 +299,7 @@ function initializeTables(database, callback) {
       user_database TEXT,
       permission_level TEXT DEFAULT 'editor',
       allowed_databases TEXT,
+      ms_email TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     
@@ -275,16 +307,24 @@ function initializeTables(database, callback) {
       if (err) return;
       const columnNames = columns.map(col => col.name);
       if (!columnNames.includes('permission_level')) {
-        database.run("ALTER TABLE accounts ADD COLUMN permission_level TEXT DEFAULT 'editor'");
+        database.run("ALTER TABLE accounts ADD COLUMN permission_level TEXT DEFAULT 'editor'", (e) => { if (e) console.warn('migrate accounts.permission_level:', e.message); });
       }
       if (!columnNames.includes('allowed_databases')) {
-        database.run("ALTER TABLE accounts ADD COLUMN allowed_databases TEXT");
+        database.run("ALTER TABLE accounts ADD COLUMN allowed_databases TEXT", (e) => { if (e) console.warn('migrate accounts.allowed_databases:', e.message); });
       }
       if (!columnNames.includes('role_level')) {
-        database.run("ALTER TABLE accounts ADD COLUMN role_level TEXT DEFAULT 'user'");
+        database.run("ALTER TABLE accounts ADD COLUMN role_level TEXT DEFAULT 'user'", (e) => { if (e) console.warn('migrate accounts.role_level:', e.message); });
       }
       if (!columnNames.includes('can_invite')) {
-        database.run("ALTER TABLE accounts ADD COLUMN can_invite INTEGER DEFAULT 0");
+        database.run("ALTER TABLE accounts ADD COLUMN can_invite INTEGER DEFAULT 0", (e) => { if (e) console.warn('migrate accounts.can_invite:', e.message); });
+      }
+      if (!columnNames.includes('ms_email')) {
+        // 用 serialize 確保 ALTER TABLE 一定在 CREATE INDEX 之前完成，
+        // 避免 parallel 模式下兩條語句競爭造成 "no such column: ms_email" uncaughtException
+        database.serialize(() => {
+          database.run("ALTER TABLE accounts ADD COLUMN ms_email TEXT", (e) => { if (e) console.warn('migrate accounts.ms_email:', e.message); });
+          database.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_ms_email ON accounts(ms_email) WHERE ms_email IS NOT NULL", (e) => { if (e) console.warn('migrate idx_accounts_ms_email:', e.message); });
+        });
       }
     });
     
@@ -312,25 +352,28 @@ function initializeTables(database, callback) {
     database.all("PRAGMA table_info(users)", [], (err, columns) => {
       if (err) return;
       const columnNames = columns.map(col => col.name);
-      
+
       if (!columnNames.includes('department')) {
-        database.run('ALTER TABLE users ADD COLUMN department TEXT');
+        database.run('ALTER TABLE users ADD COLUMN department TEXT', (e) => { if (e) console.warn('migrate users.department:', e.message); });
       }
       if (!columnNames.includes('company')) {
-        database.run('ALTER TABLE users ADD COLUMN company TEXT');
+        database.run('ALTER TABLE users ADD COLUMN company TEXT', (e) => { if (e) console.warn('migrate users.company:', e.message); });
       }
       if (!columnNames.includes('title')) {
-        database.run('ALTER TABLE users ADD COLUMN title TEXT');
+        database.run('ALTER TABLE users ADD COLUMN title TEXT', (e) => { if (e) console.warn('migrate users.title:', e.message); });
       }
       if (!columnNames.includes('phone')) {
-        database.run('ALTER TABLE users ADD COLUMN phone TEXT');
+        database.run('ALTER TABLE users ADD COLUMN phone TEXT', (e) => { if (e) console.warn('migrate users.phone:', e.message); });
       }
       if (!columnNames.includes('description')) {
-        database.run('ALTER TABLE users ADD COLUMN description TEXT');
+        database.run('ALTER TABLE users ADD COLUMN description TEXT', (e) => { if (e) console.warn('migrate users.description:', e.message); });
       }
       if (!columnNames.includes('account_key')) {
-        database.run('ALTER TABLE users ADD COLUMN account_key TEXT');
-        database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_key ON users(account_key) WHERE account_key IS NOT NULL');
+        // 同 ms_email：用 serialize 確保 ALTER TABLE 先完成再建 INDEX
+        database.serialize(() => {
+          database.run('ALTER TABLE users ADD COLUMN account_key TEXT', (e) => { if (e) console.warn('migrate users.account_key:', e.message); });
+          database.run('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_key ON users(account_key) WHERE account_key IS NOT NULL', (e) => { if (e) console.warn('migrate idx_users_account_key:', e.message); });
+        });
       }
     });
     
@@ -345,7 +388,7 @@ function initializeTables(database, callback) {
       if (err) return;
       const columnNames = columns.map(col => col.name);
       if (!columnNames.includes('description')) {
-        database.run("ALTER TABLE groups ADD COLUMN description TEXT DEFAULT ''");
+        database.run("ALTER TABLE groups ADD COLUMN description TEXT DEFAULT ''", (e) => { if (e) console.warn('migrate groups.description:', e.message); });
       }
     });
 
@@ -420,8 +463,8 @@ async function createDefaultAdmin() {
         
         await new Promise((res, rej) => {
           db.run(
-            'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [adminUsername, passwordHash, '系統管理員', 'admin', 'active', adminDbName, 'editor', null],
+            'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [adminUsername, passwordHash, '系統管理員', 'admin', 'active', adminDbName, 'editor', null, nowISO()],
             function(err) {
               if (err) return rej(err);
               console.log(`✓ Created default admin account: ${adminUsername} / ${adminPassword}`);
@@ -493,7 +536,7 @@ function syncDatabaseRegistry() {
     const createdBy = name.startsWith('user_') ? name.slice(5).replace(/\.db$/i, '') : null;
     const displayName = createdBy ? null : name.replace(/\.db$/i, '');
     const stat = (() => { try { return fs.statSync(path.join(DB_DIR, name)); } catch { return null; } })();
-    const createdAt = stat ? stat.birthtime.toISOString() : new Date().toISOString();
+    const createdAt = stat ? toLocalISO(stat.birthtime) : nowISO();
     stmt.run(name, displayName, createdBy, createdAt);
   });
   stmt.finalize(() => console.log(`✓ 資料庫登記同步完成（共 ${files.length} 個）`));
@@ -569,6 +612,25 @@ loadDefaultDatabase().then(() => {
     } else {
       console.log('✓ Usage statistics table initialized in system database');
     }
+    // 補丁：為舊版 system.db 補齊可能缺少的欄位
+    db.all('PRAGMA table_info(usage_statistics)', [], (perr, columns) => {
+      if (perr || !columns) return;
+      const cols = columns.map(c => c.name);
+      const needed = ['login_count', 'total_session_time', 'last_login', 'last_logout', 'created_at', 'updated_at'];
+      const missing = needed.filter(c => !cols.includes(c));
+      const defs = {
+        login_count: 'INTEGER DEFAULT 0',
+        total_session_time: 'INTEGER DEFAULT 0',
+        last_login: 'DATETIME',
+        last_logout: 'DATETIME',
+        created_at: 'DATETIME DEFAULT CURRENT_TIMESTAMP',
+        updated_at: 'DATETIME DEFAULT CURRENT_TIMESTAMP',
+      };
+      missing.forEach(col => {
+        db.run(`ALTER TABLE usage_statistics ADD COLUMN ${col} ${defs[col]}`);
+        console.log(`✓ usage_statistics 補丁：新增欄位 ${col}`);
+      });
+    });
   });
 
   db.run(`CREATE TABLE IF NOT EXISTS broadcast_messages (
@@ -702,6 +764,43 @@ function loadEmailConfig() {
   }
 }
 loadEmailConfig();
+
+// ==================== M365 SSO ====================
+
+const MSAL_CONFIG_PATH = path.join(__dirname, 'msal_config.json');
+let msalConfig = { enabled: false };
+let msalClient = null;
+
+function loadMsalConfig() {
+  if (!msal) {
+    msalClient = null;
+    return; // 套件未安裝，跳過
+  }
+  try {
+    if (fs.existsSync(MSAL_CONFIG_PATH)) {
+      msalConfig = JSON.parse(fs.readFileSync(MSAL_CONFIG_PATH, 'utf8'));
+    }
+    if (msalConfig.enabled && msalConfig.clientId && msalConfig.tenantId && msalConfig.clientSecret) {
+      msalClient = new msal.ConfidentialClientApplication({
+        auth: {
+          clientId: msalConfig.clientId,
+          authority: `https://login.microsoftonline.com/${msalConfig.tenantId}`,
+          clientSecret: msalConfig.clientSecret,
+        },
+        system: {
+          loggerOptions: { loggerCallback: () => {}, piiLoggingEnabled: false, logLevel: msal.LogLevel.Warning }
+        }
+      });
+      console.log('✓ M365 SSO 已啟用');
+    } else {
+      msalClient = null;
+      console.log('ℹ️  M365 SSO 未啟用');
+    }
+  } catch (err) {
+    console.error('載入 MSAL 設定失敗:', err.message);
+  }
+}
+loadMsalConfig();
 
 const ACTION_LABEL = { create: '新增', update: '修改', delete: '刪除', invite: '發送邀請' };
 const RESOURCE_LABEL = { folder: '資料夾', user: '人員', group: '群組', permission: '權限', invite: '邀請連結' };
@@ -893,8 +992,8 @@ function logAudit(req, actionType, resourceType, resourceId, resourceName, oldVa
   const userAgent = req.get('User-Agent') || 'Unknown';
   
   db.run(
-    `INSERT INTO audit_log (account_id, username, full_name, action_type, resource_type, resource_id, resource_name, old_value, new_value, user_database, ip_address, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO audit_log (account_id, username, full_name, action_type, resource_type, resource_id, resource_name, old_value, new_value, user_database, ip_address, user_agent, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       req.session.userId,
       req.session.username,
@@ -907,7 +1006,8 @@ function logAudit(req, actionType, resourceType, resourceId, resourceName, oldVa
       newValue ? JSON.stringify(newValue) : null,
       req.session.userDatabase || null,
       ipAddress,
-      userAgent
+      userAgent,
+      nowISO()
     ],
     (err) => {
       if (err) {
@@ -933,8 +1033,8 @@ function logAudit(req, actionType, resourceType, resourceId, resourceName, oldVa
 
 // 更新使用時間統計
 function updateUsageStatistics(accountId, username, fullName, isLogin = false) {
-  const today = new Date().toISOString().split('T')[0];
-  const now = new Date().toISOString();
+  const today = todayString();
+  const now = nowISO();
   
   if (isLogin) {
     // 登入時更新
@@ -967,8 +1067,8 @@ function updateUsageStatistics(accountId, username, fullName, isLogin = false) {
 
 // 記錄登出時間
 function logLogout(accountId, username) {
-  const today = new Date().toISOString().split('T')[0];
-  const now = new Date().toISOString();
+  const today = todayString();
+  const now = nowISO();
   
   db.run(
     `UPDATE usage_statistics 
@@ -1014,8 +1114,8 @@ async function withUserDatabase(req, res, next) {
     // 更新系統資料庫中的活動時間（僅在有 activeSessionId 時）
     if (req.session.activeSessionId) {
       db.run(
-        'UPDATE active_sessions SET last_active = CURRENT_TIMESTAMP WHERE id = ?',
-        [req.session.activeSessionId],
+        'UPDATE active_sessions SET last_active = ? WHERE id = ?',
+        [nowISO(), req.session.activeSessionId],
         (err) => {
           if (err) console.error('更新活動時間錯誤:', err);
         }
@@ -1129,13 +1229,17 @@ app.post('/api/auth/login', async (req, res) => {
 
     let targetDatabase = user.user_database;
     if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
-      targetDatabase = allowedDatabases[0];
+      // 優先使用帳號記錄的 user_database（即管理員指定的預設資料庫）
+      // 若不在允許清單內（例如帳號剛被調整），退回清單第一個
+      targetDatabase = allowedDatabases.includes(user.user_database)
+        ? user.user_database
+        : allowedDatabases[0];
     }
-    
+
     if (!targetDatabase) {
       return res.status(500).json({ error: '帳號未設定資料庫，請聯繫管理員' });
     }
-    
+
     // 切換到使用者的專屬資料庫
     try {
       const userDb = await getUserDatabase(user.id, targetDatabase);
@@ -1155,9 +1259,9 @@ app.post('/api/auth/login', async (req, res) => {
       const ipAddress = req.ip || req.connection.remoteAddress;
       const userAgent = req.get('User-Agent') || 'Unknown';
       
-      db.run(`INSERT INTO active_sessions (account_id, username, full_name, user_database, ip_address, user_agent)
-                  VALUES (?, ?, ?, ?, ?, ?)`,
-        [user.id, user.username, user.full_name, user.user_database, ipAddress, userAgent],
+      db.run(`INSERT INTO active_sessions (account_id, username, full_name, user_database, ip_address, user_agent, login_time, last_active)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [user.id, user.username, user.full_name, user.user_database, ipAddress, userAgent, nowISO(), nowISO()],
         (err) => {
           if (err) console.error('記錄活動會話錯誤:', err);
           else {
@@ -1233,6 +1337,142 @@ app.post('/api/auth/logout', (req, res) => {
     }
     res.json({ success: true, message: '登出成功' });
   });
+});
+
+// M365 SSO 狀態（公開，不需登入）
+app.get('/api/auth/sso-status', (req, res) => {
+  res.json({ enabled: !!(msalConfig.enabled && msalClient) });
+});
+
+// M365 SSO 登入入口
+app.get('/auth/microsoft', async (req, res) => {
+  if (!msalClient || !msalConfig.enabled) {
+    return res.redirect('/login.html?error=sso_disabled');
+  }
+  try {
+    const authCodeUrl = await msalClient.getAuthCodeUrl({
+      scopes: ['openid', 'profile', 'email'],
+      redirectUri: msalConfig.redirectUri,
+      state: 'ms_sso', // 固定值，避免 session 跨請求丟失
+    });
+    // 強制儲存 session 後再跳轉，確保 cookie 已寫入
+    req.session.msalPending = true;
+    req.session.save((err) => {
+      if (err) console.error('Session save error before SSO redirect:', err);
+      res.redirect(authCodeUrl);
+    });
+  } catch (err) {
+    console.error('SSO redirect error:', err);
+    res.redirect('/login.html?error=sso_error');
+  }
+});
+
+// M365 SSO Callback
+app.get('/auth/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error) {
+    console.error('Microsoft auth error:', error, req.query.error_description);
+    return res.redirect('/login.html?error=ms_auth_cancelled');
+  }
+  if (!code) return res.redirect('/login.html?error=ms_auth_failed');
+
+  // state 驗證（使用固定值，避免 session 跨請求在 proxy 環境丟失）
+  if (!state || state !== 'ms_sso') {
+    console.error('SSO state mismatch, received:', state);
+    return res.redirect('/login.html?error=ms_auth_failed');
+  }
+
+  try {
+    const tokenResponse = await msalClient.acquireTokenByCode({
+      code,
+      scopes: ['openid', 'profile', 'email'],
+      redirectUri: msalConfig.redirectUri,
+    });
+
+    const msEmail = tokenResponse.account?.username
+      || tokenResponse.idTokenClaims?.email
+      || tokenResponse.idTokenClaims?.preferred_username;
+
+    if (!msEmail) return res.redirect('/login.html?error=ms_no_email');
+
+    const user = await new Promise((resolve, reject) => {
+      db.get(
+        "SELECT * FROM accounts WHERE LOWER(ms_email) = LOWER(?) AND status = 'active'",
+        [msEmail],
+        (err, row) => { if (err) reject(err); else resolve(row); }
+      );
+    });
+
+    if (!user) {
+      console.log(`M365 SSO: 找不到綁定帳號 for ${msEmail}`);
+      return res.redirect('/login.html?error=ms_no_linked_account');
+    }
+
+    const permissionLevel = user.permission_level || 'editor';
+    const userRoleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
+    const isClientRole = userRoleLevel === 'db_admin' || userRoleLevel === 'client_user';
+    const isEngineer = userRoleLevel === 'engineer';
+    let allowedDatabases = parseAllowedDatabases(user.allowed_databases);
+
+    if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
+      allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
+      if (allowedDatabases.length === 0) {
+        return res.redirect('/login.html?error=ms_no_database');
+      }
+    }
+
+    let targetDatabase = user.user_database;
+    if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
+      targetDatabase = allowedDatabases.includes(user.user_database)
+        ? user.user_database
+        : allowedDatabases[0];
+    }
+    if (!targetDatabase) return res.redirect('/login.html?error=ms_no_database');
+
+    await getUserDatabase(user.id, targetDatabase);
+
+    req.session.userId = user.id;
+    req.session.username = user.username;
+    req.session.fullName = user.full_name;
+    req.session.role = user.role;
+    req.session.roleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
+    req.session.canInvite = !!(user.can_invite || user.role === 'admin');
+    req.session.permissionLevel = permissionLevel;
+    req.session.allowedDatabases = (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : [];
+    req.session.userDatabase = targetDatabase;
+    req.session.loginMethod = 'sso';
+
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('User-Agent') || 'Unknown';
+
+    // 必須在 redirect 前取得 activeSessionId，否則 session 會在非同步回呼完成前就被儲存
+    const activeSessionId = await new Promise((resolve) => {
+      db.run(
+        'INSERT INTO active_sessions (account_id, username, full_name, user_database, ip_address, user_agent, login_time, last_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [user.id, user.username, user.full_name || '', targetDatabase, ipAddress, userAgent, nowISO(), nowISO()],
+        function(err) {
+          if (err) { console.error('active_sessions insert error (SSO):', err); resolve(null); }
+          else resolve(this.lastID);
+        }
+      );
+    });
+    if (activeSessionId) req.session.activeSessionId = activeSessionId;
+
+    updateUsageStatistics(user.id, user.username, user.full_name, true);
+    logAudit(req, 'login', 'account', user.id, user.username, null, { database: targetDatabase, method: 'M365 SSO' });
+
+    console.log(`✓ M365 SSO 登入成功: ${user.username} (${msEmail})`);
+
+    // 明確儲存 session（含 activeSessionId）後再 redirect，確保後續操作記錄正常
+    req.session.save((saveErr) => {
+      if (saveErr) console.error('Session save error in SSO callback:', saveErr);
+      res.redirect('/index.html');
+    });
+  } catch (err) {
+    console.error('SSO callback error:', err);
+    res.redirect('/login.html?error=ms_auth_failed');
+  }
 });
 
 // 修改密碼
@@ -1348,7 +1588,7 @@ app.get('/api/admin/pending-accounts', requireAdmin, (req, res) => {
 // 取得所有帳號（管理員專用）
 app.get('/api/admin/accounts', requireAdmin, (req, res) => {
   db.all(
-    'SELECT id, username, full_name, role, role_level, can_invite, status, user_database, created_at, permission_level, allowed_databases FROM accounts ORDER BY created_at DESC',
+    'SELECT id, username, full_name, role, role_level, can_invite, status, user_database, created_at, permission_level, allowed_databases, ms_email FROM accounts ORDER BY created_at DESC',
     [],
     (err, rows) => {
       if (err) {
@@ -1373,7 +1613,7 @@ app.post('/api/admin/review-account', requireAdmin, (req, res) => {
 
 // 更新帳號權限（管理員專用）
 app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res) => {
-  const { accountId, permissionLevel, allowedDatabases, roleLevel, canInvite } = req.body;
+  const { accountId, permissionLevel, allowedDatabases, roleLevel, canInvite, defaultDatabase } = req.body;
   if (!accountId) {
     return res.status(400).json({ error: '缺少必要參數' });
   }
@@ -1417,10 +1657,14 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
 
     const updates = ['permission_level = ?', 'allowed_databases = ?'];
     const params = [finalPermissionLevel, serialized];
-    // 客戶帳號或工程師帳號同步更新 user_database 為第一個允許的資料庫
-    if ((isClientRole || isEngineer) && sanitized.length > 0) {
+    // 所有有 allowed_databases 的帳號（viewer / client / engineer）都更新 user_database
+    // 優先使用傳入的 defaultDatabase（需在 sanitized 清單內），否則退回第一個
+    if (sanitized.length > 0) {
       updates.push('user_database = ?');
-      params.push(sanitized[0]);
+      const validDefault = (defaultDatabase && sanitized.includes(defaultDatabase))
+        ? defaultDatabase
+        : sanitized[0];
+      params.push(validDefault);
     }
     if (finalRoleLevel !== null) {
       updates.push('role_level = ?');
@@ -1446,6 +1690,51 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
   } catch (error) {
     console.error('更新帳號權限失敗:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 升降管理員身份（管理員專用）
+app.post('/api/admin/accounts/set-admin-role', requireAdmin, async (req, res) => {
+  const { accountId, makeAdmin } = req.body;
+  if (!accountId || makeAdmin === undefined) {
+    return res.status(400).json({ error: '缺少必要參數' });
+  }
+  if (accountId === req.session.userId) {
+    return res.status(400).json({ error: '不能變更自己的管理員身份' });
+  }
+
+  try {
+    const account = await new Promise((resolve, reject) => {
+      db.get('SELECT id, username, role FROM accounts WHERE id = ?', [accountId], (err, row) => {
+        if (err) reject(err); else resolve(row);
+      });
+    });
+    if (!account) return res.status(404).json({ error: '帳號不存在' });
+
+    // 降級時，確保還有其他管理員
+    if (!makeAdmin) {
+      const adminCount = await new Promise((resolve, reject) => {
+        db.get("SELECT COUNT(*) as cnt FROM accounts WHERE role = 'admin'", [], (err, row) => {
+          if (err) reject(err); else resolve(row.cnt);
+        });
+      });
+      if (adminCount <= 1) {
+        return res.status(400).json({ error: '系統中至少需要保留一位管理員，無法降級最後一位管理員' });
+      }
+    }
+
+    const newRole = makeAdmin ? 'admin' : 'user';
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE accounts SET role = ? WHERE id = ?', [newRole, accountId], function(err) {
+        if (err) reject(err); else if (this.changes === 0) reject(new Error('更新失敗')); else resolve();
+      });
+    });
+
+    console.log(`✓ ${makeAdmin ? '升級' : '降級'} 管理員: ${account.username}`);
+    res.json({ success: true, message: `${account.username} 已${makeAdmin ? '升為系統管理員' : '取消管理員身份'}` });
+  } catch (err) {
+    console.error('set-admin-role 失敗:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1600,14 +1889,14 @@ app.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
   }
 
   const days = parseInt(expiryDays) || 7;
-  const expiresAt = new Date(Date.now() + days * 86400000).toISOString();
+  const expiresAt = toLocalISO(new Date(Date.now() + days * 86400000));
   const token = crypto.randomUUID();
 
   try {
     await new Promise((resolve, reject) => {
       db.run(
-        'INSERT INTO invitations (token, created_by, expires_at, role_level, permission_level, allowed_databases, note) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [token, req.session.username, expiresAt, finalRoleLevel, finalPermLevel, JSON.stringify(finalDbs), note || null],
+        'INSERT INTO invitations (token, created_by, expires_at, role_level, permission_level, allowed_databases, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [token, req.session.username, expiresAt, finalRoleLevel, finalPermLevel, JSON.stringify(finalDbs), note || null, nowISO()],
         function(err) { if (err) reject(err); else resolve(this.lastID); }
       );
     });
@@ -1744,8 +2033,8 @@ app.post('/api/invite/:token/register', async (req, res) => {
 
     await new Promise((resolve, reject) => {
       db.run(
-        'INSERT INTO accounts (username, password_hash, full_name, role, role_level, can_invite, status, user_database, permission_level, allowed_databases) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [username, passwordHash, full_name || null, 'user', inv.role_level || 'user', isDbAdmin ? 1 : 0, 'active', finalUserDb, finalPermLevel, finalAllowed],
+        'INSERT INTO accounts (username, password_hash, full_name, role, role_level, can_invite, status, user_database, permission_level, allowed_databases, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [username, passwordHash, full_name || null, 'user', inv.role_level || 'user', isDbAdmin ? 1 : 0, 'active', finalUserDb, finalPermLevel, finalAllowed, nowISO()],
         function(err) { if (err) reject(err); else resolve(this.lastID); }
       );
     });
@@ -1757,7 +2046,7 @@ app.post('/api/invite/:token/register', async (req, res) => {
     }
 
     // 標記邀請已使用
-    db.run('UPDATE invitations SET used_at = CURRENT_TIMESTAMP, used_by = ? WHERE token = ?', [username, token]);
+    db.run('UPDATE invitations SET used_at = ?, used_by = ? WHERE token = ?', [nowISO(), username, token]);
 
     console.log(`✓ 透過邀請建立帳號: ${username} (${inv.role_level})`);
     res.json({ success: true, message: '帳號建立成功，請使用您的帳號登入。' });
@@ -1846,6 +2135,65 @@ app.post('/api/admin/accounts/reset-password', requireAdmin, async (req, res) =>
   }
 });
 
+// ==================== M365 SSO 管理 API ====================
+
+// 取得 SSO 設定（遮蔽 clientSecret）
+app.get('/api/admin/sso-config', requireAdmin, (req, res) => {
+  const cfg = { ...msalConfig };
+  if (cfg.clientSecret) cfg.clientSecret = '••••••••';
+  res.json(cfg);
+});
+
+// 儲存 SSO 設定
+app.post('/api/admin/sso-config', requireAdmin, async (req, res) => {
+  try {
+    const body = req.body;
+    const newConfig = { ...msalConfig, ...body };
+    if (!body.clientSecret || body.clientSecret === '••••••••') {
+      newConfig.clientSecret = msalConfig.clientSecret || '';
+    }
+    fs.writeFileSync(MSAL_CONFIG_PATH, JSON.stringify(newConfig, null, 2), 'utf8');
+    loadMsalConfig();
+    res.json({ success: true, message: 'SSO 設定已儲存並重新載入', enabled: !!(msalConfig.enabled && msalClient) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 設定帳號的 M365 Email（用於 SSO 綁定）
+app.post('/api/admin/accounts/set-ms-email', requireAdmin, async (req, res) => {
+  const { accountId, ms_email } = req.body;
+  if (!accountId) return res.status(400).json({ error: '缺少 accountId' });
+
+  const emailVal = (ms_email || '').trim().toLowerCase() || null;
+
+  try {
+    if (emailVal) {
+      const conflict = await new Promise((resolve, reject) => {
+        db.get('SELECT id, username FROM accounts WHERE LOWER(ms_email) = ? AND id != ?', [emailVal, accountId], (err, row) => {
+          if (err) reject(err); else resolve(row);
+        });
+      });
+      if (conflict) {
+        return res.status(400).json({ error: `此 M365 Email 已綁定至帳號 ${conflict.username}` });
+      }
+    }
+
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE accounts SET ms_email = ? WHERE id = ?', [emailVal, accountId], function(err) {
+        if (err) reject(err);
+        else if (this.changes === 0) reject(new Error('帳號不存在'));
+        else resolve();
+      });
+    });
+
+    res.json({ success: true, message: emailVal ? `已綁定 M365 Email: ${emailVal}` : '已清除 M365 Email 綁定' });
+  } catch (err) {
+    console.error('set-ms-email 失敗:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 管理員廣播訊息
 app.post('/api/admin/broadcast', requireAdmin, (req, res) => {
   const { message } = req.body || {};
@@ -1862,7 +2210,7 @@ app.post('/api/admin/broadcast', requireAdmin, (req, res) => {
     return res.status(400).json({ error: '訊息長度不得超過 500 字元' });
   }
 
-  const createdAt = new Date().toISOString();
+  const createdAt = nowISO();
   const createdBy = req.session.userId;
   const createdByName = req.session.fullName || req.session.username || '系統';
 
@@ -2107,7 +2455,7 @@ function formatTime(seconds) {
 app.get('/api/notifications', requireAuth, (req, res) => {
   const sinceParam = req.query.since ? parseInt(req.query.since, 10) : null;
   const hasSince = Number.isFinite(sinceParam) && sinceParam > 0;
-  const sinceIso = hasSince ? new Date(sinceParam).toISOString() : null;
+  const sinceIso = hasSince ? toLocalISO(new Date(sinceParam)) : null;
 
   let sql = 'SELECT id, message, created_by_name, created_at FROM broadcast_messages';
   const params = [];
@@ -2484,7 +2832,7 @@ app.get('/api/system/health', requireAdmin, (req, res) => {
   
   try {
     const health = {
-      timestamp: new Date().toISOString(),
+      timestamp: nowISO(),
       services: {},
       databases: {},
       backups: {},
@@ -2845,8 +3193,8 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
     // 建立帳號（直接啟用，無需審核）
     const accountId = await new Promise((resolve, reject) => {
       db.run(
-        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [username, passwordHash, full_name || null, 'user', 'active', userDbName, finalPermissionLevel, serializedAllowed],
+        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [username, passwordHash, full_name || null, 'user', 'active', userDbName, finalPermissionLevel, serializedAllowed, nowISO()],
         function(err) {
           if (err) reject(err);
           else resolve(this.lastID);
@@ -4369,7 +4717,7 @@ app.get('/export_full_csv', ensureEditorAccess, withUserDatabase, async (req, re
     
     // 8. 設置正確的 Content-Type 並下載
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.download(tempFile, `full_data_${new Date().toISOString().slice(0, 10)}.csv`, (err) => {
+    res.download(tempFile, `full_data_${todayString()}.csv`, (err) => {
       if (err) console.error('Download error:', err);
       // 下載完成後刪除暫存檔
       if (fs.existsSync(tempFile)) {
@@ -5508,7 +5856,7 @@ app.get('/export_excel', withUserDatabase, async (req, res) => {
     console.log(`Exported Excel: ${folders.length} folders, ${users.length} users, ${groups.length} groups, ${permissions.length} permissions`);
     
     // 14. 下載檔案
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const timestamp = nowFileStamp();
     const filename = `權限管理系統_完整報表_${timestamp}.xlsx`;
     
     res.download(tempFile, filename, (err) => {
@@ -5869,7 +6217,7 @@ app.get('/export_permission_matrix', withUserDatabase, async (req, res) => {
     console.log(`Exported permission matrix: ${foldersWithLevel.length} folders, ${users.length} users`);
     
     // 15. 下載檔案
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const timestamp = nowFileStamp();
     const filename = `權限清單_${timestamp}.xlsx`;
     
     res.download(tempFile, filename, (err) => {
@@ -6095,8 +6443,27 @@ app.post('/api/databases/switch', requireAuth, async (req, res) => {
       console.log(`Deleted old database connection from cache: ${oldKey}`);
     }
     
+    // 預先建立新資料庫連線（完成 initializeTables 後才繼續），
+    // 確保切換後第一個 /api/folders 等請求能直接使用已就緒的快取連線
+    try {
+      await getUserDatabase(userId, name);
+      console.log(`✓ 已預先連接新資料庫: ${name}`);
+    } catch (preErr) {
+      console.error(`預先連接新資料庫失敗 (${name}):`, preErr);
+      return res.status(500).json({ error: `無法開啟資料庫: ${preErr.message}` });
+    }
+
     console.log(`✓ 使用者 ${username} 切換到資料庫: ${name}`);
-    res.json({ 
+
+    // 明確儲存 session，確保 userDatabase 更新在回應送出前寫入 store
+    await new Promise((resolve) => {
+      req.session.save((saveErr) => {
+        if (saveErr) console.error('Session save error in switch:', saveErr);
+        resolve();
+      });
+    });
+
+    res.json({
       success: true,
       message: '已切換到資料庫',
       name: name,

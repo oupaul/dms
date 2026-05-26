@@ -2679,8 +2679,13 @@ group_member,,2,4</code></pre>
                     </div>
                     <div class="mb-3" id="permission-db-select-wrapper" style="display:none;">
                         <label class="form-label fw-bold" id="permission-db-select-label">可存取的資料庫（可多選）</label>
-                        <select id="permission-db-select" class="form-select" multiple size="8"></select>
+                        <select id="permission-db-select" class="form-select" multiple size="8" onchange="syncDefaultDbSelect()"></select>
                         <small class="text-muted">僅能選擇目前存在的資料庫；若需要新增資料庫請先至「資料庫管理」建立。</small>
+                        <div class="mt-3">
+                            <label class="form-label fw-bold">預設登入資料庫</label>
+                            <select id="permission-default-db" class="form-select"></select>
+                            <small class="text-muted">使用者登入後首先載入的資料庫，需為上方勾選的其中一個。</small>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -2724,6 +2729,45 @@ group_member,,2,4</code></pre>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                     <button type="button" class="btn btn-primary" onclick="submitResetPassword()">
                         <i class="bi bi-check-circle"></i> 確認重設
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- M365 Email 綁定 Modal -->
+    <div class="modal fade" id="ms-email-modal" tabindex="-1" aria-labelledby="ms-email-modal-label" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="ms-email-modal-label">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 23 23" style="vertical-align:-3px;margin-right:6px"><rect x="0" y="0" width="11" height="11" fill="#f25022"/><rect x="12" y="0" width="11" height="11" fill="#7fba00"/><rect x="0" y="12" width="11" height="11" fill="#00a4ef"/><rect x="12" y="12" width="11" height="11" fill="#ffb900"/></svg>
+                        設定 M365 Email 綁定
+                    </h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="ms-email-account-id">
+                    <p class="mb-3">
+                        <strong>帳號：</strong>
+                        <span id="ms-email-username" class="text-primary"></span>
+                    </p>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold" for="ms-email-input">M365 公司 Email</label>
+                        <input type="email" class="form-control" id="ms-email-input"
+                               placeholder="user@yourcompany.com" autocomplete="off">
+                        <div class="form-text">填入此帳號持有人的 Microsoft 365 工作帳號 Email。留空則清除綁定。</div>
+                    </div>
+                    <div id="ms-email-error" class="text-danger small d-none"></div>
+                    <div class="alert alert-info mt-3 mb-0">
+                        <i class="bi bi-info-circle-fill"></i>
+                        設定後，該人員即可點擊「使用 Microsoft 帳號登入」，系統將自動以此 Email 比對並登入。
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="submitMsEmail()">
+                        <i class="bi bi-check-circle"></i> 儲存綁定
                     </button>
                 </div>
             </div>
@@ -7468,6 +7512,8 @@ group_member,,2,4</code></pre>
 
                         let actionButtons = '';
                         const safeUsername = (account.username || '').replace(/'/g, "\\'");
+                        const safeMsEmail = (account.ms_email || '').replace(/'/g, "\\'");
+                        const isSelf = account.id === currentUser?.id;
                         if (account.role !== 'admin') {
                             actionButtons += `<button class="btn btn-sm btn-outline-primary me-1" title="修改權限" onclick="openPermissionModal(${account.id})">
                                 <i class="bi bi-sliders"></i>
@@ -7475,17 +7521,42 @@ group_member,,2,4</code></pre>
                             actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
                                 <i class="bi bi-key-fill"></i>
                             </button>`;
+                            actionButtons += `<button class="btn btn-sm ${account.ms_email ? 'btn-info' : 'btn-outline-info'} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#0078d4'}"/><rect x="12" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#7fba00'}"/><rect x="0" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#00a4ef'}"/><rect x="12" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#ffb900'}"/></svg>
+                            </button>`;
+                            actionButtons += `<button class="btn btn-sm btn-outline-warning me-1" title="升為系統管理員" onclick="setAdminRole(${account.id}, '${safeUsername}', true)">
+                                <i class="bi bi-shield-fill-plus"></i>
+                            </button>`;
+                            actionButtons += `<button class="btn btn-sm btn-danger" title="刪除帳號" onclick="deleteAccount(${account.id}, '${account.username}')">
+                                <i class="bi bi-trash"></i>
+                            </button>`;
+                        } else if (!isSelf) {
+                            // 現有管理員（非自己）：可降級
+                            actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
+                                <i class="bi bi-key-fill"></i>
+                            </button>`;
+                            actionButtons += `<button class="btn btn-sm ${account.ms_email ? 'btn-info' : 'btn-outline-info'} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#0078d4'}"/><rect x="12" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#7fba00'}"/><rect x="0" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#00a4ef'}"/><rect x="12" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#ffb900'}"/></svg>
+                            </button>`;
+                            actionButtons += `<button class="btn btn-sm btn-warning me-1" title="取消管理員身份" onclick="setAdminRole(${account.id}, '${safeUsername}', false)">
+                                <i class="bi bi-shield-fill-minus"></i>
+                            </button>`;
                             actionButtons += `<button class="btn btn-sm btn-danger" title="刪除帳號" onclick="deleteAccount(${account.id}, '${account.username}')">
                                 <i class="bi bi-trash"></i>
                             </button>`;
                         } else {
-                            actionButtons = '<span class="text-muted">-</span>';
+                            // 自己的管理員帳號：只顯示提示
+                            actionButtons = '<span class="text-muted small">（當前帳號）</span>';
                         }
+
+                        const msEmailBadge = account.ms_email
+                            ? `<div class="small text-info mt-1"><i class="bi bi-microsoft"></i> ${account.ms_email}</div>`
+                            : '';
 
                         html += `
                             <tr>
                                 <td>${account.id}</td>
-                                <td><strong>${account.username}</strong><div class="small text-muted">${account.full_name || ''}</div></td>
+                                <td><strong>${account.username}</strong><div class="small text-muted">${account.full_name || ''}</div>${msEmailBadge}</td>
                                 <td>${roleBadge}</td>
                                 <td>${canInviteBadge}</td>
                                 <td>
@@ -7566,6 +7637,68 @@ group_member,,2,4</code></pre>
             });
         }
         
+        // ==================== M365 Email 綁定 ====================
+
+        function openMsEmailModal(accountId, username, currentEmail) {
+            $('#ms-email-account-id').val(accountId);
+            $('#ms-email-username').text(username || '');
+            $('#ms-email-input').val(currentEmail || '');
+            $('#ms-email-error').addClass('d-none').text('');
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById('ms-email-modal'));
+            modal.show();
+        }
+
+        function submitMsEmail() {
+            const accountId = parseInt($('#ms-email-account-id').val(), 10);
+            const ms_email = $('#ms-email-input').val().trim();
+
+            if (!accountId) {
+                $('#ms-email-error').text('無效的帳號資訊').removeClass('d-none');
+                return;
+            }
+
+            $('#ms-email-error').addClass('d-none').text('');
+
+            $.ajax({
+                url: '/api/admin/accounts/set-ms-email',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ accountId, ms_email }),
+                success: function(response) {
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('ms-email-modal'));
+                    if (modal) modal.hide();
+                    loadAllAccounts();
+                },
+                error: function(xhr) {
+                    const msg = xhr.responseJSON?.error || '儲存失敗，請重試';
+                    $('#ms-email-error').text(msg).removeClass('d-none');
+                }
+            });
+        }
+
+        function setAdminRole(accountId, username, makeAdmin) {
+            const action = makeAdmin ? `將「${username}」升為系統管理員` : `取消「${username}」的系統管理員身份`;
+            const warn = makeAdmin
+                ? '\n\n管理員可存取所有功能與帳號，請確認此人有此需要。'
+                : '\n\n確認後該帳號將失去管理員權限，角色將降為一般帳號。';
+            if (!confirm(`確定要${action}？${warn}`)) return;
+
+            $.ajax({
+                url: '/api/admin/accounts/set-admin-role',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ accountId, makeAdmin }),
+                success: function(response) {
+                    loadAllAccounts();
+                },
+                error: function(xhr) {
+                    alert('操作失敗：' + (xhr.responseJSON?.error || '請重試'));
+                }
+            });
+        }
+
+        // ==================== 帳號權限 Modal ====================
+
         function openPermissionModal(accountId) {
             if (!permissionDatabaseOptions.length) {
                 fetchPermissionDatabaseOptions().then(() => populatePermissionModal(accountId));
@@ -7594,7 +7727,28 @@ group_member,,2,4</code></pre>
             $('#permission-level-select').val(level);
             $('#permission-db-select').html(buildDatabaseOptionsHtml(account.allowed_databases || []));
             togglePermissionModalDatabases();
+            syncDefaultDbSelect();
+            if (account.user_database) {
+                $('#permission-default-db').val(account.user_database);
+            }
             $('#account-permission-modal').modal('show');
+        }
+
+        function syncDefaultDbSelect() {
+            const selected = ($('#permission-db-select').val() || []).filter(Boolean);
+            const current = $('#permission-default-db').val();
+            if (!selected.length) {
+                $('#permission-default-db').html('<option value="">（請先選擇可存取的資料庫）</option>');
+                return;
+            }
+            const options = selected.map(name =>
+                `<option value="${name}"${name === current ? ' selected' : ''}>${name}</option>`
+            ).join('');
+            $('#permission-default-db').html(options);
+            // 若原本選的預設已不在清單中，自動退回第一個
+            if (current && !selected.includes(current)) {
+                $('#permission-default-db').val(selected[0]);
+            }
         }
 
         function togglePermissionCanInvite() {
@@ -7645,6 +7799,7 @@ group_member,,2,4</code></pre>
                     return;
                 }
                 payload.allowedDatabases = allowed;
+                payload.defaultDatabase = $('#permission-default-db').val() || allowed[0];
             }
             
             $.ajax({
