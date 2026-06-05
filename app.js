@@ -6374,6 +6374,47 @@ app.post('/api/databases', requireAuth, async (req, res) => {
       [name, display_name || null, username, description || null]
     );
 
+    // 工程師自動取得新建資料庫的存取權
+    const sessionRoleLevel = req.session.roleLevel || 'user';
+    const isEngineerCreator = sessionRoleLevel === 'engineer' && !isAdmin;
+    if (isEngineerCreator) {
+      try {
+        const account = await new Promise((resolve, reject) => {
+          db.get('SELECT id, allowed_databases FROM accounts WHERE username = ? AND status = ?',
+            [username, 'active'], (err, row) => {
+              if (err) reject(err);
+              else resolve(row);
+            });
+        });
+        if (account) {
+          const currentList = parseAllowedDatabases(account.allowed_databases);
+          if (!currentList.includes(name)) {
+            const newList = [...currentList, name];
+            const serialized = JSON.stringify(newList);
+            await new Promise((resolve, reject) => {
+              db.run('UPDATE accounts SET allowed_databases = ? WHERE id = ?',
+                [serialized, account.id], (err) => {
+                  if (err) reject(err);
+                  else resolve();
+                });
+            });
+            // 同步更新 session，讓新資料庫立即可存取
+            req.session.allowedDatabases = newList;
+            await new Promise((resolve) => {
+              req.session.save((saveErr) => {
+                if (saveErr) console.error('Session save error after engineer DB create:', saveErr);
+                resolve();
+              });
+            });
+            console.log(`✓ 工程師 ${username} 新建資料庫 ${name} 已自動加入可存取清單`);
+          }
+        }
+      } catch (autoAddErr) {
+        console.error('自動加入工程師 allowed_databases 失敗:', autoAddErr);
+        // 不因此中斷，繼續回傳成功
+      }
+    }
+
     console.log(`✓ 使用者 ${username} 創建資料庫: ${name}`);
     res.json({ success: true, message: '資料庫建立成功', name, isAdmin });
   } catch (err) {
