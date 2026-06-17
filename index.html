@@ -2204,6 +2204,44 @@ folder,後端組,4</code></pre>
         </div>
     </div>
 
+    <!-- 複製人員 Modal -->
+    <div class="modal fade" tabindex="-1" id="copy-user-modal">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title"><i class="bi bi-person-plus"></i> 複製人員</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted mb-3">複製來源：<strong id="copy-user-source-name"></strong><br>
+                    <small>群組關聯與個人直接權限將一併複製，部門、公司、職稱、電話照抄，僅需填寫以下欄位。</small></p>
+                    <input type="hidden" id="copy-user-source-id">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">姓名 <span class="text-danger">*</span></label>
+                        <input type="text" id="copy-user-name" class="form-control" placeholder="新人員姓名">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">帳號（account_key）<span class="text-danger">*</span></label>
+                        <input type="text" id="copy-user-account-key" class="form-control" placeholder="新人員帳號">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Email <span class="text-danger">*</span></label>
+                        <input type="email" id="copy-user-email" class="form-control" placeholder="新人員 Email（需唯一）">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">描述</label>
+                        <input type="text" id="copy-user-description" class="form-control" placeholder="（選填）">
+                    </div>
+                    <div id="copy-user-error" class="alert alert-danger d-none"></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="submitCopyUser()"><i class="bi bi-person-plus"></i> 確認複製</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- 人員匯入說明模態 -->
     <div class="modal fade" tabindex="-1" id="user-import-help-modal">
         <div class="modal-dialog modal-lg">
@@ -3393,10 +3431,12 @@ group_member,,2,4</code></pre>
                     tr.append(`<td><input type="checkbox" class="user-checkbox" value="${item.id}" onchange="updateBatchDeleteButton('users');"></td>`);
                 }
                 fields.forEach(f => tr.append(`<td>${item[f] || 'N/A'}</td>`));
-                tr.append(`<td>
-                    <button class="btn btn-sm btn-warning edit-btn me-1" data-id="${item.id}" data-type="${type}">編輯</button>
-                    <button class="btn btn-sm btn-danger del-btn" data-id="${item.id}" data-type="${type}">刪除</button>
-                </td>`);
+                let actionBtns = `<button class="btn btn-sm btn-warning edit-btn me-1" data-id="${item.id}" data-type="${type}">編輯</button>`;
+                if (type === 'users') {
+                    actionBtns += `<button class="btn btn-sm btn-outline-secondary copy-user-btn me-1" data-id="${item.id}" data-name="${(item.name || '').replace(/"/g, '&quot;')}" title="複製人員"><i class="bi bi-person-plus"></i> 複製</button>`;
+                }
+                actionBtns += `<button class="btn btn-sm btn-danger del-btn" data-id="${item.id}" data-type="${type}">刪除</button>`;
+                tr.append(`<td>${actionBtns}</td>`);
                 tbody.append(tr);
             });
             // 更新批次刪除按鈕顯示狀態
@@ -5188,8 +5228,51 @@ group_member,,2,4</code></pre>
             });
         }
 
-        function showUserImport() { 
-            $('#user-import-section').slideDown(); 
+        // 複製人員功能
+        $(document).on('click', '.copy-user-btn', function() {
+            const id = $(this).data('id');
+            const name = $(this).data('name');
+            $('#copy-user-source-id').val(id);
+            $('#copy-user-source-name').text(name);
+            $('#copy-user-name').val('');
+            $('#copy-user-account-key').val('');
+            $('#copy-user-email').val('');
+            $('#copy-user-description').val('');
+            $('#copy-user-error').addClass('d-none').text('');
+            $('#copy-user-modal').modal('show');
+        });
+
+        function submitCopyUser() {
+            const sourceId = $('#copy-user-source-id').val();
+            const name = $('#copy-user-name').val().trim();
+            const account_key = $('#copy-user-account-key').val().trim();
+            const email = $('#copy-user-email').val().trim();
+            const description = $('#copy-user-description').val().trim();
+
+            if (!name || !account_key || !email) {
+                $('#copy-user-error').removeClass('d-none').text('姓名、帳號、Email 為必填欄位');
+                return;
+            }
+
+            $.ajax({
+                url: `/api/users/${sourceId}/copy`,
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ name, account_key, email, description }),
+                success: function(result) {
+                    $('#copy-user-modal').modal('hide');
+                    loadData('users');
+                    alert(`複製成功！已複製 ${result.groups_copied} 個群組、${result.permissions_copied} 個直接權限。`);
+                },
+                error: function(xhr) {
+                    const msg = xhr.responseJSON?.error || '未知錯誤';
+                    $('#copy-user-error').removeClass('d-none').text('複製失敗：' + msg);
+                }
+            });
+        }
+
+        function showUserImport() {
+            $('#user-import-section').slideDown();
         }
 
         function hideUserImport() { 

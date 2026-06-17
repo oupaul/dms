@@ -3312,6 +3312,75 @@ app.delete('/api/users', withUserDatabase, (req, res) => {
   });
 });
 
+// 複製人員（AD-like Copy User）
+app.post('/api/users/:id/copy', withUserDatabase, (req, res) => {
+  const sourceId = parseInt(req.params.id);
+  const { name, account_key, email, description } = req.body;
+  console.log('Hit POST /api/users/' + sourceId + '/copy', req.body);
+
+  if (!name || !account_key || !email) {
+    return res.status(400).json({ error: '姓名、帳號、Email 為必填欄位' });
+  }
+
+  const db = req.userDb;
+
+  // 1. 取得來源人員資料
+  db.get('SELECT * FROM users WHERE id = ?', [sourceId], (err, source) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!source) return res.status(404).json({ error: '來源人員不存在' });
+
+    // 2. 建立新人員（name / account_key / description 用新值，其餘照抄）
+    db.run(
+      'INSERT INTO users (name, email, department, company, title, phone, description, account_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [name, email, source.department || null, source.company || null, source.title || null, source.phone || null, description || null, account_key],
+      function(err2) {
+        if (err2) return res.status(500).json({ error: err2.message });
+        const newUserId = this.lastID;
+
+        // 3. 複製群組關聯
+        db.all('SELECT group_id FROM group_users WHERE user_id = ?', [sourceId], (err3, groups) => {
+          if (err3) return res.status(500).json({ error: err3.message });
+
+          const groupInserts = (groups || []).map(g => new Promise((resolve, reject) => {
+            db.run('INSERT OR IGNORE INTO group_users (group_id, user_id) VALUES (?, ?)', [g.group_id, newUserId], err4 => {
+              if (err4) reject(err4); else resolve();
+            });
+          }));
+
+          // 4. 複製個人直接權限（user_id 直接指定，非透過 group_id）
+          db.all('SELECT folder_id, permission_type FROM permissions WHERE user_id = ? AND group_id IS NULL', [sourceId], (err5, perms) => {
+            if (err5) return res.status(500).json({ error: err5.message });
+
+            const permInserts = (perms || []).map(p => new Promise((resolve, reject) => {
+              db.run('INSERT OR IGNORE INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, ?, NULL, ?)',
+                [p.folder_id, newUserId, p.permission_type], err6 => {
+                  if (err6) reject(err6); else resolve();
+                });
+            }));
+
+            Promise.all([...groupInserts, ...permInserts])
+              .then(() => {
+                logAudit(req, 'create', 'user', newUserId, name, null, {
+                  name, account_key, description,
+                  copied_from_id: sourceId,
+                  copied_from_name: source.name,
+                  groups_copied: (groups || []).length,
+                  permissions_copied: (perms || []).length
+                });
+                res.json({
+                  id: newUserId,
+                  groups_copied: (groups || []).length,
+                  permissions_copied: (perms || []).length
+                });
+              })
+              .catch(err7 => res.status(500).json({ error: err7.message }));
+          });
+        });
+      }
+    );
+  });
+});
+
 // 批次刪除人員
 app.delete('/api/users/batch', withUserDatabase, (req, res) => {
   const { ids } = req.body;
