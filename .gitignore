@@ -1,0 +1,14 @@
+# 主機專屬密鑰／設定，每台主機各自維護，不進版本控制
+# 範本請參考 msal_config.json.example / email_config.json.example
+msal_config.json
+email_config.json
+
+# 執行期資料，deploy.sh / update.sh 也都排除這些目錄
+databases/
+backups/
+logs/
+uploads/
+
+# 相依套件與系統雜項
+node_modules/
+.DS_Store

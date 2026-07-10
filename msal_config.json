@@ -1,7 +1,0 @@
-{
-  "enabled": false,
-  "clientId": "",
-  "tenantId": "",
-  "clientSecret": "",
-  "redirectUri": "https://your-domain.com/auth/callback"
-}

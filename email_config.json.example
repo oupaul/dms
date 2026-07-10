@@ -1,18 +1,18 @@
 {
   "enabled": false,
   "smtp": {
-    "host": "smtp.gmail.com",
+    "host": "smtp.example.com",
     "port": 587,
     "secure": false,
     "auth": {
-      "user": "your-email@gmail.com",
-      "pass": "your-app-password"
+      "user": "your-smtp-username",
+      "pass": "your-smtp-password"
     }
   },
-  "from": "DMS系統通知 <your-email@gmail.com>",
+  "from": "notify@example.com",
   "to": ["admin@example.com"],
-  "subjectPrefix": "[DMS]",
-  "batchMinutes": 15,
+  "subjectPrefix": "[資料夾權限系統]",
+  "batchMinutes": 10,
   "notifyEvents": {
     "folder": true,
     "user": true,
