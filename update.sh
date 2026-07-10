@@ -4,8 +4,10 @@
 # 資料夾權限管理系統 - 自動更新腳本
 # ============================================================================
 #
-# 功能：從 GitHub 拉取最新程式碼、視需要安裝相依套件，並以 PM2 重新啟動服務
+# 功能：從 GitHub 拉取最新程式碼、視需要安裝相依套件，並重新啟動服務
 # 前提：此應用目錄必須是 git clone 下來的工作目錄（deploy.sh 部署時保留 .git）
+# 服務管理：自動偵測 systemd（/etc/systemd/system/$APP_NAME.service）或 PM2，
+#           兩種部署方式（deploy.sh 的新舊版本）都能用同一支腳本更新
 #
 # 使用方法：
 #   ./update.sh                    # 更新目前所在分支
@@ -73,19 +75,26 @@ if ! command -v git &> /dev/null; then
     exit 1
 fi
 
-if ! command -v pm2 &> /dev/null; then
-    echo -e "${RED}❌ 找不到 pm2 指令，請先安裝：sudo npm install -g pm2${NC}"
-    exit 1
-fi
-
 if [ -z "$BRANCH" ]; then
     BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 fi
 
 APP_NAME="$(basename "$APP_DIR")"
 
+# 偵測服務管理方式：優先判斷是否已有對應的 systemd service，其次才看 pm2
+if systemctl list-unit-files 2>/dev/null | grep -q "^${APP_NAME}\.service"; then
+    SERVICE_MODE="systemd"
+elif command -v pm2 &> /dev/null; then
+    SERVICE_MODE="pm2"
+else
+    echo -e "${RED}❌ 找不到 ${APP_NAME}.service 的 systemd 服務，也沒有安裝 pm2${NC}"
+    echo "   請確認服務名稱（資料夾名稱）與 systemd/pm2 上註冊的服務名稱一致。"
+    exit 1
+fi
+
 echo "目標分支：$BRANCH"
-echo "PM2 服務名稱：$APP_NAME"
+echo "服務名稱：$APP_NAME"
+echo "服務管理方式：$SERVICE_MODE"
 echo ""
 
 # ============================================================================
@@ -200,34 +209,65 @@ echo "步驟 5/5: 重新啟動服務"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-if pm2 list | grep -q "$APP_NAME"; then
-    echo "以零停機方式重新載入服務 (pm2 reload $APP_NAME)..."
-    pm2 reload "$APP_NAME"
-elif [ -f "ecosystem.config.js" ]; then
-    echo "服務尚未啟動，使用 ecosystem.config.js 啟動..."
-    pm2 start ecosystem.config.js
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    echo "重新啟動 systemd 服務 (systemctl restart $APP_NAME)..."
+    sudo systemctl restart "$APP_NAME" || true
+    sleep 3
+
+    echo ""
+    sudo systemctl status "$APP_NAME" --no-pager -l || true
+
+    if systemctl is-active --quiet "$APP_NAME"; then
+        HEALTHY=true
+    else
+        HEALTHY=false
+    fi
 else
-    echo "服務尚未啟動，直接以 app.js 啟動..."
-    pm2 start app.js --name "$APP_NAME"
+    if pm2 list | grep -q "$APP_NAME"; then
+        echo "以零停機方式重新載入服務 (pm2 reload $APP_NAME)..."
+        pm2 reload "$APP_NAME"
+    elif [ -f "ecosystem.config.js" ]; then
+        echo "服務尚未啟動，使用 ecosystem.config.js 啟動..."
+        pm2 start ecosystem.config.js
+    else
+        echo "服務尚未啟動，直接以 app.js 啟動..."
+        pm2 start app.js --name "$APP_NAME"
+    fi
+
+    pm2 save
+    sleep 3
+
+    echo ""
+    pm2 status
+
+    if pm2 list | grep -q "online.*$APP_NAME\|$APP_NAME.*online"; then
+        HEALTHY=true
+    else
+        HEALTHY=false
+    fi
 fi
 
-pm2 save
-sleep 3
-
-echo ""
-pm2 status
-
-if pm2 list | grep -q "online.*$APP_NAME\|$APP_NAME.*online"; then
+if [ "$HEALTHY" = true ]; then
     echo ""
     echo -e "${GREEN}✅ 更新完成，服務運作正常${NC}"
 else
     echo ""
-    echo -e "${RED}❌ 服務似乎未正常啟動，請檢查日誌：pm2 logs $APP_NAME --err${NC}"
-    echo "   如需回復到更新前版本：git reset --hard $OLD_COMMIT && pm2 reload $APP_NAME"
+    if [ "$SERVICE_MODE" = "systemd" ]; then
+        echo -e "${RED}❌ 服務似乎未正常啟動，請檢查日誌：journalctl -u $APP_NAME -n 50 --no-pager${NC}"
+        echo "   如需回復到更新前版本：git reset --hard $OLD_COMMIT && sudo systemctl restart $APP_NAME"
+    else
+        echo -e "${RED}❌ 服務似乎未正常啟動，請檢查日誌：pm2 logs $APP_NAME --err${NC}"
+        echo "   如需回復到更新前版本：git reset --hard $OLD_COMMIT && pm2 reload $APP_NAME"
+    fi
     exit 1
 fi
 
 echo ""
-echo "查看日誌：pm2 logs $APP_NAME"
-echo "查看狀態：pm2 status"
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    echo "查看日誌：journalctl -u $APP_NAME -f"
+    echo "查看狀態：systemctl status $APP_NAME"
+else
+    echo "查看日誌：pm2 logs $APP_NAME"
+    echo "查看狀態：pm2 status"
+fi
 echo ""
