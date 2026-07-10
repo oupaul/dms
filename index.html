@@ -321,7 +321,19 @@
                 </button>
             </div>
             <table class="table" id="users-table">
-                <thead><tr><th><input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this);"></th><th>ID</th><th>帳號</th><th>姓名</th><th>Email</th><th>部門</th><th>公司</th><th>職稱</th><th>電話</th><th>描述</th><th>操作</th></tr></thead>
+                <thead><tr>
+                    <th><input type="checkbox" id="select-all-users" onchange="toggleSelectAllUsers(this);"></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('id')" title="點擊排序">ID <i id="sort-user-id-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('account_key')" title="點擊排序">帳號 <i id="sort-user-account_key-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('name')" title="點擊排序">姓名 <i id="sort-user-name-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('email')" title="點擊排序">Email <i id="sort-user-email-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('department')" title="點擊排序">部門 <i id="sort-user-department-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('company')" title="點擊排序">公司 <i id="sort-user-company-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('title')" title="點擊排序">職稱 <i id="sort-user-title-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th style="cursor:pointer;" onclick="sortUsers('phone')" title="點擊排序">電話 <i id="sort-user-phone-icon" class="bi bi-arrow-down-up text-muted"></i></th>
+                    <th>描述</th>
+                    <th>操作</th>
+                </tr></thead>
                 <tbody></tbody>
             </table>
         </div>
@@ -3430,7 +3442,10 @@ group_member,,2,4</code></pre>
                 if (type === 'users') {
                     tr.append(`<td><input type="checkbox" class="user-checkbox" value="${item.id}" onchange="updateBatchDeleteButton('users');"></td>`);
                 }
-                fields.forEach(f => tr.append(`<td>${item[f] || 'N/A'}</td>`));
+                fields.forEach(f => {
+                    tr.attr('data-' + f, item[f] != null ? item[f] : '');
+                    tr.append(`<td>${item[f] || 'N/A'}</td>`);
+                });
                 let actionBtns = `<button class="btn btn-sm btn-warning edit-btn me-1" data-id="${item.id}" data-type="${type}">編輯</button>`;
                 if (type === 'users') {
                     actionBtns += `<button class="btn btn-sm btn-outline-secondary copy-user-btn me-1" data-id="${item.id}" data-name="${(item.name || '').replace(/"/g, '&quot;')}" title="複製人員"><i class="bi bi-person-plus"></i> 複製</button>`;
@@ -4041,6 +4056,12 @@ group_member,,2,4</code></pre>
         let groupsMemberCounts = {};
         let groupsSortColumn = null;
         let groupsSortDirection = 'asc';
+
+        // 人員排序狀態
+        let usersSortColumn = null;
+        let usersSortDirection = 'asc';
+        const usersSortableColumns = ['id', 'account_key', 'name', 'email', 'department', 'company', 'title', 'phone'];
+        const usersNumericColumns = ['id'];
         
         // 群組載入(顯示人員數)
         function loadGroups(data) {
@@ -4166,6 +4187,54 @@ group_member,,2,4</code></pre>
             rows.forEach(row => tbody.append(row));
             
             console.log(`Groups sorted by ${column} (${groupsSortDirection})`);
+        }
+
+        // 人員排序功能
+        function sortUsers(column) {
+            // 重置所有排序圖標
+            usersSortableColumns.forEach(col => {
+                $(`#sort-user-${col}-icon`)
+                    .removeClass('bi-sort-alpha-down bi-sort-alpha-up bi-sort-numeric-down bi-sort-numeric-up text-primary')
+                    .addClass('bi-arrow-down-up text-muted');
+            });
+
+            // 如果點擊同一欄,切換排序方向
+            if (usersSortColumn === column) {
+                usersSortDirection = usersSortDirection === 'asc' ? 'desc' : 'asc';
+            } else {
+                usersSortColumn = column;
+                usersSortDirection = 'asc';
+            }
+
+            const tbody = $('#users-table tbody');
+            const rows = tbody.find('tr').toArray();
+            const isNumeric = usersNumericColumns.includes(column);
+
+            rows.sort((a, b) => {
+                const aVal = $(a).attr('data-' + column) || '';
+                const bVal = $(b).attr('data-' + column) || '';
+                let result;
+                if (isNumeric) {
+                    result = (parseFloat(aVal) || 0) - (parseFloat(bVal) || 0);
+                } else {
+                    result = aVal.localeCompare(bVal, 'zh-TW');
+                }
+                return usersSortDirection === 'asc' ? result : -result;
+            });
+
+            // 更新排序圖標
+            $(`#sort-user-${column}-icon`)
+                .removeClass('bi-arrow-down-up text-muted')
+                .addClass(usersSortDirection === 'asc'
+                    ? (isNumeric ? 'bi-sort-numeric-down' : 'bi-sort-alpha-down')
+                    : (isNumeric ? 'bi-sort-numeric-up' : 'bi-sort-alpha-up'))
+                .addClass('text-primary');
+
+            // 重新插入排序後的行
+            tbody.empty();
+            rows.forEach(row => tbody.append(row));
+
+            console.log(`Users sorted by ${column} (${usersSortDirection})`);
         }
 
         // 開啟群組管理模態
