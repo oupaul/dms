@@ -5687,7 +5687,10 @@ app.get('/login.html', (req, res) => {
 });
 
 app.get('/csv_generator.html', ensureEditorAccess, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public/csv_generator.html'), (err) => {
+  const inPublic = path.join(__dirname, 'public', 'csv_generator.html');
+  const inRoot   = path.join(__dirname, 'csv_generator.html');
+  const target   = fs.existsSync(inPublic) ? inPublic : inRoot;
+  res.sendFile(target, (err) => {
     if (err) {
       console.error('SendFile error:', err);
       res.status(404).json({ error: 'CSV Generator not found' });
@@ -5696,7 +5699,10 @@ app.get('/csv_generator.html', ensureEditorAccess, (req, res) => {
 });
 
 app.get('/user_csv_generator.html', ensureEditorAccess, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public/user_csv_generator.html'), (err) => {
+  const inPublic = path.join(__dirname, 'public', 'user_csv_generator.html');
+  const inRoot   = path.join(__dirname, 'user_csv_generator.html');
+  const target   = fs.existsSync(inPublic) ? inPublic : inRoot;
+  res.sendFile(target, (err) => {
     if (err) {
       console.error('SendFile error:', err);
       res.status(404).json({ error: 'User CSV Generator not found' });
@@ -5705,7 +5711,10 @@ app.get('/user_csv_generator.html', ensureEditorAccess, (req, res) => {
 });
 
 app.get('/permission_generator.html', ensureEditorAccess, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public/permission_generator.html'), (err) => {
+  const inPublic = path.join(__dirname, 'public', 'permission_generator.html');
+  const inRoot   = path.join(__dirname, 'permission_generator.html');
+  const target   = fs.existsSync(inPublic) ? inPublic : inRoot;
+  res.sendFile(target, (err) => {
     if (err) {
       console.error('SendFile error:', err);
       res.status(404).json({ error: 'Permission Generator not found' });
@@ -5716,15 +5725,27 @@ app.get('/permission_generator.html', ensureEditorAccess, (req, res) => {
 // 靜態檔案
 app.use(express.static('public'));
 
-// 首頁
-app.get('/', (req, res) => {
-  console.log('Hit / (root)');
-  res.sendFile(path.join(__dirname, 'public/index.html'), (err) => {
+// 首頁：同時相容 public/ 和根目錄兩種部署位置（同 /login.html 的做法）
+function sendIndexHtml(req, res) {
+  const inPublic = path.join(__dirname, 'public', 'index.html');
+  const inRoot   = path.join(__dirname, 'index.html');
+  const target   = fs.existsSync(inPublic) ? inPublic : inRoot;
+  res.sendFile(target, (err) => {
     if (err) {
-      console.error('SendFile error:', err);
+      console.error('SendFile index.html error:', err);
       res.status(404).json({ error: 'Index not found' });
     }
   });
+}
+
+app.get('/', (req, res) => {
+  console.log('Hit / (root)');
+  sendIndexHtml(req, res);
+});
+
+app.get('/index.html', (req, res) => {
+  console.log('Hit /index.html');
+  sendIndexHtml(req, res);
 });
 
 // 匯出完整 Excel 報表（中文欄位，多個 Sheet）
