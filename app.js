@@ -326,6 +326,20 @@ function initializeTables(database, callback) {
           database.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_ms_email ON accounts(ms_email) WHERE ms_email IS NOT NULL", (e) => { if (e) console.warn('migrate idx_accounts_ms_email:', e.message); });
         });
       }
+
+      // 修補：多資料庫機制上線前建立的帳號可能沒有 user_database，
+      // 登入時會因為找不到對應資料庫而失敗。自動補上安全預設值，
+      // 管理員之後可在後台「帳號管理」調整成正確的資料庫。
+      database.all("SELECT id, role FROM accounts WHERE user_database IS NULL OR user_database = ''", [], (backfillErr, rows) => {
+        if (backfillErr || !rows || rows.length === 0) return;
+        rows.forEach(row => {
+          const fallbackDb = row.role === 'admin' ? 'admin.db' : 'system.db';
+          database.run("UPDATE accounts SET user_database = ? WHERE id = ?", [fallbackDb, row.id], (e) => {
+            if (e) console.warn(`migrate accounts.user_database (id=${row.id}):`, e.message);
+            else console.log(`✓ 自動補齊帳號 id=${row.id}（role=${row.role}）的 user_database = ${fallbackDb}`);
+          });
+        });
+      });
     });
     
     // 資料夾表
