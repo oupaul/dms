@@ -500,7 +500,11 @@ fi
 
 print_header "步驟 6/8: 備份當前資料（安全措施）"
 
-SAFETY_BACKUP_DIR="$APP_DIR/safety_backup_$(date +%Y%m%d_%H%M%S)"
+# 放在 BACKUP_BASE_DIR（/opt/backups）而非 APP_DIR，
+# 避免這個資料夾被 git 當成應用程式目錄裡的未追蹤變更，
+# 導致下次執行 update.sh 時被「偵測到本機修改」擋下來
+mkdir -p "$BACKUP_BASE_DIR"
+SAFETY_BACKUP_DIR="$BACKUP_BASE_DIR/safety_backup_${APP_NAME}_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$SAFETY_BACKUP_DIR"
 
 if [ "$RESTORE_MODE" = "full" ] || [ "$RESTORE_MODE" = "database" ]; then
