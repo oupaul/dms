@@ -3,5 +3,5 @@
   "clientId": "your-azure-ad-app-client-id",
   "tenantId": "your-azure-ad-tenant-id",
   "clientSecret": "your-azure-ad-app-client-secret",
-  "redirectUri": "https://your-domain.example.com/auth/microsoft/callback"
+  "redirectUri": "https://your-domain.example.com/auth/callback"
 }
