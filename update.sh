@@ -106,13 +106,24 @@ echo "步驟 1/5: 檢查本機變更"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-if [ -n "$(git status --porcelain)" ]; then
+# 執行期資料目錄一律排除在檢查之外：這些目錄理論上都在 .gitignore 內，
+# 但萬一被意外加進 git 索引（例如用 git checkout <ref> -- databases/ 這類指令
+# 搶救資料時的副作用），也不該讓資料庫的日常寫入卡住每次更新
+RUNTIME_DATA_EXCLUDES=(
+    ':(exclude)databases/'
+    ':(exclude)node_modules/'
+    ':(exclude)uploads/'
+    ':(exclude)logs/'
+    ':(exclude)backups/'
+)
+
+if [ -n "$(git status --porcelain -- . "${RUNTIME_DATA_EXCLUDES[@]}")" ]; then
     if [ "$FORCE" = true ]; then
         echo -e "${YELLOW}⚠️  偵測到未提交的本機變更，因 --force 自動暫存 (git stash)${NC}"
         git stash push -u -m "update.sh auto-stash $(date +%Y%m%d_%H%M%S)"
     else
         echo -e "${RED}❌ 偵測到未提交的本機變更，為避免遺失資料已中止更新：${NC}"
-        git status --short
+        git status --short -- . "${RUNTIME_DATA_EXCLUDES[@]}"
         echo ""
         echo "請先手動處理（git stash / git commit），或加上 --force 讓腳本自動暫存後再更新。"
         exit 1
