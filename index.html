@@ -61,7 +61,7 @@
         }
 
         .step-item.processing {
-            color: #0d6efd !important;
+            color: var(--color-primary, #F06000) !important;
             font-weight: 500;
         }
 
@@ -82,7 +82,7 @@
         }
         .folder-icon {
             display: inline-block;
-            color: #0d6efd;
+            color: var(--color-primary, #F06000);
             font-size: 1.1em;
         }
         .member-list {
@@ -90,9 +90,12 @@
             overflow-y: auto;
         }
         .query-result-row:hover td {
-            background-color: #e8f4fd !important;
+            background-color: var(--color-primary-soft-bg, #FFF7ED) !important;
         }
     </style>
+    <!-- Megapower Design System：https://github.com/Megapower-Asia-LLC/design-system -->
+    <link rel="stylesheet" href="https://www.megapower.asia/ds/megapower.css">
+    <link rel="stylesheet" href="megapower-theme.css">
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-light bg-light">
