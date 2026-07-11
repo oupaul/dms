@@ -15,7 +15,15 @@
 #   ./update.sh <branch> --force   # 若有未提交的本機變更，自動 stash 後繼續
 #   ./update.sh --skip-backup      # 更新前不執行資料庫備份
 #
+# 注意：整支腳本包在 main() 函式裡、最後才呼叫，是刻意的寫法——
+# 腳本執行中途會對自己所在的 repo 做 git merge，如果邏輯直接寫在
+# 檔案最外層，bash 有可能邊執行邊分批讀檔，git merge 把檔案內容換掉後，
+# 剩下還沒執行到的部分可能讀到新舊版本混雜的內容而出現難以追查的錯誤。
+# 包成函式後，bash 會在呼叫 main 之前就把整個函式主體解析完畢存進記憶體，
+# 之後就算檔案在磁碟上被覆寫，也不會影響已經在執行中的這一份。
 # ============================================================================
+
+main() {
 
 set -e
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
@@ -282,3 +290,7 @@ else
     echo "查看狀態：pm2 status"
 fi
 echo ""
+
+}
+
+main "$@"
