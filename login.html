@@ -16,7 +16,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <style>
         body {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--color-bg-soft, #F8FAFC);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -42,7 +42,7 @@
             }
         }
         .login-header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--color-primary, #F06000) 0%, var(--color-primary-hover, #D45200) 100%);
             color: white;
             padding: 30px;
             text-align: center;
@@ -59,11 +59,11 @@
             padding: 40px;
         }
         .form-control:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+            border-color: var(--color-primary, #F06000);
+            box-shadow: 0 0 0 0.2rem rgba(240, 96, 0, 0.25);
         }
         .btn-login {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--color-primary, #F06000) 0%, var(--color-primary-hover, #D45200) 100%);
             border: none;
             padding: 12px;
             font-weight: 600;
@@ -71,10 +71,10 @@
         }
         .btn-login:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 5px 15px rgba(240, 96, 0, 0.4);
         }
         .btn-register {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            background: linear-gradient(135deg, var(--color-primary, #F06000) 0%, var(--color-primary-hover, #D45200) 100%);
             border: none;
             padding: 12px;
             font-weight: 600;
@@ -82,7 +82,7 @@
         }
         .btn-register:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+            box-shadow: 0 5px 15px rgba(212, 82, 0, 0.4);
         }
         .alert-custom {
             border: none;
@@ -108,8 +108,8 @@
             padding: 10px 20px;
         }
         .nav-tabs .nav-link.active {
-            color: #667eea;
-            border-bottom: 3px solid #667eea;
+            color: var(--color-primary, #F06000);
+            border-bottom: 3px solid var(--color-primary, #F06000);
             background: none;
         }
         .first-account-notice {
@@ -149,6 +149,9 @@
         }
         .sso-divider span { margin: 0 10px; }
     </style>
+    <!-- Megapower Design System：https://github.com/Megapower-Asia-LLC/design-system -->
+    <link rel="stylesheet" href="https://www.megapower.asia/ds/megapower.css">
+    <link rel="stylesheet" href="megapower-theme.css">
 </head>
 <body>
     <div class="login-container">
