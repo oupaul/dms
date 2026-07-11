@@ -80,6 +80,16 @@ if [ -f "$APP_DIR/ecosystem.config.js" ]; then
     fi
 fi
 
+# 偵測服務管理方式：優先判斷是否已有對應的 systemd service，其次才看 pm2
+# （同 update.sh 的偵測邏輯，讓還原流程在 systemd 和 pm2 兩種部署方式下都能用）
+if systemctl list-unit-files 2>/dev/null | grep -q "^${APP_NAME}\.service"; then
+    SERVICE_MODE="systemd"
+elif command -v pm2 &> /dev/null; then
+    SERVICE_MODE="pm2"
+else
+    SERVICE_MODE="none"
+fi
+
 # ============================================================================
 # 工具函數
 # ============================================================================
@@ -254,9 +264,13 @@ mkdir -p "$APP_DIR/backups"
 chmod 775 "$APP_DIR/databases" "$APP_DIR/uploads" "$APP_DIR/logs" "$APP_DIR/backups" 2>/dev/null || true
 print_success "目錄準備完成"
 
-# 檢查 PM2
-if ! command -v pm2 &> /dev/null; then
-    print_warning "PM2 未安裝，部分功能可能無法使用"
+# 檢查服務管理工具
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    print_success "偵測到 systemd 服務：${APP_NAME}.service"
+elif [ "$SERVICE_MODE" = "pm2" ]; then
+    print_success "偵測到 PM2，將以 PM2 管理服務"
+else
+    print_warning "找不到 systemd 服務或 PM2，部分功能可能無法使用"
 fi
 
 # ============================================================================
@@ -460,7 +474,15 @@ fi
 
 print_header "步驟 5/8: 停止應用程式服務"
 
-if command -v pm2 &> /dev/null; then
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    if systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
+        echo "停止 systemd 服務..."
+        sudo systemctl stop "$APP_NAME"
+        print_success "服務已停止"
+    else
+        print_info "服務未運行"
+    fi
+elif [ "$SERVICE_MODE" = "pm2" ]; then
     if pm2 list | grep -q "$APP_NAME"; then
         echo "停止 PM2 進程..."
         pm2 stop "$APP_NAME" 2>/dev/null || true
@@ -469,7 +491,7 @@ if command -v pm2 &> /dev/null; then
         print_info "服務未運行"
     fi
 else
-    print_warning "PM2 未安裝，跳過停止服務"
+    print_warning "找不到 systemd 服務或 PM2，跳過停止服務"
 fi
 
 # ============================================================================
@@ -596,20 +618,37 @@ fi
 
 print_header "步驟 8/8: 重啟服務並驗證"
 
-if command -v pm2 &> /dev/null; then
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    echo "重啟 systemd 服務..."
+    sudo systemctl restart "$APP_NAME" || true
+
+    echo "等待服務啟動..."
+    sleep 3
+
+    if systemctl is-active --quiet "$APP_NAME" 2>/dev/null; then
+        print_success "服務已成功啟動"
+        echo ""
+        sudo systemctl status "$APP_NAME" --no-pager -l || true
+    else
+        print_warning "服務可能未正常啟動，請檢查日誌"
+        echo ""
+        echo "查看日誌："
+        echo "  journalctl -u $APP_NAME -n 50 --no-pager"
+    fi
+elif [ "$SERVICE_MODE" = "pm2" ]; then
     echo "重啟應用服務..."
-    
+
     # 重啟服務
     pm2 restart "$APP_NAME" 2>/dev/null || {
         echo "嘗試啟動服務..."
         cd "$APP_DIR"
         pm2 start ecosystem.config.js
     }
-    
+
     # 等待啟動
     echo "等待服務啟動..."
     sleep 3
-    
+
     # 檢查狀態
     if pm2 list | grep -q "$APP_NAME.*online"; then
         print_success "服務已成功啟動"
@@ -622,7 +661,7 @@ if command -v pm2 &> /dev/null; then
         echo "  pm2 logs $APP_NAME --lines 50"
     fi
 else
-    print_warning "PM2 未安裝，請手動啟動應用"
+    print_warning "找不到 systemd 服務或 PM2，請手動啟動應用"
 fi
 
 # 驗證資料庫
@@ -685,10 +724,18 @@ echo "   curl http://localhost:$DETECTED_PORT/login.html"
 echo "   或使用瀏覽器訪問 http://your-server-ip:$DETECTED_PORT"
 echo ""
 echo "2. 查看應用日誌："
-echo "   pm2 logs $APP_NAME"
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    echo "   journalctl -u $APP_NAME -f"
+else
+    echo "   pm2 logs $APP_NAME"
+fi
 echo ""
 echo "3. 檢查服務狀態："
-echo "   pm2 status"
+if [ "$SERVICE_MODE" = "systemd" ]; then
+    echo "   systemctl status $APP_NAME"
+else
+    echo "   pm2 status"
+fi
 echo ""
 echo "4. 如果還原有問題，可以從安全備份復原："
 echo "   cp -r $SAFETY_BACKUP_DIR/databases/* $APP_DIR/databases/"
