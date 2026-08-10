@@ -332,6 +332,21 @@ if [ -f "login.html" ]; then
 fi
 
 echo ""
+echo "設定 Session Secret..."
+SESSION_SECRET_FILE="$APP_DIR/.session_secret"
+if [ -f "$SESSION_SECRET_FILE" ]; then
+    echo "  ✅ 已存在主機專屬 Session Secret，沿用（避免重新部署時使既有登入失效）"
+else
+    if command -v openssl &> /dev/null; then
+        openssl rand -hex 32 > "$SESSION_SECRET_FILE"
+    else
+        node -e "console.log(require('crypto').randomBytes(32).toString('hex'))" > "$SESSION_SECRET_FILE"
+    fi
+    chmod 600 "$SESSION_SECRET_FILE"
+    echo "  ✅ 已產生新的主機專屬 Session Secret：$SESSION_SECRET_FILE"
+fi
+
+echo ""
 echo "安裝 npm 套件..."
 npm install --production
 
@@ -395,6 +410,7 @@ if pm2 list | grep -q "$APP_NAME"; then
 fi
 
 echo "啟動應用程式..."
+export SESSION_SECRET="$(cat "$SESSION_SECRET_FILE")"
 if [ -f "ecosystem.config.js" ]; then
     pm2 start ecosystem.config.js
 else

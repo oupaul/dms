@@ -31,8 +31,11 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // Session 中介軟體
+if (!process.env.SESSION_SECRET) {
+  console.warn('⚠️  未設定 SESSION_SECRET 環境變數，使用不安全的預設值簽署 session，正式環境請務必設定（deploy.sh 會自動產生並注入）。');
+}
 app.use(session({
-  secret: 'your-secret-key-change-this-in-production',
+  secret: process.env.SESSION_SECRET || 'your-secret-key-change-this-in-production',
   resave: false,
   saveUninitialized: false,
   cookie: {

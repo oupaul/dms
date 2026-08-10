@@ -2,6 +2,12 @@
 # 範本請參考 msal_config.json.example / email_config.json.example
 msal_config.json
 email_config.json
+.session_secret
+
+# 匯出檔案：csv_generator.html / permission_generator.html / user_csv_generator.html
+# 等匯出工具產生的 xlsx/csv 檔案，可能含真實組織資料，不應進公開版本控制
+*.xlsx
+*.csv
 
 # 執行期資料，deploy.sh / update.sh 也都排除這些目錄
 databases/

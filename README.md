@@ -100,6 +100,7 @@ pm2 logs <service-name>
 ## 安全性注意事項
 
 - **預設管理員帳號** `admin`／`admin123` 僅在全新安裝時自動建立，**請務必在首次登入後立即更改**——這組帳密寫在公開原始碼裡，任何人都看得到
+- **Session 簽章金鑰**：`app.js` 讀取 `SESSION_SECRET` 環境變數；`deploy.sh` 部署時會自動用 `openssl rand -hex 32` 產生一組主機專屬密鑰存到 `.session_secret`（已加入 `.gitignore`）並注入給 PM2 行程。若未設定 `SESSION_SECRET`，會 fallback 成原始碼裡寫死的預設值並印出警告——**正式環境務必確認有設定**，否則任何看過原始碼的人都能偽造 session
 - `msal_config.json`（M365 SSO）、`email_config.json`（郵件通知）內含真實密鑰，已加入 `.gitignore`，只存在於各主機本機，不會、也不該被提交進 git
 - 定期執行 `npm audit`，尤其是新增/更新相依套件時
 - 更多稽核細節見 [2026-07-系統更新技術文件.md](2026-07-系統更新技術文件.md) 的安全性檢查章節
