@@ -18,6 +18,7 @@
     "user": true,
     "group": true,
     "permission": true,
-    "invite": true
+    "invite": true,
+    "permission_request": true
   }
 }

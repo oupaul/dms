@@ -108,6 +108,7 @@
                 <li class="nav-item"><a class="nav-link" href="#" data-section="users"><i class="bi bi-person-fill"></i> 人員</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="groups"><i class="bi bi-people-fill"></i> 群組</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="permissions"><i class="bi bi-key-fill"></i> 權限</a></li>
+                <li class="nav-item"><a class="nav-link" href="#" data-section="permission-requests"><i class="bi bi-file-earmark-text"></i> 申請單</a></li>
                 <li class="nav-item" id="online-menu-item" style="display: none;"><a class="nav-link" href="#" data-section="online-users"><i class="bi bi-circle-fill text-success"></i> 在線用戶</a></li>
                 <li class="nav-item" id="system-health-menu-item" style="display: none;"><a class="nav-link text-info" href="#" data-section="system-health"><i class="bi bi-heart-pulse-fill"></i> 系統健康狀態</a></li>
                 <li class="nav-item" id="audit-log-menu-item" style="display: none;"><a class="nav-link text-warning" href="#" data-section="audit-log"><i class="bi bi-journal-text"></i> 修改記錄</a></li>
@@ -489,6 +490,92 @@
                         <th>資料夾</th>
                         <th>人員/群組</th>
                         <th>權限</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <!-- 權限異動申請單 -->
+        <div id="permission-requests-section" style="display:none;">
+            <h3><i class="bi bi-file-earmark-text"></i> 權限異動申請單</h3>
+
+            <div class="card mb-3 client-only" style="display:none;">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="bi bi-pencil-square"></i> 提出申請</h5>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label fw-bold">選擇資料夾</label>
+                            <select id="pr-folder-select" class="form-select">
+                                <option value="">請選擇資料夾</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label fw-bold">對象類型</label>
+                            <select id="pr-target-type" class="form-select" onchange="updatePermissionRequestTargetInput();">
+                                <option value="user">人員</option>
+                                <option value="group">群組</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4 mb-3" id="pr-target-user-wrap">
+                            <label class="form-label fw-bold">選擇人員</label>
+                            <select id="pr-target-user-select" class="form-select">
+                                <option value="">請選擇人員</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4 mb-3" id="pr-target-group-wrap" style="display:none;">
+                            <label class="form-label fw-bold">選擇群組</label>
+                            <select id="pr-target-group-select" class="form-select">
+                                <option value="">請選擇群組</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label class="form-label fw-bold">申請的權限類型</label>
+                            <select id="pr-permission-type" class="form-select">
+                                <option value="read">讀取</option>
+                                <option value="write">寫入</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-12 mb-3">
+                            <label class="form-label fw-bold">申請原因</label>
+                            <textarea id="pr-reason" class="form-control" rows="2" placeholder="請說明為何需要這項權限異動"></textarea>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="submitPermissionRequest(); return false;">
+                        <i class="bi bi-send"></i> 送出申請
+                    </button>
+                </div>
+            </div>
+
+            <h5 class="mt-4">
+                <span class="staff-only" style="display:none;">申請單列表（全部客戶）</span>
+                <span class="client-only" style="display:none;">我的申請單</span>
+            </h5>
+            <div class="mb-2">
+                <select id="pr-status-filter" class="form-select form-select-sm" style="width:auto;display:inline-block;" onchange="loadPermissionRequests();">
+                    <option value="">全部狀態</option>
+                    <option value="pending">待審核</option>
+                    <option value="approved">已核准</option>
+                    <option value="rejected">已駁回</option>
+                </select>
+            </div>
+            <table class="table mt-2" id="permission-requests-table">
+                <thead class="table-light">
+                    <tr>
+                        <th>狀態</th>
+                        <th>資料夾</th>
+                        <th>對象</th>
+                        <th>申請權限</th>
+                        <th>申請人</th>
+                        <th>申請時間</th>
+                        <th>原因 / 完成報告</th>
                         <th>操作</th>
                     </tr>
                 </thead>
@@ -3012,8 +3099,12 @@ group_member,,2,4</code></pre>
             const isClient = rl === 'db_admin' || rl === 'client_user';
             if (isClient) {
                 $('.client-hide').hide();
+                $('.client-only').show();
+                $('.staff-only').hide();
             } else {
                 $('.client-hide').show();
+                $('.client-only').hide();
+                $('.staff-only').show();
             }
         }
 
@@ -3220,7 +3311,7 @@ group_member,,2,4</code></pre>
             }
 
             // 隱藏所有主要區段
-            $('#databases-section, #folders-section, #users-section, #groups-section, #permissions-section, #online-users-section, #system-health-section, #audit-log-section, #usage-statistics-section, #query-section, #import-section, #account-management-section, #powershell-generator-section, #nas-script-generator-section').hide();
+            $('#databases-section, #folders-section, #users-section, #groups-section, #permissions-section, #permission-requests-section, #online-users-section, #system-health-section, #audit-log-section, #usage-statistics-section, #query-section, #import-section, #account-management-section, #powershell-generator-section, #nas-script-generator-section').hide();
             
             // 停止在線用戶自動刷新
             stopOnlineUsersAutoRefresh();
@@ -3247,6 +3338,9 @@ group_member,,2,4</code></pre>
                 loadImportHistory();
             } else if (sec === 'account-management') {
                 loadAccountManagement();
+            } else if (sec === 'permission-requests') {
+                loadPermissionRequestDropdowns();
+                loadPermissionRequests();
             } else if (sec === 'powershell-generator') {
                 // 管理員或工程師才可使用
                 const canUsePowershell = currentUser && (currentUser.role === 'admin' || currentUser.roleLevel === 'engineer');
@@ -4849,8 +4943,172 @@ group_member,,2,4</code></pre>
             });
         }
 
+        // ==================== 權限異動申請單 ====================
+
+        function updatePermissionRequestTargetInput() {
+            const type = $('#pr-target-type').val();
+            if (type === 'group') {
+                $('#pr-target-user-wrap').hide();
+                $('#pr-target-group-wrap').show();
+            } else {
+                $('#pr-target-user-wrap').show();
+                $('#pr-target-group-wrap').hide();
+            }
+        }
+
+        function loadPermissionRequestDropdowns() {
+            $.get('/api/folders').done(fdata => {
+                $('#pr-folder-select').html('<option value="">請選擇資料夾</option>');
+                fdata.forEach(f => $('#pr-folder-select').append(`<option value="${f.id}">${escapeHtml(f.path || f.name)}</option>`));
+            });
+            $.get('/api/users').done(udata => {
+                $('#pr-target-user-select').html('<option value="">請選擇人員</option>');
+                udata.forEach(u => $('#pr-target-user-select').append(`<option value="${u.id}">${escapeHtml(u.name)}</option>`));
+            });
+            $.get('/api/groups').done(gdata => {
+                $('#pr-target-group-select').html('<option value="">請選擇群組</option>');
+                gdata.forEach(g => $('#pr-target-group-select').append(`<option value="${g.id}">${escapeHtml(g.name)}</option>`));
+            });
+        }
+
+        function submitPermissionRequest() {
+            const folder_id = parseInt($('#pr-folder-select').val(), 10);
+            if (!folder_id) {
+                alert('請先選擇資料夾!');
+                return;
+            }
+            const target_type = $('#pr-target-type').val();
+            const target_user_id = target_type === 'user' ? parseInt($('#pr-target-user-select').val(), 10) : null;
+            const target_group_id = target_type === 'group' ? parseInt($('#pr-target-group-select').val(), 10) : null;
+            if (target_type === 'user' && !target_user_id) {
+                alert('請選擇要異動的人員!');
+                return;
+            }
+            if (target_type === 'group' && !target_group_id) {
+                alert('請選擇要異動的群組!');
+                return;
+            }
+            const requested_permission_type = $('#pr-permission-type').val();
+            const reason = $('#pr-reason').val().trim();
+            if (!reason) {
+                alert('請填寫申請原因!');
+                return;
+            }
+
+            $.ajax({
+                url: '/api/permission-requests',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason })
+            }).done(() => {
+                alert('✅ 申請已送出，工程師收到通知後將盡快處理');
+                $('#pr-target-user-select, #pr-target-group-select, #pr-reason').val('');
+                loadPermissionRequests();
+            }).fail((xhr) => {
+                alert('❌ 送出失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
+            });
+        }
+
+        function loadPermissionRequests() {
+            const status = $('#pr-status-filter').val();
+            const url = status ? `/api/permission-requests?status=${encodeURIComponent(status)}` : '/api/permission-requests';
+            $.get(url).done(rows => renderPermissionRequests(rows || [])).fail((xhr) => {
+                console.error('載入申請單失敗:', xhr.responseText);
+            });
+        }
+
+        const PR_STATUS_LABEL = {
+            pending: '<span class="badge bg-warning text-dark">待審核</span>',
+            approved: '<span class="badge bg-success">已核准</span>',
+            rejected: '<span class="badge bg-secondary">已駁回</span>'
+        };
+
+        function renderPermissionRequests(rows) {
+            const tbody = $('#permission-requests-table tbody');
+            tbody.empty();
+            const isStaff = !(currentUser && (currentUser.roleLevel === 'db_admin' || currentUser.roleLevel === 'client_user'));
+
+            if (rows.length === 0) {
+                tbody.append('<tr><td colspan="8" class="text-muted text-center">目前沒有申請單</td></tr>');
+                return;
+            }
+
+            rows.forEach(r => {
+                const folderName = r.folder_path || r.folder_name || `資料夾 ${r.folder_id}`;
+                const target = r.target_type === 'group'
+                    ? `群組: ${escapeHtml(r.target_group_name || String(r.target_group_id))}`
+                    : `人員: ${escapeHtml(r.target_user_name || String(r.target_user_id))}`;
+                const permText = r.requested_permission_type === 'read' ? '讀取' : r.requested_permission_type === 'write' ? '寫入' : r.requested_permission_type;
+                const statusBadge = PR_STATUS_LABEL[r.status] || r.status;
+
+                let noteCell = `<div>${escapeHtml(r.reason || '')}</div>`;
+                if (r.status !== 'pending') {
+                    noteCell += `<div class="text-muted small mt-1">
+                        審核人：${escapeHtml(r.reviewed_by_username || '—')}｜時間：${escapeHtml(r.reviewed_at || '—')}<br>
+                        審核備註：${escapeHtml(r.review_note || '—')}
+                    </div>`;
+                }
+
+                let actionsCell = '<span class="text-muted">等待處理</span>';
+                if (isStaff && r.status === 'pending') {
+                    actionsCell = `
+                        <button class="btn btn-sm btn-success me-1" onclick="approvePermissionRequest(${r.id}); return false;">核准</button>
+                        <button class="btn btn-sm btn-danger" onclick="rejectPermissionRequest(${r.id}); return false;">駁回</button>
+                    `;
+                } else if (r.status !== 'pending') {
+                    actionsCell = '<span class="text-muted">已完成</span>';
+                }
+
+                tbody.append(`<tr>
+                    <td>${statusBadge}</td>
+                    <td>${escapeHtml(folderName)}</td>
+                    <td>${target}</td>
+                    <td>${permText}</td>
+                    <td>${escapeHtml(r.requested_by_username || '')}</td>
+                    <td>${escapeHtml(r.requested_at || '')}</td>
+                    <td>${noteCell}</td>
+                    <td>${actionsCell}</td>
+                </tr>`);
+            });
+        }
+
+        function approvePermissionRequest(id) {
+            const review_note = prompt('（選填）核准備註，會顯示在完成報告中：') || '';
+            $.ajax({
+                url: `/api/permission-requests/${id}/approve`,
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ review_note })
+            }).done(() => {
+                alert('✅ 已核准，權限已套用');
+                loadPermissionRequests();
+            }).fail((xhr) => {
+                alert('❌ 核准失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
+            });
+        }
+
+        function rejectPermissionRequest(id) {
+            const review_note = prompt('請填寫駁回原因：');
+            if (review_note === null) return;
+            if (!review_note.trim()) {
+                alert('請填寫駁回原因!');
+                return;
+            }
+            $.ajax({
+                url: `/api/permission-requests/${id}/reject`,
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ review_note })
+            }).done(() => {
+                alert('已駁回申請單');
+                loadPermissionRequests();
+            }).fail((xhr) => {
+                alert('❌ 駁回失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
+            });
+        }
+
         // 匯出權限 CSV
-        function exportCSV() { 
+        function exportCSV() {
             if (viewerActionBlocked('匯出權限 CSV')) return;
             window.location.href = '/export_csv'; 
         }
