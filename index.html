@@ -5179,7 +5179,8 @@ group_member,,2,4</code></pre>
         }
 
         function approvePermissionRequest(id) {
-            const review_note = prompt('（選填）核准備註，會顯示在完成報告中：') || '';
+            const review_note = prompt('（選填）核准備註，會顯示在完成報告中：');
+            if (review_note === null) return;
             $.ajax({
                 url: `/api/permission-requests/${id}/approve`,
                 method: 'POST',
