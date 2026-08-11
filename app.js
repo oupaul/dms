@@ -453,6 +453,18 @@ function initializeTables(database, callback) {
       FOREIGN KEY (target_group_id) REFERENCES groups(id)
     )`);
 
+    // 為既有 permission_requests 表補上多筆送出／前後比對用的欄位（若不存在）
+    database.all("PRAGMA table_info(permission_requests)", [], (err, columns) => {
+      if (err) return;
+      const columnNames = columns.map(col => col.name);
+      if (!columnNames.includes('batch_id')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN batch_id TEXT', (e) => { if (e) console.warn('migrate permission_requests.batch_id:', e.message); });
+      }
+      if (!columnNames.includes('previous_permission_type')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN previous_permission_type TEXT', (e) => { if (e) console.warn('migrate permission_requests.previous_permission_type:', e.message); });
+      }
+    });
+
     // 匯入歷史主表
     database.run(`CREATE TABLE IF NOT EXISTS import_history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3858,6 +3870,19 @@ function insertPermissionRecord(userDb, { folder_id, user_id, group_id, permissi
   });
 }
 
+// 共用：查某個對象在某資料夾目前的權限（沒有則回傳 null）——申請單的前後比對用
+function getCurrentPermissionType(userDb, folder_id, target_user_id, target_group_id) {
+  return new Promise((resolve, reject) => {
+    userDb.get(
+      'SELECT permission_type FROM permissions WHERE folder_id = ? AND user_id IS ? AND group_id IS ?',
+      [folder_id, target_user_id || null, target_group_id || null],
+      (err, row) => {
+        if (err) reject(err); else resolve(row ? row.permission_type : null);
+      }
+    );
+  });
+}
+
 // API: 權限 (修復：加 folder_id 驗證)
 app.get('/api/permissions', withUserDatabase, (req, res) => {
   console.log('Hit /api/permissions');
@@ -4042,82 +4067,129 @@ app.delete('/api/permissions/batch', withUserDatabase, (req, res) => {
 
 // ==================== 權限異動申請單 ====================
 
-// 客戶端帳號提出申請單（唯讀帳號也可呼叫，見 VIEWER_WRITE_WHITELIST）
-app.post('/api/permission-requests', withUserDatabase, (req, res) => {
-  if (!isClientRoleSession(req)) {
-    return res.status(403).json({ error: 'forbidden', message: '僅限客戶端帳號提出申請' });
-  }
-
-  const { folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason } = req.body;
+// 驗證單一申請項目，回傳整理後的欄位；有誤則回傳 { error }
+function validatePermissionRequestItem(item) {
+  const { folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason } = item || {};
 
   if (!folder_id || isNaN(folder_id) || folder_id <= 0) {
-    return res.status(400).json({ error: 'folder_id must be a positive integer' });
+    return { error: 'folder_id must be a positive integer' };
   }
   if (target_type !== 'user' && target_type !== 'group') {
-    return res.status(400).json({ error: 'target_type must be "user" or "group"' });
+    return { error: 'target_type must be "user" or "group"' };
   }
   const targetUserId = target_type === 'user' ? parseInt(target_user_id) : null;
   const targetGroupId = target_type === 'group' ? parseInt(target_group_id) : null;
   if (target_type === 'user' && (!targetUserId || isNaN(targetUserId))) {
-    return res.status(400).json({ error: 'target_user_id required when target_type is "user"' });
+    return { error: 'target_user_id required when target_type is "user"' };
   }
   if (target_type === 'group' && (!targetGroupId || isNaN(targetGroupId))) {
-    return res.status(400).json({ error: 'target_group_id required when target_type is "group"' });
+    return { error: 'target_group_id required when target_type is "group"' };
   }
   if (requested_permission_type !== 'read' && requested_permission_type !== 'write') {
-    return res.status(400).json({ error: 'requested_permission_type must be "read" or "write"' });
+    return { error: 'requested_permission_type must be "read" or "write"' };
   }
   if (!reason || !String(reason).trim()) {
-    return res.status(400).json({ error: 'reason is required' });
+    return { error: 'reason is required' };
   }
 
-  req.userDb.get(`
-    SELECT f.path as folder_path, f.name as folder_name,
-           u.name as user_name, g.name as group_name
-    FROM folders f
-    LEFT JOIN users u ON u.id = ?
-    LEFT JOIN groups g ON g.id = ?
-    WHERE f.id = ?
-  `, [targetUserId, targetGroupId, folder_id], (err, info) => {
-    if (err) return res.status(500).json({ error: err.message });
-    if (!info) return res.status(404).json({ error: '找不到指定的資料夾' });
+  return {
+    folder_id: parseInt(folder_id),
+    target_type,
+    target_user_id: targetUserId,
+    target_group_id: targetGroupId,
+    requested_permission_type,
+    reason: String(reason).trim()
+  };
+}
 
-    const requestedAt = nowISO();
-    req.userDb.run(
-      `INSERT INTO permission_requests
-        (folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason,
-         status, requested_by_account_id, requested_by_username, requested_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
-      [parseInt(folder_id), target_type, targetUserId, targetGroupId, requested_permission_type, String(reason).trim(),
-       req.session.userId, req.session.username, requestedAt],
-      function (err2) {
-        if (err2) return res.status(500).json({ error: err2.message });
+// 客戶端帳號一次送出多筆申請（唯讀帳號也可呼叫，見 VIEWER_WRITE_WHITELIST）
+app.post('/api/permission-requests', withUserDatabase, async (req, res) => {
+  if (!isClientRoleSession(req)) {
+    return res.status(403).json({ error: 'forbidden', message: '僅限客戶端帳號提出申請' });
+  }
 
-        const requestId = this.lastID;
-        const resourceName = `${info.folder_path || info.folder_name || '資料夾'}: ${info.user_name || info.group_name || '未知'}`;
+  const items = Array.isArray(req.body.items) ? req.body.items : null;
+  if (!items || items.length === 0) {
+    return res.status(400).json({ error: 'items must be a non-empty array' });
+  }
 
-        logAudit(req, 'create', 'permission_request', requestId, resourceName, null, {
-          folder_id,
-          target_type,
-          target_user_id: targetUserId,
-          target_group_id: targetGroupId,
-          requested_permission_type,
-          reason: String(reason).trim(),
-          folder_path: info.folder_path,
-          user_name: info.user_name,
-          group_name: info.group_name
+  const validated = [];
+  for (const raw of items) {
+    const result = validatePermissionRequestItem(raw);
+    if (result.error) return res.status(400).json({ error: result.error });
+    validated.push(result);
+  }
+
+  try {
+    // 先確認每筆的資料夾都存在，任何一筆有問題就整批不寫入
+    const infos = [];
+    for (const item of validated) {
+      const info = await new Promise((resolve, reject) => {
+        req.userDb.get(`
+          SELECT f.path as folder_path, f.name as folder_name,
+                 u.name as user_name, g.name as group_name
+          FROM folders f
+          LEFT JOIN users u ON u.id = ?
+          LEFT JOIN groups g ON g.id = ?
+          WHERE f.id = ?
+        `, [item.target_user_id, item.target_group_id, item.folder_id], (err, row) => {
+          if (err) reject(err); else resolve(row);
         });
-
-        res.json({ id: requestId });
+      });
+      if (!info) {
+        return res.status(404).json({ error: `找不到指定的資料夾 (folder_id=${item.folder_id})` });
       }
-    );
-  });
+      infos.push(info);
+    }
+
+    const batchId = crypto.randomUUID();
+    const requestedAt = nowISO();
+    const insertedIds = [];
+
+    for (let i = 0; i < validated.length; i++) {
+      const item = validated[i];
+      const info = infos[i];
+      const previousPermissionType = await getCurrentPermissionType(req.userDb, item.folder_id, item.target_user_id, item.target_group_id);
+
+      const requestId = await new Promise((resolve, reject) => {
+        req.userDb.run(
+          `INSERT INTO permission_requests
+            (folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason,
+             status, requested_by_account_id, requested_by_username, requested_at, batch_id, previous_permission_type)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+          [item.folder_id, item.target_type, item.target_user_id, item.target_group_id, item.requested_permission_type, item.reason,
+           req.session.userId, req.session.username, requestedAt, batchId, previousPermissionType],
+          function (err) { if (err) reject(err); else resolve(this.lastID); }
+        );
+      });
+
+      insertedIds.push(requestId);
+      const resourceName = `${info.folder_path || info.folder_name || '資料夾'}: ${info.user_name || info.group_name || '未知'}`;
+
+      logAudit(req, 'create', 'permission_request', requestId, resourceName, null, {
+        folder_id: item.folder_id,
+        target_type: item.target_type,
+        target_user_id: item.target_user_id,
+        target_group_id: item.target_group_id,
+        requested_permission_type: item.requested_permission_type,
+        previous_permission_type: previousPermissionType,
+        reason: item.reason,
+        folder_path: info.folder_path,
+        user_name: info.user_name,
+        group_name: info.group_name
+      });
+    }
+
+    res.json({ batch_id: batchId, ids: insertedIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// 申請單列表：客戶端帳號只看得到自己送出的，工程師/管理員看得到全部（可用 status 篩選）
+// 申請單列表：客戶端帳號只看得到自己送出的，工程師/管理員看得到全部（可用 status／batch_id 篩選）
 app.get('/api/permission-requests', withUserDatabase, (req, res) => {
   const isStaff = !isClientRoleSession(req);
-  const { status } = req.query;
+  const { status, batch_id } = req.query;
 
   let sql = `SELECT r.*, f.path as folder_path, f.name as folder_name,
                     u.name as target_user_name, g.name as target_group_name
@@ -4136,6 +4208,10 @@ app.get('/api/permission-requests', withUserDatabase, (req, res) => {
     conditions.push('r.status = ?');
     params.push(status);
   }
+  if (batch_id) {
+    conditions.push('r.batch_id = ?');
+    params.push(batch_id);
+  }
   if (conditions.length) {
     sql += ' WHERE ' + conditions.join(' AND ');
   }
@@ -4147,7 +4223,7 @@ app.get('/api/permission-requests', withUserDatabase, (req, res) => {
   });
 });
 
-// 核准申請單：實際寫入 permissions 表（沿用 insertPermissionRecord），此後就是完成報告的內容
+// 核准申請單：把現有權限「更新」成申請的權限（沒有現有權限才新增），維持前後比對的語意成立
 app.post('/api/permission-requests/:id/approve', requireStaffRole, withUserDatabase, (req, res) => {
   const id = parseInt(req.params.id);
   const { review_note } = req.body;
@@ -4162,32 +4238,53 @@ app.post('/api/permission-requests/:id/approve', requireStaffRole, withUserDatab
       return res.status(400).json({ error: '此申請單已處理過' });
     }
 
-    insertPermissionRecord(req.userDb, {
-      folder_id: request.folder_id,
-      user_id: request.target_user_id,
-      group_id: request.target_group_id,
-      permission_type: request.requested_permission_type
-    }).then((permissionId) => {
-      const reviewedAt = nowISO();
-      req.userDb.run(
-        `UPDATE permission_requests
-         SET status = 'approved', reviewed_by_username = ?, reviewed_at = ?, review_note = ?, applied_permission_id = ?
-         WHERE id = ?`,
-        [req.session.username, reviewedAt, review_note || null, permissionId, id],
-        (err2) => {
-          if (err2) return res.status(500).json({ error: err2.message });
+    req.userDb.get(
+      'SELECT id, permission_type FROM permissions WHERE folder_id = ? AND user_id IS ? AND group_id IS ?',
+      [request.folder_id, request.target_user_id, request.target_group_id],
+      (err2, existing) => {
+        if (err2) return res.status(500).json({ error: err2.message });
 
-          logAudit(req, 'update', 'permission_request', id, `申請單 #${id}`,
-            { status: 'pending' },
-            { status: 'approved', applied_permission_id: permissionId, review_note: review_note || null }
+        const applyChange = existing
+          ? new Promise((resolve, reject) => {
+              req.userDb.run(
+                'UPDATE permissions SET permission_type = ? WHERE id = ?',
+                [request.requested_permission_type, existing.id],
+                (err3) => { if (err3) reject(err3); else resolve(existing.id); }
+              );
+            })
+          : insertPermissionRecord(req.userDb, {
+              folder_id: request.folder_id,
+              user_id: request.target_user_id,
+              group_id: request.target_group_id,
+              permission_type: request.requested_permission_type
+            });
+
+        applyChange.then((permissionId) => {
+          const previousPermissionType = existing ? existing.permission_type : null;
+          const reviewedAt = nowISO();
+
+          req.userDb.run(
+            `UPDATE permission_requests
+             SET status = 'approved', reviewed_by_username = ?, reviewed_at = ?, review_note = ?,
+                 applied_permission_id = ?, previous_permission_type = ?
+             WHERE id = ?`,
+            [req.session.username, reviewedAt, review_note || null, permissionId, previousPermissionType, id],
+            (err4) => {
+              if (err4) return res.status(500).json({ error: err4.message });
+
+              logAudit(req, 'update', 'permission_request', id, `申請單 #${id}`,
+                { status: 'pending', previous_permission_type: previousPermissionType },
+                { status: 'approved', applied_permission_id: permissionId, requested_permission_type: request.requested_permission_type, review_note: review_note || null }
+              );
+
+              res.json({ success: true, applied_permission_id: permissionId, previous_permission_type: previousPermissionType });
+            }
           );
-
-          res.json({ success: true, applied_permission_id: permissionId });
-        }
-      );
-    }).catch((err3) => {
-      res.status(500).json({ error: err3.message });
-    });
+        }).catch((err5) => {
+          res.status(500).json({ error: err5.message });
+        });
+      }
+    );
   });
 });
 
@@ -4224,6 +4321,90 @@ app.post('/api/permission-requests/:id/reject', requireStaffRole, withUserDataba
       }
     );
   });
+});
+
+// 匯出申請單前後差異報告（xlsx）；帶 ?batch_id= 匯出單一批次，不帶則匯出目前篩選條件下的全部
+app.get('/api/permission-requests/export', requireStaffRole, withUserDatabase, async (req, res) => {
+  const { batch_id, status } = req.query;
+
+  let sql = `SELECT r.*, f.path as folder_path, f.name as folder_name,
+                    u.name as target_user_name, g.name as target_group_name
+             FROM permission_requests r
+             LEFT JOIN folders f ON r.folder_id = f.id
+             LEFT JOIN users u ON r.target_user_id = u.id
+             LEFT JOIN groups g ON r.target_group_id = g.id`;
+  const conditions = [];
+  const params = [];
+  if (batch_id) { conditions.push('r.batch_id = ?'); params.push(batch_id); }
+  if (status) { conditions.push('r.status = ?'); params.push(status); }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+  sql += ' ORDER BY r.requested_at DESC';
+
+  try {
+    const rows = await new Promise((resolve, reject) => {
+      req.userDb.all(sql, params, (err, result) => { if (err) reject(err); else resolve(result || []); });
+    });
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: '沒有符合條件的申請單可匯出' });
+    }
+
+    const permLabel = (v) => v === 'read' ? '讀取' : v === 'write' ? '寫入' : (v ? v : '無');
+    const statusLabel = { pending: '待審核', approved: '已核准', rejected: '已駁回' };
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = '資料夾權限文管系統';
+    workbook.created = new Date();
+    const worksheet = workbook.addWorksheet('權限異動申請單');
+
+    worksheet.columns = [
+      { header: '資料夾', key: 'folder', width: 30 },
+      { header: '對象類型', key: 'targetType', width: 10 },
+      { header: '對象名稱', key: 'targetName', width: 20 },
+      { header: '異動前權限', key: 'before', width: 12 },
+      { header: '異動後權限', key: 'after', width: 12 },
+      { header: '狀態', key: 'status', width: 10 },
+      { header: '申請人', key: 'requestedBy', width: 15 },
+      { header: '申請時間', key: 'requestedAt', width: 20 },
+      { header: '審核人', key: 'reviewedBy', width: 15 },
+      { header: '審核時間', key: 'reviewedAt', width: 20 },
+      { header: '審核備註', key: 'reviewNote', width: 30 },
+      { header: '申請原因', key: 'reason', width: 30 }
+    ];
+
+    rows.forEach(r => {
+      worksheet.addRow({
+        folder: r.folder_path || r.folder_name || `資料夾 ${r.folder_id}`,
+        targetType: r.target_type === 'group' ? '群組' : '人員',
+        targetName: r.target_type === 'group' ? (r.target_group_name || String(r.target_group_id)) : (r.target_user_name || String(r.target_user_id)),
+        before: permLabel(r.previous_permission_type),
+        after: permLabel(r.requested_permission_type),
+        status: statusLabel[r.status] || r.status,
+        requestedBy: r.requested_by_username,
+        requestedAt: r.requested_at,
+        reviewedBy: r.reviewed_by_username || '—',
+        reviewedAt: r.reviewed_at || '—',
+        reviewNote: r.review_note || '—',
+        reason: r.reason
+      });
+    });
+    worksheet.getRow(1).font = { bold: true };
+
+    const tempFile = 'temp_permission_requests_export_' + Date.now() + '.xlsx';
+    await workbook.xlsx.writeFile(tempFile);
+
+    const timestamp = nowFileStamp();
+    const filename = `權限異動申請單_${timestamp}.xlsx`;
+    res.download(tempFile, filename, (err) => {
+      if (err) console.error('Download error:', err);
+      if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+    });
+  } catch (error) {
+    console.error('Export permission requests error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: '匯出失敗：' + error.message });
+    }
+  }
 });
 
 // 清空所有資料（使用 Promise 確保操作完成）

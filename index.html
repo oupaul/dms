@@ -548,8 +548,24 @@
                             <textarea id="pr-reason" class="form-control" rows="2" placeholder="請說明為何需要這項權限異動"></textarea>
                         </div>
                     </div>
-                    <button class="btn btn-primary" onclick="submitPermissionRequest(); return false;">
-                        <i class="bi bi-send"></i> 送出申請
+                    <button class="btn btn-outline-primary" onclick="addPermissionRequestToCart(); return false;">
+                        <i class="bi bi-plus-circle"></i> 加入清單
+                    </button>
+
+                    <table class="table table-sm mt-3" id="pr-cart-table" style="display:none;">
+                        <thead class="table-light">
+                            <tr>
+                                <th>資料夾</th>
+                                <th>對象</th>
+                                <th>申請權限</th>
+                                <th>原因</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                    <button class="btn btn-primary mt-2" id="pr-submit-cart-btn" style="display:none;" onclick="submitPermissionRequestCart(); return false;">
+                        <i class="bi bi-send"></i> 送出全部申請
                     </button>
                 </div>
             </div>
@@ -572,6 +588,7 @@
                         <th>狀態</th>
                         <th>資料夾</th>
                         <th>對象</th>
+                        <th>現有權限</th>
                         <th>申請權限</th>
                         <th>申請人</th>
                         <th>申請時間</th>
@@ -4971,7 +4988,10 @@ group_member,,2,4</code></pre>
             });
         }
 
-        function submitPermissionRequest() {
+        // ---- 申請單購物車：客戶一次加入多筆，最後一起送出 ----
+        let prCartItems = [];
+
+        function addPermissionRequestToCart() {
             const folder_id = parseInt($('#pr-folder-select').val(), 10);
             if (!folder_id) {
                 alert('請先選擇資料夾!');
@@ -4995,14 +5015,61 @@ group_member,,2,4</code></pre>
                 return;
             }
 
+            prCartItems.push({
+                folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason,
+                folderLabel: $('#pr-folder-select option:selected').text(),
+                targetLabel: target_type === 'group' ? $('#pr-target-group-select option:selected').text() : $('#pr-target-user-select option:selected').text()
+            });
+
+            $('#pr-target-user-select, #pr-target-group-select, #pr-reason').val('');
+            renderPermissionRequestCart();
+        }
+
+        function removeFromPermissionRequestCart(index) {
+            prCartItems.splice(index, 1);
+            renderPermissionRequestCart();
+        }
+
+        function renderPermissionRequestCart() {
+            const tbody = $('#pr-cart-table tbody');
+            tbody.empty();
+
+            if (prCartItems.length === 0) {
+                $('#pr-cart-table, #pr-submit-cart-btn').hide();
+                return;
+            }
+
+            prCartItems.forEach((item, idx) => {
+                const permText = item.requested_permission_type === 'read' ? '讀取' : '寫入';
+                const targetPrefix = item.target_type === 'group' ? '群組' : '人員';
+                tbody.append(`<tr>
+                    <td>${escapeHtml(item.folderLabel)}</td>
+                    <td>${targetPrefix}: ${escapeHtml(item.targetLabel)}</td>
+                    <td>${permText}</td>
+                    <td>${escapeHtml(item.reason)}</td>
+                    <td><button class="btn btn-sm btn-outline-danger" onclick="removeFromPermissionRequestCart(${idx}); return false;">移除</button></td>
+                </tr>`);
+            });
+
+            $('#pr-cart-table').show();
+            $('#pr-submit-cart-btn').show().html(`<i class="bi bi-send"></i> 送出全部申請（${prCartItems.length} 筆）`);
+        }
+
+        function submitPermissionRequestCart() {
+            if (prCartItems.length === 0) return;
+
+            const items = prCartItems.map(({ folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason }) =>
+                ({ folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason }));
+
             $.ajax({
                 url: '/api/permission-requests',
                 method: 'POST',
                 contentType: 'application/json',
-                data: JSON.stringify({ folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason })
+                data: JSON.stringify({ items })
             }).done(() => {
                 alert('✅ 申請已送出，工程師收到通知後將盡快處理');
-                $('#pr-target-user-select, #pr-target-group-select, #pr-reason').val('');
+                prCartItems = [];
+                renderPermissionRequestCart();
                 loadPermissionRequests();
             }).fail((xhr) => {
                 alert('❌ 送出失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
@@ -5023,52 +5090,84 @@ group_member,,2,4</code></pre>
             rejected: '<span class="badge bg-secondary">已駁回</span>'
         };
 
+        function permissionTypeLabel(v) {
+            return v === 'read' ? '讀取' : v === 'write' ? '寫入' : '無';
+        }
+
         function renderPermissionRequests(rows) {
             const tbody = $('#permission-requests-table tbody');
             tbody.empty();
             const isStaff = !(currentUser && (currentUser.roleLevel === 'db_admin' || currentUser.roleLevel === 'client_user'));
 
             if (rows.length === 0) {
-                tbody.append('<tr><td colspan="8" class="text-muted text-center">目前沒有申請單</td></tr>');
+                tbody.append('<tr><td colspan="9" class="text-muted text-center">目前沒有申請單</td></tr>');
                 return;
             }
 
+            // 依 batch_id 分組（沒有 batch_id 的舊資料各自視為獨立一批）
+            const groups = [];
+            const groupIndexByKey = {};
             rows.forEach(r => {
-                const folderName = r.folder_path || r.folder_name || `資料夾 ${r.folder_id}`;
-                const target = r.target_type === 'group'
-                    ? `群組: ${escapeHtml(r.target_group_name || String(r.target_group_id))}`
-                    : `人員: ${escapeHtml(r.target_user_name || String(r.target_user_id))}`;
-                const permText = r.requested_permission_type === 'read' ? '讀取' : r.requested_permission_type === 'write' ? '寫入' : r.requested_permission_type;
-                const statusBadge = PR_STATUS_LABEL[r.status] || r.status;
-
-                let noteCell = `<div>${escapeHtml(r.reason || '')}</div>`;
-                if (r.status !== 'pending') {
-                    noteCell += `<div class="text-muted small mt-1">
-                        審核人：${escapeHtml(r.reviewed_by_username || '—')}｜時間：${escapeHtml(r.reviewed_at || '—')}<br>
-                        審核備註：${escapeHtml(r.review_note || '—')}
-                    </div>`;
+                const key = r.batch_id || `single-${r.id}`;
+                if (!(key in groupIndexByKey)) {
+                    groupIndexByKey[key] = groups.length;
+                    groups.push({ batchId: r.batch_id || null, items: [] });
                 }
+                groups[groupIndexByKey[key]].items.push(r);
+            });
 
-                let actionsCell = '<span class="text-muted">等待處理</span>';
-                if (isStaff && r.status === 'pending') {
-                    actionsCell = `
-                        <button class="btn btn-sm btn-success me-1" onclick="approvePermissionRequest(${r.id}); return false;">核准</button>
-                        <button class="btn btn-sm btn-danger" onclick="rejectPermissionRequest(${r.id}); return false;">駁回</button>
-                    `;
-                } else if (r.status !== 'pending') {
-                    actionsCell = '<span class="text-muted">已完成</span>';
-                }
-
-                tbody.append(`<tr>
-                    <td>${statusBadge}</td>
-                    <td>${escapeHtml(folderName)}</td>
-                    <td>${target}</td>
-                    <td>${permText}</td>
-                    <td>${escapeHtml(r.requested_by_username || '')}</td>
-                    <td>${escapeHtml(r.requested_at || '')}</td>
-                    <td>${noteCell}</td>
-                    <td>${actionsCell}</td>
+            groups.forEach(group => {
+                const first = group.items[0];
+                const exportBtn = group.batchId
+                    ? `<a class="btn btn-sm btn-outline-secondary" href="/api/permission-requests/export?batch_id=${encodeURIComponent(group.batchId)}" target="_blank">
+                         <i class="bi bi-file-earmark-excel"></i> 匯出差異報告
+                       </a>`
+                    : '';
+                tbody.append(`<tr class="table-secondary">
+                    <td colspan="9">
+                        <strong>${escapeHtml(first.requested_by_username || '')}</strong> 提出的申請
+                        （${escapeHtml(first.requested_at || '')}，共 ${group.items.length} 筆）
+                        ${isStaff ? `<span class="float-end">${exportBtn}</span>` : ''}
+                    </td>
                 </tr>`);
+
+                group.items.forEach(r => {
+                    const folderName = r.folder_path || r.folder_name || `資料夾 ${r.folder_id}`;
+                    const target = r.target_type === 'group'
+                        ? `群組: ${escapeHtml(r.target_group_name || String(r.target_group_id))}`
+                        : `人員: ${escapeHtml(r.target_user_name || String(r.target_user_id))}`;
+                    const statusBadge = PR_STATUS_LABEL[r.status] || r.status;
+
+                    let noteCell = `<div>${escapeHtml(r.reason || '')}</div>`;
+                    if (r.status !== 'pending') {
+                        noteCell += `<div class="text-muted small mt-1">
+                            審核人：${escapeHtml(r.reviewed_by_username || '—')}｜時間：${escapeHtml(r.reviewed_at || '—')}<br>
+                            審核備註：${escapeHtml(r.review_note || '—')}
+                        </div>`;
+                    }
+
+                    let actionsCell = '<span class="text-muted">等待處理</span>';
+                    if (isStaff && r.status === 'pending') {
+                        actionsCell = `
+                            <button class="btn btn-sm btn-success me-1" onclick="approvePermissionRequest(${r.id}); return false;">核准</button>
+                            <button class="btn btn-sm btn-danger" onclick="rejectPermissionRequest(${r.id}); return false;">駁回</button>
+                        `;
+                    } else if (r.status !== 'pending') {
+                        actionsCell = '<span class="text-muted">已完成</span>';
+                    }
+
+                    tbody.append(`<tr>
+                        <td>${statusBadge}</td>
+                        <td>${escapeHtml(folderName)}</td>
+                        <td>${target}</td>
+                        <td><span class="badge bg-light text-dark border">${permissionTypeLabel(r.previous_permission_type)}</span></td>
+                        <td><i class="bi bi-arrow-right text-muted"></i> <span class="badge bg-primary">${permissionTypeLabel(r.requested_permission_type)}</span></td>
+                        <td>${escapeHtml(r.requested_by_username || '')}</td>
+                        <td>${escapeHtml(r.requested_at || '')}</td>
+                        <td>${noteCell}</td>
+                        <td>${actionsCell}</td>
+                    </tr>`);
+                });
             });
         }
 
