@@ -5156,12 +5156,19 @@ group_member,,2,4</code></pre>
                         actionsCell = '<span class="text-muted">已完成</span>';
                     }
 
+                    const previousGroupHint = r.previous_permission_source === 'group' && r.previous_via_group_name
+                        ? `<div class="text-muted small">透過群組：${escapeHtml(r.previous_via_group_name)}</div>`
+                        : '';
+                    const appliedGroupHint = r.applied_via_group_name
+                        ? `<div class="text-muted small">已加入群組：${escapeHtml(r.applied_via_group_name)}</div>`
+                        : '';
+
                     tbody.append(`<tr>
                         <td>${statusBadge}</td>
                         <td>${escapeHtml(folderName)}</td>
                         <td>${target}</td>
-                        <td><span class="badge bg-light text-dark border">${permissionTypeLabel(r.previous_permission_type)}</span></td>
-                        <td><i class="bi bi-arrow-right text-muted"></i> <span class="badge bg-primary">${permissionTypeLabel(r.requested_permission_type)}</span></td>
+                        <td><span class="badge bg-light text-dark border">${permissionTypeLabel(r.previous_permission_type)}</span>${previousGroupHint}</td>
+                        <td><i class="bi bi-arrow-right text-muted"></i> <span class="badge bg-primary">${permissionTypeLabel(r.requested_permission_type)}</span>${appliedGroupHint}</td>
                         <td>${escapeHtml(r.requested_by_username || '')}</td>
                         <td>${escapeHtml(r.requested_at || '')}</td>
                         <td>${noteCell}</td>
@@ -5178,8 +5185,11 @@ group_member,,2,4</code></pre>
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({ review_note })
-            }).done(() => {
-                alert('✅ 已核准，權限已套用');
+            }).done((resp) => {
+                const detail = resp.applied_via_group_name
+                    ? `已將此對象加入群組「${resp.applied_via_group_name}」`
+                    : '已新增/更新個人直接權限';
+                alert(`✅ 已核准：${detail}`);
                 loadPermissionRequests();
             }).fail((xhr) => {
                 alert('❌ 核准失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));

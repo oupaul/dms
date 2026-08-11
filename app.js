@@ -463,6 +463,21 @@ function initializeTables(database, callback) {
       if (!columnNames.includes('previous_permission_type')) {
         database.run('ALTER TABLE permission_requests ADD COLUMN previous_permission_type TEXT', (e) => { if (e) console.warn('migrate permission_requests.previous_permission_type:', e.message); });
       }
+      if (!columnNames.includes('previous_permission_source')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN previous_permission_source TEXT', (e) => { if (e) console.warn('migrate permission_requests.previous_permission_source:', e.message); });
+      }
+      if (!columnNames.includes('previous_via_group_id')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN previous_via_group_id INTEGER', (e) => { if (e) console.warn('migrate permission_requests.previous_via_group_id:', e.message); });
+      }
+      if (!columnNames.includes('previous_via_group_name')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN previous_via_group_name TEXT', (e) => { if (e) console.warn('migrate permission_requests.previous_via_group_name:', e.message); });
+      }
+      if (!columnNames.includes('applied_via_group_id')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN applied_via_group_id INTEGER', (e) => { if (e) console.warn('migrate permission_requests.applied_via_group_id:', e.message); });
+      }
+      if (!columnNames.includes('applied_via_group_name')) {
+        database.run('ALTER TABLE permission_requests ADD COLUMN applied_via_group_name TEXT', (e) => { if (e) console.warn('migrate permission_requests.applied_via_group_name:', e.message); });
+      }
     });
 
     // 匯入歷史主表
@@ -3870,14 +3885,51 @@ function insertPermissionRecord(userDb, { folder_id, user_id, group_id, permissi
   });
 }
 
-// 共用：查某個對象在某資料夾目前的權限（沒有則回傳 null）——申請單的前後比對用
-function getCurrentPermissionType(userDb, folder_id, target_user_id, target_group_id) {
+// 共用：查某個對象在某資料夾「實際生效」的權限——個人直接權限優先，
+// 沒有的話（僅限 target_type='user'）展開這個人所屬的群組，看有沒有群組
+// 在這個資料夾上有權限（取較高者，write > read，邏輯照抄
+// /export_permission_matrix 既有的權限矩陣展開方式）。都查不到回傳 null。
+function getEffectivePermissionInfo(userDb, folder_id, target_type, target_user_id, target_group_id) {
   return new Promise((resolve, reject) => {
+    if (target_type === 'group') {
+      userDb.get(
+        'SELECT permission_type FROM permissions WHERE folder_id = ? AND group_id = ?',
+        [folder_id, target_group_id],
+        (err, row) => {
+          if (err) return reject(err);
+          resolve(row ? { permission_type: row.permission_type, source: 'direct', via_group_id: null, via_group_name: null } : null);
+        }
+      );
+      return;
+    }
+
     userDb.get(
-      'SELECT permission_type FROM permissions WHERE folder_id = ? AND user_id IS ? AND group_id IS ?',
-      [folder_id, target_user_id || null, target_group_id || null],
-      (err, row) => {
-        if (err) reject(err); else resolve(row ? row.permission_type : null);
+      'SELECT permission_type FROM permissions WHERE folder_id = ? AND user_id = ?',
+      [folder_id, target_user_id],
+      (err, directRow) => {
+        if (err) return reject(err);
+        if (directRow) {
+          return resolve({ permission_type: directRow.permission_type, source: 'direct', via_group_id: null, via_group_name: null });
+        }
+
+        userDb.all(
+          `SELECT g.id as group_id, g.name as group_name, p.permission_type
+           FROM group_users gu
+           JOIN groups g ON gu.group_id = g.id
+           JOIN permissions p ON p.group_id = g.id AND p.folder_id = ?
+           WHERE gu.user_id = ?`,
+          [folder_id, target_user_id],
+          (err2, rows) => {
+            if (err2) return reject(err2);
+            if (!rows || rows.length === 0) return resolve(null);
+
+            let best = rows[0];
+            rows.forEach(r => {
+              if (best.permission_type === 'read' && r.permission_type === 'write') best = r;
+            });
+            resolve({ permission_type: best.permission_type, source: 'group', via_group_id: best.group_id, via_group_name: best.group_name });
+          }
+        );
       }
     );
   });
@@ -4149,16 +4201,22 @@ app.post('/api/permission-requests', withUserDatabase, async (req, res) => {
     for (let i = 0; i < validated.length; i++) {
       const item = validated[i];
       const info = infos[i];
-      const previousPermissionType = await getCurrentPermissionType(req.userDb, item.folder_id, item.target_user_id, item.target_group_id);
+      const effective = await getEffectivePermissionInfo(req.userDb, item.folder_id, item.target_type, item.target_user_id, item.target_group_id);
+      const previousPermissionType = effective ? effective.permission_type : null;
+      const previousPermissionSource = effective ? effective.source : null;
+      const previousViaGroupId = effective ? effective.via_group_id : null;
+      const previousViaGroupName = effective ? effective.via_group_name : null;
 
       const requestId = await new Promise((resolve, reject) => {
         req.userDb.run(
           `INSERT INTO permission_requests
             (folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason,
-             status, requested_by_account_id, requested_by_username, requested_at, batch_id, previous_permission_type)
-           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+             status, requested_by_account_id, requested_by_username, requested_at, batch_id,
+             previous_permission_type, previous_permission_source, previous_via_group_id, previous_via_group_name)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
           [item.folder_id, item.target_type, item.target_user_id, item.target_group_id, item.requested_permission_type, item.reason,
-           req.session.userId, req.session.username, requestedAt, batchId, previousPermissionType],
+           req.session.userId, req.session.username, requestedAt, batchId,
+           previousPermissionType, previousPermissionSource, previousViaGroupId, previousViaGroupName],
           function (err) { if (err) reject(err); else resolve(this.lastID); }
         );
       });
@@ -4173,6 +4231,8 @@ app.post('/api/permission-requests', withUserDatabase, async (req, res) => {
         target_group_id: item.target_group_id,
         requested_permission_type: item.requested_permission_type,
         previous_permission_type: previousPermissionType,
+        previous_permission_source: previousPermissionSource,
+        previous_via_group_name: previousViaGroupName,
         reason: item.reason,
         folder_path: info.folder_path,
         user_name: info.user_name,
@@ -4224,68 +4284,127 @@ app.get('/api/permission-requests', withUserDatabase, (req, res) => {
 });
 
 // 核准申請單：把現有權限「更新」成申請的權限（沒有現有權限才新增），維持前後比對的語意成立
-app.post('/api/permission-requests/:id/approve', requireStaffRole, withUserDatabase, (req, res) => {
+app.post('/api/permission-requests/:id/approve', requireStaffRole, withUserDatabase, async (req, res) => {
   const id = parseInt(req.params.id);
   const { review_note } = req.body;
   if (!id || isNaN(id)) {
     return res.status(400).json({ error: 'invalid id' });
   }
 
-  req.userDb.get('SELECT * FROM permission_requests WHERE id = ?', [id], (err, request) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const request = await new Promise((resolve, reject) => {
+      req.userDb.get('SELECT * FROM permission_requests WHERE id = ?', [id], (err, row) => { if (err) reject(err); else resolve(row); });
+    });
     if (!request) return res.status(404).json({ error: 'Not found' });
     if (request.status !== 'pending') {
       return res.status(400).json({ error: '此申請單已處理過' });
     }
 
-    req.userDb.get(
-      'SELECT id, permission_type FROM permissions WHERE folder_id = ? AND user_id IS ? AND group_id IS ?',
-      [request.folder_id, request.target_user_id, request.target_group_id],
-      (err2, existing) => {
-        if (err2) return res.status(500).json({ error: err2.message });
+    // 核准當下重新查一次目前實際生效的權限（可能是個人直接權限，也可能是透過群組成員身分取得）
+    const effective = await getEffectivePermissionInfo(req.userDb, request.folder_id, request.target_type, request.target_user_id, request.target_group_id);
+    const previousPermissionType = effective ? effective.permission_type : null;
+    const previousPermissionSource = effective ? effective.source : null;
+    const previousViaGroupId = effective ? effective.via_group_id : null;
+    const previousViaGroupName = effective ? effective.via_group_name : null;
 
-        const applyChange = existing
-          ? new Promise((resolve, reject) => {
-              req.userDb.run(
-                'UPDATE permissions SET permission_type = ? WHERE id = ?',
-                [request.requested_permission_type, existing.id],
-                (err3) => { if (err3) reject(err3); else resolve(existing.id); }
-              );
-            })
-          : insertPermissionRecord(req.userDb, {
-              folder_id: request.folder_id,
-              user_id: request.target_user_id,
-              group_id: request.target_group_id,
-              permission_type: request.requested_permission_type
-            });
+    let permissionId = null;
+    let appliedViaGroupId = null;
+    let appliedViaGroupName = null;
 
-        applyChange.then((permissionId) => {
-          const previousPermissionType = existing ? existing.permission_type : null;
-          const reviewedAt = nowISO();
+    // 對象是人員時，先看這個資料夾上有沒有「剛好一個」群組本來就設定了申請的權限類型，
+    // 有的話用搬群組成員的方式套用（更貼近實務上「把人從 RO 群組移到 RW 群組」的做法）；
+    // 對象本身就是群組、或找不到唯一對應的群組時，fallback 回直接權限 upsert。
+    let candidateGroup = null;
+    if (request.target_type === 'user') {
+      const candidates = await new Promise((resolve, reject) => {
+        req.userDb.all(
+          `SELECT g.id as group_id, g.name as group_name
+           FROM permissions p JOIN groups g ON p.group_id = g.id
+           WHERE p.folder_id = ? AND p.permission_type = ?`,
+          [request.folder_id, request.requested_permission_type],
+          (err, rows) => { if (err) reject(err); else resolve(rows || []); }
+        );
+      });
+      if (candidates.length === 1) candidateGroup = candidates[0];
+    }
 
+    if (candidateGroup) {
+      await new Promise((resolve, reject) => {
+        req.userDb.run(
+          'INSERT OR IGNORE INTO group_users (group_id, user_id) VALUES (?, ?)',
+          [candidateGroup.group_id, request.target_user_id],
+          (err) => { if (err) reject(err); else resolve(); }
+        );
+      });
+      if (previousPermissionSource === 'group' && previousViaGroupId && previousViaGroupId !== candidateGroup.group_id) {
+        await new Promise((resolve, reject) => {
           req.userDb.run(
-            `UPDATE permission_requests
-             SET status = 'approved', reviewed_by_username = ?, reviewed_at = ?, review_note = ?,
-                 applied_permission_id = ?, previous_permission_type = ?
-             WHERE id = ?`,
-            [req.session.username, reviewedAt, review_note || null, permissionId, previousPermissionType, id],
-            (err4) => {
-              if (err4) return res.status(500).json({ error: err4.message });
-
-              logAudit(req, 'update', 'permission_request', id, `申請單 #${id}`,
-                { status: 'pending', previous_permission_type: previousPermissionType },
-                { status: 'approved', applied_permission_id: permissionId, requested_permission_type: request.requested_permission_type, review_note: review_note || null }
-              );
-
-              res.json({ success: true, applied_permission_id: permissionId, previous_permission_type: previousPermissionType });
-            }
+            'DELETE FROM group_users WHERE group_id = ? AND user_id = ?',
+            [previousViaGroupId, request.target_user_id],
+            (err) => { if (err) reject(err); else resolve(); }
           );
-        }).catch((err5) => {
-          res.status(500).json({ error: err5.message });
         });
       }
+      appliedViaGroupId = candidateGroup.group_id;
+      appliedViaGroupName = candidateGroup.group_name;
+    } else {
+      const existingDirect = await new Promise((resolve, reject) => {
+        req.userDb.get(
+          'SELECT id FROM permissions WHERE folder_id = ? AND user_id IS ? AND group_id IS ?',
+          [request.folder_id, request.target_user_id, request.target_group_id],
+          (err, row) => { if (err) reject(err); else resolve(row); }
+        );
+      });
+      if (existingDirect) {
+        await new Promise((resolve, reject) => {
+          req.userDb.run(
+            'UPDATE permissions SET permission_type = ? WHERE id = ?',
+            [request.requested_permission_type, existingDirect.id],
+            (err) => { if (err) reject(err); else resolve(); }
+          );
+        });
+        permissionId = existingDirect.id;
+      } else {
+        permissionId = await insertPermissionRecord(req.userDb, {
+          folder_id: request.folder_id,
+          user_id: request.target_user_id,
+          group_id: request.target_group_id,
+          permission_type: request.requested_permission_type
+        });
+      }
+    }
+
+    const reviewedAt = nowISO();
+    await new Promise((resolve, reject) => {
+      req.userDb.run(
+        `UPDATE permission_requests
+         SET status = 'approved', reviewed_by_username = ?, reviewed_at = ?, review_note = ?,
+             applied_permission_id = ?, previous_permission_type = ?, previous_permission_source = ?,
+             previous_via_group_id = ?, previous_via_group_name = ?, applied_via_group_id = ?, applied_via_group_name = ?
+         WHERE id = ?`,
+        [req.session.username, reviewedAt, review_note || null, permissionId,
+         previousPermissionType, previousPermissionSource, previousViaGroupId, previousViaGroupName,
+         appliedViaGroupId, appliedViaGroupName, id],
+        (err) => { if (err) reject(err); else resolve(); }
+      );
+    });
+
+    logAudit(req, 'update', 'permission_request', id, `申請單 #${id}`,
+      { status: 'pending', previous_permission_type: previousPermissionType, previous_permission_source: previousPermissionSource, previous_via_group_name: previousViaGroupName },
+      { status: 'approved', applied_permission_id: permissionId, applied_via_group_name: appliedViaGroupName, requested_permission_type: request.requested_permission_type, review_note: review_note || null }
     );
-  });
+
+    res.json({
+      success: true,
+      applied_permission_id: permissionId,
+      previous_permission_type: previousPermissionType,
+      previous_via_group_name: previousViaGroupName,
+      applied_via_group_id: appliedViaGroupId,
+      applied_via_group_name: appliedViaGroupName
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 駁回申請單：不寫入 permissions，僅記錄駁回原因
@@ -4351,6 +4470,18 @@ app.get('/api/permission-requests/export', requireStaffRole, withUserDatabase, a
 
     const permLabel = (v) => v === 'read' ? '讀取' : v === 'write' ? '寫入' : (v ? v : '無');
     const statusLabel = { pending: '待審核', approved: '已核准', rejected: '已駁回' };
+    const beforeLabel = (r) => {
+      const base = permLabel(r.previous_permission_type);
+      return r.previous_permission_source === 'group' && r.previous_via_group_name
+        ? `${base}（透過群組：${r.previous_via_group_name}）`
+        : base;
+    };
+    const afterLabel = (r) => {
+      const base = permLabel(r.requested_permission_type);
+      return r.applied_via_group_name
+        ? `${base}（加入群組：${r.applied_via_group_name}）`
+        : base;
+    };
 
     const workbook = new ExcelJS.Workbook();
     workbook.creator = '資料夾權限文管系統';
@@ -4361,8 +4492,8 @@ app.get('/api/permission-requests/export', requireStaffRole, withUserDatabase, a
       { header: '資料夾', key: 'folder', width: 30 },
       { header: '對象類型', key: 'targetType', width: 10 },
       { header: '對象名稱', key: 'targetName', width: 20 },
-      { header: '異動前權限', key: 'before', width: 12 },
-      { header: '異動後權限', key: 'after', width: 12 },
+      { header: '異動前權限', key: 'before', width: 28 },
+      { header: '異動後權限', key: 'after', width: 28 },
       { header: '狀態', key: 'status', width: 10 },
       { header: '申請人', key: 'requestedBy', width: 15 },
       { header: '申請時間', key: 'requestedAt', width: 20 },
@@ -4377,8 +4508,8 @@ app.get('/api/permission-requests/export', requireStaffRole, withUserDatabase, a
         folder: r.folder_path || r.folder_name || `資料夾 ${r.folder_id}`,
         targetType: r.target_type === 'group' ? '群組' : '人員',
         targetName: r.target_type === 'group' ? (r.target_group_name || String(r.target_group_id)) : (r.target_user_name || String(r.target_user_id)),
-        before: permLabel(r.previous_permission_type),
-        after: permLabel(r.requested_permission_type),
+        before: beforeLabel(r),
+        after: afterLabel(r),
         status: statusLabel[r.status] || r.status,
         requestedBy: r.requested_by_username,
         requestedAt: r.requested_at,
