@@ -108,7 +108,7 @@
                 <li class="nav-item"><a class="nav-link" href="#" data-section="users"><i class="bi bi-person-fill"></i> 人員</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="groups"><i class="bi bi-people-fill"></i> 群組</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="permissions"><i class="bi bi-key-fill"></i> 權限</a></li>
-                <li class="nav-item"><a class="nav-link" href="#" data-section="permission-requests"><i class="bi bi-file-earmark-text"></i> 申請單</a></li>
+                <li class="nav-item"><a class="nav-link" href="#" data-section="permission-requests"><i class="bi bi-file-earmark-text"></i> 申請單 <span id="permission-requests-badge" class="badge bg-danger ms-1" style="display:none;"></span></a></li>
                 <li class="nav-item" id="online-menu-item" style="display: none;"><a class="nav-link" href="#" data-section="online-users"><i class="bi bi-circle-fill text-success"></i> 在線用戶</a></li>
                 <li class="nav-item" id="system-health-menu-item" style="display: none;"><a class="nav-link text-info" href="#" data-section="system-health"><i class="bi bi-heart-pulse-fill"></i> 系統健康狀態</a></li>
                 <li class="nav-item" id="audit-log-menu-item" style="display: none;"><a class="nav-link text-warning" href="#" data-section="audit-log"><i class="bi bi-journal-text"></i> 修改記錄</a></li>
@@ -3091,7 +3091,56 @@ group_member,,2,4</code></pre>
                 applyViewerModeUI();
                 applyClientModeUI();
                 updateBroadcastPanelVisibility();
+                checkPendingPermissionRequests();
             }
+        }
+
+        // 工程師/管理員登入時檢查待審核申請單：導覽列徽章常駐顯示、另跳一次 toast 提醒
+        let permissionRequestsToastShown = false;
+        function checkPendingPermissionRequests() {
+            if (!currentUser) return;
+            const rl = currentUser.roleLevel || (currentUser.role === 'admin' ? 'admin' : 'user');
+            const isClient = rl === 'db_admin' || rl === 'client_user';
+            if (isClient) {
+                $('#permission-requests-badge').hide();
+                return;
+            }
+
+            $.get('/api/permission-requests', { status: 'pending' }).done(rows => {
+                const count = (rows || []).length;
+                if (count > 0) {
+                    $('#permission-requests-badge').text(count).show();
+                    if (!permissionRequestsToastShown) {
+                        permissionRequestsToastShown = true;
+                        showPermissionRequestsToast(count);
+                    }
+                } else {
+                    $('#permission-requests-badge').hide();
+                }
+            }).fail(() => {
+                $('#permission-requests-badge').hide();
+            });
+        }
+
+        function showPermissionRequestsToast(count) {
+            const toastId = `pr-toast-${Date.now()}`;
+            const toastHtml = `
+                <div id="${toastId}" class="toast text-bg-warning border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
+                    <div class="toast-header bg-warning">
+                        <i class="bi bi-file-earmark-text me-2"></i>
+                        <strong class="me-auto">權限異動申請單</strong>
+                        <button type="button" class="btn-close ms-2 mb-1" data-bs-dismiss="toast" aria-label="Close"></button>
+                    </div>
+                    <div class="toast-body">
+                        目前有 <strong>${count}</strong> 筆待審核的權限異動申請單，
+                        <a href="#" onclick="showSection('permission-requests'); return false;">點此前往查看</a>
+                    </div>
+                </div>
+            `;
+            $('#broadcast-toast-container').append(toastHtml);
+            const toastEl = document.getElementById(toastId);
+            const toast = new bootstrap.Toast(toastEl, { delay: 10000 });
+            toast.show();
         }
 
         function applyViewerModeUI() {
@@ -5082,6 +5131,7 @@ group_member,,2,4</code></pre>
             $.get(url).done(rows => renderPermissionRequests(rows || [])).fail((xhr) => {
                 console.error('載入申請單失敗:', xhr.responseText);
             });
+            checkPendingPermissionRequests();
         }
 
         const PR_STATUS_LABEL = {
