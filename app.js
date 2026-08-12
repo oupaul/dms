@@ -4538,6 +4538,67 @@ app.get('/api/permission-requests/export', requireStaffRole, withUserDatabase, a
   }
 });
 
+// 待審核申請單跨資料庫彙總：讓工程師/管理員登入時不用切換資料庫也能知道
+// 「總共有幾筆待審核、分布在哪些資料庫」。刻意不用 withUserDatabase（只綁
+// 單一 session 資料庫），也不用會永久快取連線的 getUserDatabase()——這裡
+// 一律用 connectDatabase() 開短命連線、查完立刻關閉，避免每次呼叫都在
+// userDatabases 這個沒有上限的全域快取裡疊加不會被清掉的連線。
+app.get('/api/permission-requests/pending-summary', requireStaffRole, async (req, res) => {
+  try {
+    const isAdmin = req.session.role === 'admin';
+    const roleLevel = req.session.roleLevel || 'user';
+    const username = req.session.username;
+
+    let databaseNames;
+    if (isAdmin) {
+      databaseNames = fs.readdirSync(DB_DIR)
+        .filter(f => f.endsWith('.db') && !SYSTEM_DB_NAMES.has(f) && !f.startsWith('deleted_'));
+    } else if (roleLevel === 'engineer') {
+      databaseNames = req.session.allowedDatabases || [];
+    } else {
+      databaseNames = listAllDatabaseNames().filter(name => isDatabaseOwnedBy(name, username));
+    }
+
+    if (databaseNames.length === 0) {
+      return res.json({ total: 0, current: req.session.userDatabase || null, byDatabase: [] });
+    }
+
+    const regRows = await new Promise((resolve, reject) => {
+      db.all('SELECT name, display_name FROM databases', [], (err, rows) => { if (err) reject(err); else resolve(rows || []); });
+    });
+    const displayNameMap = {};
+    regRows.forEach(r => { displayNameMap[r.name] = r.display_name; });
+
+    const counts = await Promise.all(databaseNames.map(async (name) => {
+      let database;
+      try {
+        database = await connectDatabase(name);
+        const row = await new Promise((resolve, reject) => {
+          database.get("SELECT COUNT(*) as cnt FROM permission_requests WHERE status = 'pending'", [], (err, r) => {
+            if (err) reject(err); else resolve(r);
+          });
+        });
+        return { name, displayName: displayNameMap[name] || name, count: row ? row.cnt : 0 };
+      } catch (err) {
+        console.warn(`pending-summary: 查詢 ${name} 失敗:`, err.message);
+        return { name, displayName: displayNameMap[name] || name, count: 0 };
+      } finally {
+        if (database) {
+          database.close((err) => { if (err) console.warn(`pending-summary: 關閉 ${name} 連線失敗:`, err.message); });
+        }
+      }
+    }));
+
+    const byDatabase = counts.filter(c => c.count > 0).sort((a, b) => b.count - a.count);
+    const total = byDatabase.reduce((sum, c) => sum + c.count, 0);
+
+    res.json({ total, current: req.session.userDatabase || null, byDatabase });
+  } catch (error) {
+    console.error('pending-summary error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 清空所有資料（使用 Promise 確保操作完成）
 app.post('/api/clear_all', withUserDatabase, async (req, res) => {
   console.log('Hit /api/clear_all - Clearing all data');

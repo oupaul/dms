@@ -501,6 +501,8 @@
         <div id="permission-requests-section" style="display:none;">
             <h3><i class="bi bi-file-earmark-text"></i> 權限異動申請單</h3>
 
+            <div id="pr-other-db-banner" class="alert alert-warning py-2 px-3" style="display:none;"></div>
+
             <div class="card mb-3 client-only" style="display:none;">
                 <div class="card-header bg-primary text-white">
                     <h5 class="mb-0"><i class="bi bi-pencil-square"></i> 提出申請</h5>
@@ -3095,7 +3097,8 @@ group_member,,2,4</code></pre>
             }
         }
 
-        // 工程師/管理員登入時檢查待審核申請單：導覽列徽章常駐顯示、另跳一次 toast 提醒
+        // 工程師/管理員登入、或進入申請單頁面時檢查待審核申請單：跨資料庫彙總
+        // （呼叫 /api/permission-requests/pending-summary，不受限於目前切換到的那顆資料庫）
         let permissionRequestsToastShown = false;
         function checkPendingPermissionRequests() {
             if (!currentUser) return;
@@ -3106,24 +3109,30 @@ group_member,,2,4</code></pre>
                 return;
             }
 
-            $.get('/api/permission-requests', { status: 'pending' }).done(rows => {
-                const count = (rows || []).length;
-                if (count > 0) {
-                    $('#permission-requests-badge').text(count).show();
+            $.get('/api/permission-requests/pending-summary').done(summary => {
+                const total = summary.total || 0;
+                if (total > 0) {
+                    $('#permission-requests-badge').text(total).show();
                     if (!permissionRequestsToastShown) {
                         permissionRequestsToastShown = true;
-                        showPermissionRequestsToast(count);
+                        showPermissionRequestsToast(summary);
                     }
                 } else {
                     $('#permission-requests-badge').hide();
                 }
+                renderPermissionRequestsOtherDbBanner(summary);
             }).fail(() => {
                 $('#permission-requests-badge').hide();
             });
         }
 
-        function showPermissionRequestsToast(count) {
+        function showPermissionRequestsToast(summary) {
             const toastId = `pr-toast-${Date.now()}`;
+            let breakdown = '';
+            if (summary.byDatabase && summary.byDatabase.length > 1) {
+                const items = summary.byDatabase.map(d => `<li>${escapeHtml(d.displayName)}：${d.count} 筆</li>`).join('');
+                breakdown = `<ul class="mb-0 mt-1 ps-3">${items}</ul>`;
+            }
             const toastHtml = `
                 <div id="${toastId}" class="toast text-bg-warning border-0 shadow" role="alert" aria-live="assertive" aria-atomic="true">
                     <div class="toast-header bg-warning">
@@ -3132,15 +3141,53 @@ group_member,,2,4</code></pre>
                         <button type="button" class="btn-close ms-2 mb-1" data-bs-dismiss="toast" aria-label="Close"></button>
                     </div>
                     <div class="toast-body">
-                        目前有 <strong>${count}</strong> 筆待審核的權限異動申請單，
+                        目前共有 <strong>${summary.total}</strong> 筆待審核的權限異動申請單，
                         <a href="#" onclick="showSection('permission-requests'); return false;">點此前往查看</a>
+                        ${breakdown}
                     </div>
                 </div>
             `;
             $('#broadcast-toast-container').append(toastHtml);
             const toastEl = document.getElementById(toastId);
-            const toast = new bootstrap.Toast(toastEl, { delay: 10000 });
+            const toast = new bootstrap.Toast(toastEl, { delay: 12000 });
             toast.show();
+        }
+
+        // 申請單頁面上方的「其他資料庫還有待審核」提示列
+        function renderPermissionRequestsOtherDbBanner(summary) {
+            const container = $('#pr-other-db-banner');
+            if (!container.length) return;
+            if (!summary || !summary.byDatabase) { container.hide().empty(); return; }
+
+            const others = summary.byDatabase.filter(d => d.name !== summary.current);
+            if (others.length === 0) {
+                container.hide().empty();
+                return;
+            }
+
+            const items = others.map(d => `
+                <span class="me-3">
+                    ${escapeHtml(d.displayName)}（${d.count} 筆）
+                    <button class="btn btn-sm btn-outline-warning ms-1" onclick="switchDatabaseAndViewPermissionRequests('${d.name}'); return false;">切換查看</button>
+                </span>
+            `).join('');
+
+            container.html(`<i class="bi bi-exclamation-triangle-fill me-1"></i> 其他資料庫還有待審核申請單：${items}`).show();
+        }
+
+        // 點一下直接切換資料庫並回到申請單頁面——這是使用者已經明確表達的具體意圖，
+        // 跟資料庫管理頁那種有較大影響範圍的手動切換不同，故意不彈 confirm() 增加干擾
+        function switchDatabaseAndViewPermissionRequests(dbName) {
+            $.ajax({
+                url: '/api/databases/switch',
+                method: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ name: dbName })
+            }).done(() => {
+                showSection('permission-requests');
+            }).fail((xhr) => {
+                alert('❌ 切換失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
+            });
         }
 
         function applyViewerModeUI() {
@@ -3407,6 +3454,7 @@ group_member,,2,4</code></pre>
             } else if (sec === 'permission-requests') {
                 loadPermissionRequestDropdowns();
                 loadPermissionRequests();
+                checkPendingPermissionRequests();
             } else if (sec === 'powershell-generator') {
                 // 管理員或工程師才可使用
                 const canUsePowershell = currentUser && (currentUser.role === 'admin' || currentUser.roleLevel === 'engineer');
@@ -5131,7 +5179,18 @@ group_member,,2,4</code></pre>
             $.get(url).done(rows => renderPermissionRequests(rows || [])).fail((xhr) => {
                 console.error('載入申請單失敗:', xhr.responseText);
             });
-            checkPendingPermissionRequests();
+        }
+
+        // 核准/駁回成功後，徽章數字直接 -1，不用重新打一次跨資料庫彙總查詢
+        function decrementPendingPermissionRequestsBadge() {
+            const badge = $('#permission-requests-badge');
+            const current = parseInt(badge.text(), 10) || 0;
+            const next = Math.max(0, current - 1);
+            if (next > 0) {
+                badge.text(next).show();
+            } else {
+                badge.hide();
+            }
         }
 
         const PR_STATUS_LABEL = {
@@ -5242,6 +5301,7 @@ group_member,,2,4</code></pre>
                     : '已新增/更新個人直接權限';
                 alert(`✅ 已核准：${detail}`);
                 loadPermissionRequests();
+                decrementPendingPermissionRequestsBadge();
             }).fail((xhr) => {
                 alert('❌ 核准失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
             });
@@ -5262,6 +5322,7 @@ group_member,,2,4</code></pre>
             }).done(() => {
                 alert('已駁回申請單');
                 loadPermissionRequests();
+                decrementPendingPermissionRequestsBadge();
             }).fail((xhr) => {
                 alert('❌ 駁回失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
             });
