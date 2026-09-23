@@ -6967,6 +6967,7 @@ app.get('/api/databases', requireAuth, (req, res) => {
   const isViewer = permissionLevel === 'viewer' && !isAdmin;
   const sessionRoleLevelDb = req.session.roleLevel || 'user';
   const isEngineerDb = sessionRoleLevelDb === 'engineer' && !isAdmin;
+  const isClientDb = isClientRoleSession(req) && !isAdmin;
 
   // 從 databases registry 取得 metadata
   db.all('SELECT name, display_name, created_by, description FROM databases', [], (regErr, regRows) => {
@@ -6992,9 +6993,7 @@ app.get('/api/databases', requireAuth, (req, res) => {
           };
         });
 
-      if (isViewer) {
-        databases = databases.filter(d => allowedForViewer.includes(d.name));
-      } else if (isEngineerDb) {
+      if (isViewer || isEngineerDb || isClientDb) {
         databases = databases.filter(d => allowedForViewer.includes(d.name));
       }
 
@@ -7006,9 +7005,15 @@ app.get('/api/databases', requireAuth, (req, res) => {
         let canSwitch = isAdmin;
         let canRename = isAdmin;
         let canDelete = isAdmin;
+        let canCopy = true;
 
         if (!isAdmin) {
-          if (isViewer) {
+          if (isClientDb) {
+            canSwitch = true;   // 客戶可切換到被授權的資料庫（已過濾），不可管理
+            canRename = false;
+            canDelete = false;
+            canCopy = false;
+          } else if (isViewer) {
             canSwitch = true;
             canRename = false;
             canDelete = false;
@@ -7023,7 +7028,7 @@ app.get('/api/databases', requireAuth, (req, res) => {
           }
         }
 
-        return { ...d, owner: ownerLabel, isOwner, canSwitch, canRename, canDelete, canCopy: true };
+        return { ...d, owner: ownerLabel, isOwner, canSwitch, canRename, canDelete, canCopy };
       });
 
       res.json({
@@ -7032,8 +7037,10 @@ app.get('/api/databases', requireAuth, (req, res) => {
         isAdmin,
         username,
         permissionLevel,
-        allowedDatabases: (isViewer || isEngineerDb) ? allowedForViewer : [],
-        message: isViewer
+        allowedDatabases: (isViewer || isEngineerDb || isClientDb) ? allowedForViewer : [],
+        message: isClientDb
+          ? '客戶帳號可切換至被授權的資料庫'
+          : isViewer
           ? '此帳號為唯讀模式，僅能檢視被授權的資料庫'
           : (isEngineerDb ? '工程師帳號可存取被授權的資料庫，僅供編輯，無法管理資料庫'
           : (isAdmin ? '管理員可查看並管理所有資料庫' : '您可以查看所有資料庫；僅能管理自己的資料庫，其他人的資料庫可複製以便參考'))
@@ -7048,6 +7055,9 @@ app.get('/api/databases', requireAuth, (req, res) => {
 // 新增資料庫
 app.post('/api/databases', requireAuth, async (req, res) => {
   try {
+    if (isClientRoleSession(req)) {
+      return res.status(403).json({ error: '客戶帳號無法管理資料庫' });
+    }
     const { name } = req.body;
     if (!name) {
       return res.status(400).json({ error: '資料庫名稱為必填' });
@@ -7238,6 +7248,9 @@ app.post('/api/databases/switch', requireAuth, async (req, res) => {
 // 刪除資料庫
 app.delete('/api/databases', requireAuth, (req, res) => {
   try {
+    if (isClientRoleSession(req)) {
+      return res.status(403).json({ error: '客戶帳號無法管理資料庫' });
+    }
     const { name } = req.body;
     if (!name) {
       return res.status(400).json({ error: 'Database name is required' });
@@ -7282,13 +7295,17 @@ app.delete('/api/databases', requireAuth, (req, res) => {
 // 複製資料庫
 app.post('/api/databases/copy', requireAuth, (req, res) => {
   try {
+    if (isClientRoleSession(req)) {
+      return res.status(403).json({ error: '客戶帳號無法管理資料庫' });
+    }
     const { source, target } = req.body;
     if (!source || !target) {
       return res.status(400).json({ error: 'Source and target names are required' });
     }
     
-    // 驗證檔名格式
-    if (!/^[a-zA-Z0-9_\-\u4e00-\u9fa5]+\.db$/.test(target)) {
+    // 驗證檔名格式（來源也要驗證，避免 ../ 路徑跳脫）
+    const dbNamePattern = /^[a-zA-Z0-9_\-\u4e00-\u9fa5]+\.db$/;
+    if (!dbNamePattern.test(source) || !dbNamePattern.test(target)) {
       return res.status(400).json({ error: '資料庫名稱格式不正確' });
     }
     
@@ -7337,6 +7354,9 @@ app.post('/api/databases/copy', requireAuth, (req, res) => {
 // 重新命名資料庫
 app.post('/api/databases/rename', requireAuth, (req, res) => {
   try {
+    if (isClientRoleSession(req)) {
+      return res.status(403).json({ error: '客戶帳號無法管理資料庫' });
+    }
     const { oldName, newName } = req.body;
     if (!oldName || !newName) {
       return res.status(400).json({ error: 'Old and new names are required' });

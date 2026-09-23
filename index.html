@@ -156,6 +156,14 @@
                 <li class="nav-item client-hide"><a class="nav-link text-danger" href="#" onclick="showClearAllModal(); return false;"><i class="bi bi-trash-fill"></i> 清空所有資料</a></li>
             </ul>
             <ul class="navbar-nav ms-auto">
+                <!-- 受限帳號（客戶 / viewer / engineer）授權 ≥2 個資料庫時顯示的快速切換 -->
+                <li class="nav-item dropdown" id="db-switcher" style="display:none;">
+                    <a class="nav-link dropdown-toggle" href="#" id="dbSwitcherDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="bi bi-database"></i>
+                        <span id="db-switcher-current">資料庫</span>
+                    </a>
+                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="dbSwitcherDropdown" id="db-switcher-menu"></ul>
+                </li>
                 <li class="nav-item dropdown">
                     <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
                         <i class="bi bi-person-circle"></i>
@@ -3094,7 +3102,50 @@ group_member,,2,4</code></pre>
                 applyClientModeUI();
                 updateBroadcastPanelVisibility();
                 checkPendingPermissionRequests();
+                loadDbSwitcher();
             }
+        }
+
+        // 導覽列資料庫快速切換：僅受限帳號（客戶 / viewer / engineer）且可切換 ≥2 個資料庫時顯示
+        // admin 與一般 user 已有「資料庫管理」頁可切換，不重複顯示
+        function loadDbSwitcher() {
+            if (!currentUser) return;
+            const rl = currentUser.roleLevel || (currentUser.role === 'admin' ? 'admin' : 'user');
+            const isRestricted = currentUser.role !== 'admin' &&
+                (rl === 'db_admin' || rl === 'client_user' || rl === 'engineer' || currentUser.permissionLevel === 'viewer');
+            if (!isRestricted) {
+                $('#db-switcher').hide();
+                return;
+            }
+
+            $.get('/api/databases').done(function(response) {
+                const switchable = (response.databases || []).filter(d => d.canSwitch);
+                if (switchable.length < 2) {
+                    $('#db-switcher').hide();
+                    return;
+                }
+                const current = switchable.find(d => d.name === response.current);
+                $('#db-switcher-current').text(current ? (current.display_name || current.name) : response.current);
+
+                const menu = $('#db-switcher-menu').empty();
+                menu.append('<li><h6 class="dropdown-header">切換資料庫</h6></li>');
+                switchable.forEach(d => {
+                    const isCurrent = d.name === response.current;
+                    const $item = $('<a class="dropdown-item d-flex align-items-center" href="#"></a>');
+                    $item.append($('<i class="bi me-2"></i>').addClass(isCurrent ? 'bi-check-lg' : 'd-inline-block').css('width', '1em'));
+                    $item.append($('<span></span>').text(d.display_name || d.name));
+                    if (isCurrent) {
+                        $item.addClass('active').attr('aria-current', 'true');
+                        $item.on('click', e => e.preventDefault());
+                    } else {
+                        $item.on('click', e => { e.preventDefault(); switchDatabase(d.name, d.display_name); });
+                    }
+                    menu.append($('<li></li>').append($item));
+                });
+                $('#db-switcher').show();
+            }).fail(function() {
+                $('#db-switcher').hide();
+            });
         }
 
         // 工程師/管理員登入、或進入申請單頁面時檢查待審核申請單：跨資料庫彙總
@@ -6564,9 +6615,9 @@ group_member,,2,4</code></pre>
             });
         }
         
-        // 切換資料庫（管理員專用，基於 session）
-        function switchDatabase(name) {
-            if (!confirm(`確定要切換到資料庫「${name}」嗎?\n\n⚠️ 此切換僅影響您的 session，不會影響其他使用者。\n切換後，您將查看該資料庫的內容。`)) {
+        // 切換資料庫（基於 session；後端依角色檢查可切換範圍）
+        function switchDatabase(name, displayName) {
+            if (!confirm(`確定要切換到資料庫「${displayName || name}」嗎?\n\n⚠️ 此切換僅影響您的 session，不會影響其他使用者。\n切換後，您將查看該資料庫的內容。`)) {
                 return;
             }
             
@@ -6576,8 +6627,10 @@ group_member,,2,4</code></pre>
                 contentType: 'application/json',
                 data: JSON.stringify({ name })
             }).done(function(response) {
-                alert('✅ ' + response.message + ': ' + response.name + '\n\n' + (response.note || ''));
+                alert('✅ ' + response.message + ': ' + (displayName || response.name) + '\n\n' + (response.note || ''));
                 loadDatabases();
+                loadDbSwitcher();
+                updateFoldersDbName();
                 // 如果在其他頁面,重新載入該頁面資料
                 if (currentSection !== 'databases') {
                     loadData(currentSection);
