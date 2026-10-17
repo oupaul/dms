@@ -6,15 +6,15 @@
     <title>資料夾權限文管系統</title>
     <link rel="icon" href="https://www.megapower.asia/ds/logo/logo-mark-light.png">
     <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Bootstrap Icons - 使用穩定版本和 unpkg 作為備用 -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" onerror="this.onerror=null;this.href='https://unpkg.com/bootstrap-icons@1.10.0/font/bootstrap-icons.css'">
+    <link href="/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons（自託管，避免外部 CDN 供應鏈風險） -->
+    <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.css">
     <!-- Preload Bootstrap Icons Font -->
-    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/fonts/bootstrap-icons.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/vendor/bootstrap-icons/fonts/bootstrap-icons.woff2" as="font" type="font/woff2" crossorigin>
     <!-- jQuery -->
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/vendor/jquery/jquery-3.6.0.min.js"></script>
     <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
     <style>
         /* 防止未認證內容閃爍 - 頁面載入時先隱藏內容 */
         body {
@@ -2705,14 +2705,20 @@ group_member,,2,4</code></pre>
             <div class="modal-content">
                 <div class="modal-header bg-primary text-white">
                     <h5 class="modal-title"><i class="bi bi-key-fill"></i> 修改密碼</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close btn-close-white" id="change-password-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
+                    <div class="alert alert-warning d-none" id="forced-change-notice">
+                        <i class="bi bi-shield-exclamation"></i>
+                        <strong>為了帳號安全，請先修改密碼</strong>：您目前使用的是初始密碼或管理員重設的臨時密碼，修改完成後才能使用系統。
+                    </div>
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle-fill"></i>
                         <strong>密碼要求：</strong>
                         <ul class="mb-0 mt-2">
-                            <li>長度至少 6 個字元</li>
+                            <li>長度至少 10 個字元</li>
+                            <li>需包含大寫、小寫、數字、符號中至少三類</li>
+                            <li>不可包含使用者名稱，且不能是常見密碼</li>
                             <li>新密碼不能與當前密碼相同</li>
                         </ul>
                     </div>
@@ -2725,13 +2731,13 @@ group_member,,2,4</code></pre>
                         
                         <div class="mb-3">
                             <label for="new-password" class="form-label">新密碼 <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="new-password" required minlength="6" autocomplete="new-password">
-                            <small class="text-muted">至少 6 個字元</small>
+                            <input type="password" class="form-control" id="new-password" required minlength="10" autocomplete="new-password">
+                            <small class="text-muted">至少 10 個字元，含大小寫、數字、符號中至少三類</small>
                         </div>
                         
                         <div class="mb-3">
                             <label for="confirm-password" class="form-label">確認新密碼 <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="confirm-password" required minlength="6" autocomplete="new-password">
+                            <input type="password" class="form-control" id="confirm-password" required minlength="10" autocomplete="new-password">
                         </div>
                         
                         <div id="password-match-message" class="text-danger small" style="display: none;">
@@ -2772,8 +2778,8 @@ group_member,,2,4</code></pre>
                         
                         <div class="mb-3">
                             <label for="create-password" class="form-label fw-bold">密碼 <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="create-password" required minlength="6" autocomplete="new-password">
-                            <small class="text-muted">至少 6 個字元</small>
+                            <input type="password" class="form-control" id="create-password" required minlength="10" autocomplete="new-password">
+                            <small class="text-muted">至少 10 個字元，含大小寫、數字、符號中至少三類；使用者首次登入須自行修改</small>
                         </div>
                         
                         <div class="mb-3">
@@ -2881,11 +2887,11 @@ group_member,,2,4</code></pre>
                     </p>
                     <div class="mb-3">
                         <label class="form-label fw-bold" for="reset-password-input">新密碼</label>
-                        <input type="password" class="form-control" id="reset-password-input" minlength="6" autocomplete="new-password" placeholder="至少 6 個字元">
+                        <input type="password" class="form-control" id="reset-password-input" minlength="10" autocomplete="new-password" placeholder="至少 10 個字元，含三類字元">
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-bold" for="reset-password-confirm">再次輸入新密碼</label>
-                        <input type="password" class="form-control" id="reset-password-confirm" minlength="6" autocomplete="new-password">
+                        <input type="password" class="form-control" id="reset-password-confirm" minlength="10" autocomplete="new-password">
                     </div>
                     <div id="reset-password-error" class="text-danger small d-none"></div>
                     <div class="alert alert-warning mt-3 mb-0">
@@ -3035,6 +3041,11 @@ group_member,,2,4</code></pre>
                         // 認證成功，顯示頁面內容（加入淡入效果）
                         $('body').addClass('authenticated');
                         updateUserDisplay();
+                        // 初始密碼／臨時密碼：必須先改密碼，改完前不載入任何資料（伺服器端也會擋掉其他 API）
+                        if (response.user && response.user.mustChangePassword) {
+                            showForcedPasswordChange();
+                            return;
+                        }
                         // 載入初始資料
                         initializePage();
                         startIdleMonitor();
@@ -3281,6 +3292,17 @@ group_member,,2,4</code></pre>
         }
 
         // 顯示修改密碼模態框
+        // 強制修改密碼：不可關閉的對話框
+        function showForcedPasswordChange() {
+            $('#change-password-form')[0].reset();
+            $('#password-match-message').hide();
+            $('#forced-change-notice').removeClass('d-none');
+            $('#change-password-close').addClass('d-none');
+            $('#change-password-modal .modal-footer .btn-secondary').addClass('d-none');
+            const el = document.getElementById('change-password-modal');
+            bootstrap.Modal.getOrCreateInstance(el, { backdrop: 'static', keyboard: false }).show();
+        }
+
         function showChangePasswordModal() {
             // 重置表單
             $('#change-password-form')[0].reset();
@@ -3319,8 +3341,8 @@ group_member,,2,4</code></pre>
                 return;
             }
             
-            if (newPassword.length < 6) {
-                alert('❌ 新密碼長度至少需要 6 個字元');
+            if (newPassword.length < 10) {
+                alert('❌ 新密碼長度至少需要 10 個字元');
                 return;
             }
             
@@ -7192,8 +7214,8 @@ group_member,,2,4</code></pre>
                 return;
             }
             
-            if (password.length < 6) {
-                showCreateAccountError('密碼長度至少需要 6 個字元');
+            if (password.length < 10) {
+                showCreateAccountError('密碼長度至少需要 10 個字元');
                 return;
             }
             
@@ -8294,8 +8316,8 @@ group_member,,2,4</code></pre>
                 showResetPasswordError('請輸入新密碼');
                 return;
             }
-            if (newPassword.length < 6) {
-                showResetPasswordError('新密碼至少需 6 個字元');
+            if (newPassword.length < 10) {
+                showResetPasswordError('新密碼至少需 10 個字元');
                 return;
             }
             if (newPassword !== confirmPassword) {

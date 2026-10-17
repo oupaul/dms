@@ -3,6 +3,7 @@
 msal_config.json
 email_config.json
 .session_secret
+.initial_admin_password
 
 # 匯出檔案：csv_generator.html / permission_generator.html / user_csv_generator.html
 # 等匯出工具產生的 xlsx/csv 檔案，可能含真實組織資料，不應進公開版本控制
@@ -14,6 +15,7 @@ databases/
 backups/
 logs/
 uploads/
+sessions/
 
 # 相依套件與系統雜項
 node_modules/

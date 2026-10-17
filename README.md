@@ -14,7 +14,7 @@ AD 風格的資料夾／人員／群組／權限管理工具。單一 Node.js（
 chmod +x deploy.sh
 sudo ./deploy.sh
 ```
-互動式精靈會詢問安裝路徑、Port、服務名稱等設定，自動安裝 Node.js、建立 systemd 服務並啟動。細節見 [完整開發說明文件.md](完整開發說明文件.md)、[部署功能檢查清單.md](部署功能檢查清單.md)。
+互動式精靈會詢問安裝路徑、Port、服務名稱等設定，自動安裝 Node.js、建立 systemd 服務並啟動。細節見 [完整開發說明文件.md](docs/完整開發說明文件.md)、[部署功能檢查清單.md](docs/部署功能檢查清單.md)。
 
 ### 現有安裝、但不是 git 倉庫 → 移轉成 git 管理
 
@@ -49,7 +49,7 @@ mv <app-dir>-new <app-dir>
 sudo systemctl start <service-name>
 ```
 
-完整案例紀錄（含正式環境實際執行結果）見 [2026-07-系統更新技術文件.md](2026-07-系統更新技術文件.md)。
+完整案例紀錄（含正式環境實際執行結果）見 [2026-07-系統更新技術文件.md](docs/2026-07-系統更新技術文件.md)。
 
 ---
 
@@ -99,11 +99,39 @@ pm2 logs <service-name>
 
 ## 安全性注意事項
 
-- **預設管理員帳號** `admin`／`admin123` 僅在全新安裝時自動建立，**請務必在首次登入後立即更改**——這組帳密寫在公開原始碼裡，任何人都看得到
-- **Session 簽章金鑰**：`app.js` 讀取 `SESSION_SECRET` 環境變數；`deploy.sh` 部署時會自動用 `openssl rand -hex 32` 產生一組主機專屬密鑰存到 `.session_secret`（已加入 `.gitignore`）並注入給 PM2 行程。若未設定 `SESSION_SECRET`，會 fallback 成原始碼裡寫死的預設值並印出警告——**正式環境務必確認有設定**，否則任何看過原始碼的人都能偽造 session
-- `msal_config.json`（M365 SSO）、`email_config.json`（郵件通知）內含真實密鑰，已加入 `.gitignore`，只存在於各主機本機，不會、也不該被提交進 git
-- 定期執行 `npm audit`，尤其是新增/更新相依套件時
-- 更多稽核細節見 [2026-07-系統更新技術文件.md](2026-07-系統更新技術文件.md) 的安全性檢查章節
+### 管理員初始密碼
+- 全新安裝時，`deploy.sh` 會**亂數產生**管理員（`admin`）初始密碼，**只在部署結束時顯示在終端機一次**，同時寫入 `.initial_admin_password`（權限 600）；應用程式建立帳號後立即刪除該檔。
+- 該帳號首次登入會被強制修改密碼，改完前其他功能一律被擋（伺服器端強制，不只是前端提示）。
+- 管理員建立的帳號、以及管理員重設的密碼都是「臨時密碼」，使用者下次登入同樣必須自行修改。
+- 若不是用 `deploy.sh`（手動啟動）且沒有初始密碼檔，程式會產生亂數密碼並**只在啟動日誌印出一次**。忘記密碼：`sudo ./reset_password.sh admin`。
+- 密碼政策：至少 10 字元、含大寫/小寫/數字/符號至少三類、不可含使用者名稱、不可為常見密碼。
+
+### 前端 nginx（不同主機）
+- 應用程式環境變數 **`PROXY_ALLOWLIST`**（逗號分隔 IP）：只接受來自 nginx 主機的連線，直連一律 403。`deploy.sh` 會詢問；systemd 部署請在 service 的 `Environment=` 加上，例如 `Environment=PROXY_ALLOWLIST=10.0.0.10`。
+- 防火牆也要同步限制：`sudo ufw allow from <nginx IP> to any port <APP_PORT> proto tcp`。
+- nginx 範本見 [docs/nginx-example.conf](docs/nginx-example.conf)：終止 TLS、登入端點限速、安全標頭，**必須**帶 `Host`、`X-Forwarded-For`、`X-Forwarded-Proto`（Origin 檢查與登入限速依賴它們）。
+- `ALLOWED_ORIGINS`（可選，逗號分隔）：額外允許的 Origin（例如有多個對外網域時）。
+
+### 認證與連線防護
+- 登入失敗鎖定：同 IP+帳號 5 次、同 IP 30 次、同帳號 30 次，15 分鐘內回 429；不論帳號是否存在回應一致。
+- 登入後換發 session ID；session 存於 `sessions/sessions.sqlite`（重啟不會登出所有人）；改密碼、重設密碼、變更角色／權限、刪除帳號時，該帳號其他 session 立即失效。
+- CSRF：非 GET 請求檢查 `Origin`/`Sec-Fetch-Site`；搭配 `SameSite=Lax`、`Secure`、`HttpOnly` cookie。
+- 安全標頭：CSP、`X-Frame-Options: DENY`、`nosniff`、HSTS（經 HTTPS 代理時）。前端函式庫（Bootstrap、jQuery、Bootstrap Icons）已**自託管**於 `public/vendor/`，不再載入外部 CDN。
+- M365 SSO 的 `state` 改為隨機值並綁定 session（一次性）。
+
+### 密鑰與設定檔
+- **Session 簽章金鑰**：優先用環境變數 `SESSION_SECRET`，其次主機專屬的 `.session_secret`；兩者皆無時自動產生隨機金鑰並寫入 `.session_secret`（權限 600）。原始碼中不再有任何寫死的後備值。
+- `msal_config.json`、`email_config.json` 內含真實密鑰，已加入 `.gitignore`，由程式寫入時權限為 600；後台儲存設定只接受白名單欄位。
+- 啟動時會檢查帳號名稱是否互為底線前綴（如 `a` 與 `a_b`）：這類帳號會讓個人資料庫歸屬混淆，新帳號已禁止，既有的會在日誌警告。
+
+### 其他
+- 檔案上傳：單檔 10MB、僅 `.xlsx` / `.csv`，處理完一律刪除暫存檔。
+- 「清空全部資料」限內部帳號，執行前自動備份到 `backups/pre-clear/`（保留最近 20 份）。
+- 非管理員看不到、也無法複製或切換系統資料庫（`system.db`、`admin.db`）。
+- 500 錯誤只回通用訊息，細節只在伺服器日誌。
+- 回歸測試：`npm test`（含登入限速、強制改密碼、CSRF、授權、上傳、代理白名單等整合測試）。
+- 定期執行 `npm audit`，尤其是新增／更新相依套件時。
+- 更多稽核細節見 [2026-07-系統更新技術文件.md](docs/2026-07-系統更新技術文件.md) 的安全性檢查章節
 
 ---
 
@@ -111,11 +139,12 @@ pm2 logs <service-name>
 
 | 文件 | 內容 |
 |---|---|
-| [完整開發說明文件.md](完整開發說明文件.md) | 系統架構、API 端點、開發環境設定等完整參考（部署章節較舊，以本 README 為準） |
-| [2026-07-系統更新技術文件.md](2026-07-系統更新技術文件.md) | 部署工具、systemd 支援、安全性稽核等本次更新的完整技術記錄 |
-| [部署功能檢查清單.md](部署功能檢查清單.md) | `deploy.sh`／`uninstall.sh`／`restore.sh` 功能與使用範例 |
-| [已修復問題記錄.md](已修復問題記錄.md) | 歷史 bug 修復記錄 |
-| [502錯誤排除指南.md](502錯誤排除指南.md) | 502 Bad Gateway 故障排除 |
-| [還原後登入問題排除指南.md](還原後登入問題排除指南.md) | 還原資料後登入異常排除 |
-| [路徑檢查報告.md](路徑檢查報告.md) | 路徑相關檢查記錄 |
-| [AD PowerShell 語法生成功能說明.md](AD%20PowerShell%20語法生成功能說明.md) | AD PowerShell 語法生成工具說明 |
+| [nginx-example.conf](docs/nginx-example.conf) | 前端 nginx 反向代理範本（TLS、限速、安全標頭） |
+| [完整開發說明文件.md](docs/完整開發說明文件.md) | 系統架構、API 端點、開發環境設定等完整參考（部署章節較舊，以本 README 為準） |
+| [2026-07-系統更新技術文件.md](docs/2026-07-系統更新技術文件.md) | 部署工具、systemd 支援、安全性稽核等本次更新的完整技術記錄 |
+| [部署功能檢查清單.md](docs/部署功能檢查清單.md) | `deploy.sh`／`uninstall.sh`／`restore.sh` 功能與使用範例 |
+| [已修復問題記錄.md](docs/已修復問題記錄.md) | 歷史 bug 修復記錄 |
+| [502錯誤排除指南.md](docs/502錯誤排除指南.md) | 502 Bad Gateway 故障排除 |
+| [還原後登入問題排除指南.md](docs/還原後登入問題排除指南.md) | 還原資料後登入異常排除 |
+| [路徑檢查報告.md](docs/路徑檢查報告.md) | 路徑相關檢查記錄 |
+| [AD PowerShell 語法生成功能說明.md](docs/AD%20PowerShell%20語法生成功能說明.md) | AD PowerShell 語法生成工具說明 |

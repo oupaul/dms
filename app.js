@@ -9,10 +9,12 @@ const path = require('path');
 const fs = require('fs');
 const argon2 = require('argon2');
 const session = require('express-session');
-const { exec } = require('child_process');
+const { exec, execFile } = require('child_process');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const crypto = require('crypto');
+const security = require('./lib/security');
+const { SqliteSessionStore } = require('./lib/session-store');
 const nodemailer = require('nodemailer');
 let msal = null;
 try {
@@ -22,29 +24,56 @@ try {
 }
 
 const app = express();
-app.set('trust proxy', 1); // 信任 nginx 的 X-Forwarded-Proto，讓 req.protocol 正確回傳 https
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // 信任前端 nginx 的 X-Forwarded-*，讓 req.protocol / req.ip 正確
 const PORT = process.env.PORT || 5000;
+const HOST = process.env.HOST || '0.0.0.0';
 const UPLOAD_DIR = 'uploads';
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-// Session 中介軟體
-if (!process.env.SESSION_SECRET) {
-  console.warn('⚠️  未設定 SESSION_SECRET 環境變數，使用不安全的預設值簽署 session，正式環境請務必設定（deploy.sh 會自動產生並注入）。');
+// nginx 在另一台主機：只接受該主機（PROXY_ALLOWLIST，逗號分隔 IP）轉進來的連線，
+// 避免有人繞過 nginx 直連應用埠、偽造 X-Forwarded-For 規避登入限速。
+const PROXY_ALLOWLIST = security.parseCsvEnv(process.env.PROXY_ALLOWLIST);
+if (PROXY_ALLOWLIST.length > 0) {
+  app.use(security.proxyAllowlist(PROXY_ALLOWLIST));
+  console.log(`✓ 只接受來自反向代理 ${PROXY_ALLOWLIST.join(', ')} 的連線`);
+} else {
+  console.warn('⚠️  未設定 PROXY_ALLOWLIST：任何能連到本機埠的來源都可直連，並可偽造 X-Forwarded-For。' +
+    '正式環境請設定為 nginx 主機 IP，並在防火牆限制只允許該 IP 連入。');
 }
+
+app.use(security.securityHeaders());
+app.use(bodyParser.json({ limit: '5mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
+app.use(security.originCheck({ allowedOrigins: security.parseCsvEnv(process.env.ALLOWED_ORIGINS) }));
+
+// Session 中介軟體（持久化於 sessions/sessions.sqlite；密鑰來自環境變數或主機專屬 .session_secret）
+const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const sessionStore = new SqliteSessionStore({
+  dir: path.join(__dirname, 'sessions'),
+  ttlMs: SESSION_MAX_AGE_MS
+});
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'your-secret-key-change-this-in-production',
+  store: sessionStore,
+  secret: security.loadSessionSecret(__dirname),
   resave: false,
   saveUninitialized: false,
   cookie: {
     secure: true,      // 站台為 HTTPS，必須設 true（trust proxy: 1 已設定）
     httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000, // 24 小時
+    maxAge: SESSION_MAX_AGE_MS,
     sameSite: 'lax'   // 允許 OAuth redirect 後帶回 cookie
   }
 }));
+
+
+// 500 錯誤只回傳通用訊息，細節（SQL、路徑、堆疊）僅寫入伺服器日誌，避免洩漏內部資訊
+function internalError(res, err) {
+  console.error('[500]', err && err.stack ? err.stack : err);
+  if (!res.headersSent) {
+    res.status(500).json({ error: '伺服器內部錯誤，請稍後再試或聯繫管理員' });
+  }
+}
 
 function listAllDatabaseNames() {
   const files = fs.readdirSync(DB_DIR);
@@ -81,6 +110,7 @@ function sanitizeAllowedDatabases(list) {
   return sanitized;
 }
 
+// 僅用於顯示（資料庫登記表的 created_by 後備值）；授權判斷請一律用 isDatabaseOwnedBy
 function getDatabaseOwner(dbName) {
   if (!dbName || !dbName.startsWith('user_')) return null;
   const withoutPrefix = dbName.slice(5).replace(/\.db$/i, '');
@@ -88,10 +118,18 @@ function getDatabaseOwner(dbName) {
   return segments[0] || null;
 }
 
-function isDatabaseOwnedBy(dbName, username) {
-  const owner = getDatabaseOwner(dbName);
-  if (!owner || !username) return false;
-  return owner === username;
+// 資料庫歸屬判斷（授權用）。新帳號名稱不得與既有帳號互為 "_" 前綴（見 findUsernameCollision），
+// 因此 user_<username>.db / user_<username>_*.db 的前綴比對不會有歧義。
+const isDatabaseOwnedBy = security.isDatabaseOwnedBy;
+
+// 檢查候選使用者名稱是否與既有帳號衝突；回傳衝突的既有帳號名稱，沒有則回傳 null
+function usernameCollisionOf(candidate) {
+  return new Promise((resolve, reject) => {
+    db.all('SELECT username FROM accounts', [], (err, rows) => {
+      if (err) return reject(err);
+      resolve(security.findUsernameCollision(candidate, rows.map(r => r.username)));
+    });
+  });
 }
 
 function isViewer(req) {
@@ -159,6 +197,22 @@ app.use((req, res, next) => {
       });
     }
     req.session.lastActivity = now;
+  }
+  next();
+});
+
+// 首次登入／管理員重設密碼後，必須先修改密碼才能使用其他功能
+const MUST_CHANGE_ALLOWED_PATHS = new Set(['/api/auth/change-password', '/api/auth/logout', '/api/auth/status']);
+app.use((req, res, next) => {
+  if (req.session && req.session.userId && req.session.mustChangePassword) {
+    if (MUST_CHANGE_ALLOWED_PATHS.has(req.path)) return next();
+    const isPlainPage = req.method === 'GET' && !req.path.startsWith('/api/') && !/^\/(export|download|import)/.test(req.path);
+    if (isPlainPage) return next();
+    return res.status(403).json({
+      error: 'must_change_password',
+      code: 'MUST_CHANGE_PASSWORD',
+      message: '請先修改密碼後再繼續使用系統'
+    });
   }
   next();
 });
@@ -304,12 +358,16 @@ function initializeTables(database, callback) {
       permission_level TEXT DEFAULT 'editor',
       allowed_databases TEXT,
       ms_email TEXT,
+      must_change_password INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     
     database.all("PRAGMA table_info(accounts)", [], (err, columns) => {
       if (err) return;
       const columnNames = columns.map(col => col.name);
+      if (!columnNames.includes('must_change_password')) {
+        database.run("ALTER TABLE accounts ADD COLUMN must_change_password INTEGER DEFAULT 0", (e) => { if (e) console.warn('migrate accounts.must_change_password:', e.message); });
+      }
       if (!columnNames.includes('permission_level')) {
         database.run("ALTER TABLE accounts ADD COLUMN permission_level TEXT DEFAULT 'editor'", (e) => { if (e) console.warn('migrate accounts.permission_level:', e.message); });
       }
@@ -508,10 +566,32 @@ function initializeTables(database, callback) {
   });
 }
 
+// 首次安裝用的管理員密碼：
+//  1. deploy.sh 會產生亂數密碼、顯示在部署終端機，並寫入 .initial_admin_password（權限 600）；
+//  2. 若沒有該檔案（例如手動啟動），則由程式產生亂數密碼並只印出一次。
+// 帳號建立後該檔案立即刪除，且帳號被標記為「首次登入必須改密碼」。
+const INITIAL_ADMIN_PASSWORD_FILE = path.join(__dirname, '.initial_admin_password');
+
+function consumeInitialAdminPassword() {
+  let fromFile = null;
+  try {
+    fromFile = fs.readFileSync(INITIAL_ADMIN_PASSWORD_FILE, 'utf8').trim();
+  } catch (e) {
+    // 沒有檔案，往下自行產生
+  }
+  if (fromFile && !security.validatePassword(fromFile, 'admin')) {
+    return { password: fromFile, source: 'file' };
+  }
+  return { password: security.generatePassword(20), source: 'generated' };
+}
+
+function removeInitialAdminPasswordFile() {
+  try { fs.unlinkSync(INITIAL_ADMIN_PASSWORD_FILE); } catch (e) { /* 不存在即可 */ }
+}
+
 // 建立預設管理員帳號和資料庫
 async function createDefaultAdmin() {
   const adminUsername = 'admin';
-  const adminPassword = 'admin123'; // 預設密碼
   const adminDbName = 'admin.db';
   
   return new Promise(async (resolve, reject) => {
@@ -521,24 +601,38 @@ async function createDefaultAdmin() {
       
       if (row) {
         console.log('✓ Admin account already exists');
+        removeInitialAdminPasswordFile(); // 帳號已存在，殘留的初始密碼檔不應保留
         return resolve();
       }
       
       try {
+        const { password: adminPassword, source } = consumeInitialAdminPassword();
         // 建立管理員帳號
         const passwordHash = await argon2.hash(adminPassword);
         
         await new Promise((res, rej) => {
           db.run(
-            'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, created_at, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)',
             [adminUsername, passwordHash, '系統管理員', 'admin', 'active', adminDbName, 'editor', null, nowISO()],
             function(err) {
               if (err) return rej(err);
-              console.log(`✓ Created default admin account: ${adminUsername} / ${adminPassword}`);
               res(this.lastID);
             }
           );
         });
+        removeInitialAdminPasswordFile();
+
+        if (source === 'generated') {
+          // 只在首次建立時印出一次；請立即登入並修改（登入後系統會強制改密碼）
+          console.log('\n' + '='.repeat(64));
+          console.log('  已建立預設管理員帳號（僅顯示這一次，請立即記下）');
+          console.log(`  帳號：${adminUsername}`);
+          console.log(`  密碼：${adminPassword}`);
+          console.log('  首次登入後會被要求立即修改密碼。');
+          console.log('='.repeat(64) + '\n');
+        } else {
+          console.log(`✓ Created default admin account: ${adminUsername}（密碼來自部署流程，已於部署終端機顯示）`);
+        }
         
         // 建立管理員專屬資料庫
         const adminDb = await connectDatabase(adminDbName);
@@ -612,6 +706,21 @@ function syncDatabaseRegistry() {
 // 啟動時載入預設資料庫
 loadDefaultDatabase().then(() => {
   console.log('Database initialized!');
+
+  // 稽核：既有帳號名稱若互為 "_" 前綴（如 a 與 a_b），個人資料庫歸屬會有歧義，啟動時警告管理員處理
+  db.all('SELECT username FROM accounts', [], (accErr, accRows) => {
+    if (accErr || !accRows) return;
+    const names = accRows.map(r => r.username);
+    const reported = new Set();
+    names.forEach(n => {
+      const other = security.findUsernameCollision(n, names.filter(x => x !== n));
+      const key = [n, other].sort().join('|');
+      if (other && !reported.has(key)) {
+        reported.add(key);
+        console.warn(`⚠️  帳號名稱衝突：「${n}」與「${other}」互為底線前綴，個人資料庫（user_${n}_*.db）可能被對方存取，請將其中一個帳號改名。`);
+      }
+    });
+  });
   
   // 在系統資料庫中創建活動會話表（用於追蹤所有用戶的在線狀態）
   db.run(`CREATE TABLE IF NOT EXISTS active_sessions (
@@ -1245,14 +1354,54 @@ async function getUserDatabase(userId, userDbName) {
   return userDb;
 }
 
+// 公開的邀請端點（查詢 token / 以 token 註冊）限速，防止猜測 token 與灌帳號
+const inviteLimiter = security.createRequestLimiter({ windowMs: 15 * 60 * 1000, max: 60, message: '請求過於頻繁，請稍後再試' });
+
+// 登入限速：同一 IP+帳號 5 次、同一 IP 30 次、同一帳號 30 次失敗後鎖定 15 分鐘（成功登入會清除 IP+帳號 的計數）
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const loginLimiterPair = security.createFailureLimiter({ windowMs: LOGIN_WINDOW_MS, max: 5 });
+const loginLimiterIp = security.createFailureLimiter({ windowMs: LOGIN_WINDOW_MS, max: 30 });
+const loginLimiterUser = security.createFailureLimiter({ windowMs: LOGIN_WINDOW_MS, max: 30 });
+
+// 帳號不存在時也做一次等價的雜湊驗證，避免用回應時間探測帳號是否存在
+let dummyPasswordHashPromise = null;
+function getDummyPasswordHash() {
+  if (!dummyPasswordHashPromise) dummyPasswordHashPromise = argon2.hash(crypto.randomBytes(16).toString('hex'));
+  return dummyPasswordHashPromise;
+}
+
+function regenerateSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
 // 登入
 app.post('/api/auth/login', async (req, res) => {
-  console.log('Hit POST /api/auth/login', { username: req.body.username });
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
   
-  if (!username || !password) {
+  if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ error: '請提供使用者名稱和密碼' });
   }
+
+  const ip = req.ip || 'unknown';
+  const userKey = username.toLowerCase();
+  const pairKey = `${ip}|${userKey}`;
+  for (const [limiter, key] of [[loginLimiterPair, pairKey], [loginLimiterIp, ip], [loginLimiterUser, userKey]]) {
+    const state = limiter.check(key);
+    if (state.blocked) {
+      res.set('Retry-After', String(state.retryAfterSec));
+      return res.status(429).json({
+        error: '登入失敗次數過多，請稍後再試',
+        message: `請於 ${Math.ceil(state.retryAfterSec / 60)} 分鐘後再試。`
+      });
+    }
+  }
+  const recordLoginFailure = () => {
+    loginLimiterPair.fail(pairKey);
+    loginLimiterIp.fail(ip);
+    loginLimiterUser.fail(userKey);
+  };
   
   try {
     // 查找使用者（從系統資料庫）
@@ -1264,11 +1413,20 @@ app.post('/api/auth/login', async (req, res) => {
       });
     });
     
-    if (!user) {
+    // 先驗證密碼（帳號不存在時用假雜湊，耗時相同），再揭露帳號狀態，避免未認證者探測帳號
+    const hashToCheck = user ? user.password_hash : await getDummyPasswordHash();
+    let isPasswordValid = false;
+    try {
+      isPasswordValid = await argon2.verify(hashToCheck, password);
+    } catch (verifyErr) {
+      isPasswordValid = false;
+    }
+    if (!user || !isPasswordValid) {
+      recordLoginFailure();
       return res.status(401).json({ error: '使用者名稱或密碼錯誤' });
     }
     
-    // 檢查帳號狀態
+    // 檢查帳號狀態（已通過密碼驗證，才告知狀態）
     if (user.status === 'pending') {
       return res.status(403).json({ 
         error: '帳號尚未通過審核',
@@ -1287,12 +1445,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(403).json({ error: '帳號狀態異常，請聯繫管理員' });
     }
     
-    // 驗證密碼
-    const isPasswordValid = await argon2.verify(user.password_hash, password);
-    
-    if (!isPasswordValid) {
-      return res.status(401).json({ error: '使用者名稱或密碼錯誤' });
-    }
+    loginLimiterPair.reset(pairKey);
     
     const permissionLevel = user.permission_level || 'editor';
     const userRoleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
@@ -1326,7 +1479,11 @@ app.post('/api/auth/login', async (req, res) => {
     try {
       const userDb = await getUserDatabase(user.id, targetDatabase);
       
+      // 登入成功後換發新的 session ID，防止 session fixation
+      await regenerateSession(req);
+      
       // 設定 session（包含使用者資料庫資訊）
+      req.session.mustChangePassword = !!user.must_change_password;
       req.session.userId = user.id;
       req.session.username = user.username;
       req.session.fullName = user.full_name;
@@ -1367,6 +1524,7 @@ app.post('/api/auth/login', async (req, res) => {
       res.json({
         success: true,
         message: '登入成功',
+        mustChangePassword: !!user.must_change_password,
         user: {
           id: user.id,
           username: user.username,
@@ -1386,7 +1544,7 @@ app.post('/api/auth/login', async (req, res) => {
     
   } catch (error) {
     console.error('登入錯誤:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -1417,6 +1575,7 @@ app.post('/api/auth/logout', (req, res) => {
       console.error('登出錯誤:', err);
       return res.status(500).json({ error: '登出失敗' });
     }
+    res.clearCookie('connect.sid', { httpOnly: true, secure: true, sameSite: 'lax' });
     res.json({ success: true, message: '登出成功' });
   });
 });
@@ -1432,13 +1591,15 @@ app.get('/auth/microsoft', async (req, res) => {
     return res.redirect('/login.html?error=sso_disabled');
   }
   try {
+    const ssoState = crypto.randomBytes(24).toString('hex'); // 隨機 state 綁定本次 session，防止 login CSRF
     const authCodeUrl = await msalClient.getAuthCodeUrl({
       scopes: ['openid', 'profile', 'email'],
       redirectUri: msalConfig.redirectUri,
-      state: 'ms_sso', // 固定值，避免 session 跨請求丟失
+      state: ssoState,
     });
     // 強制儲存 session 後再跳轉，確保 cookie 已寫入
     req.session.msalPending = true;
+    req.session.msalState = ssoState;
     req.session.save((err) => {
       if (err) console.error('Session save error before SSO redirect:', err);
       res.redirect(authCodeUrl);
@@ -1459,9 +1620,13 @@ app.get('/auth/callback', async (req, res) => {
   }
   if (!code) return res.redirect('/login.html?error=ms_auth_failed');
 
-  // state 驗證（使用固定值，避免 session 跨請求在 proxy 環境丟失）
-  if (!state || state !== 'ms_sso') {
-    console.error('SSO state mismatch, received:', state);
+  // state 驗證：必須與發起登入時存在 session 的隨機值一致（一次性）
+  const expectedState = req.session && req.session.msalState;
+  if (req.session) delete req.session.msalState;
+  if (!state || !expectedState || typeof state !== 'string' ||
+      state.length !== expectedState.length ||
+      !crypto.timingSafeEqual(Buffer.from(state), Buffer.from(expectedState))) {
+    console.error('SSO state mismatch');
     return res.redirect('/login.html?error=ms_auth_failed');
   }
 
@@ -1514,6 +1679,10 @@ app.get('/auth/callback', async (req, res) => {
 
     await getUserDatabase(user.id, targetDatabase);
 
+    // 登入成功後換發新的 session ID，防止 session fixation
+    await regenerateSession(req);
+
+    req.session.mustChangePassword = false;
     req.session.userId = user.id;
     req.session.username = user.username;
     req.session.fullName = user.full_name;
@@ -1557,6 +1726,8 @@ app.get('/auth/callback', async (req, res) => {
   }
 });
 
+const changePasswordLimiter = security.createFailureLimiter({ windowMs: 15 * 60 * 1000, max: 5 });
+
 // 修改密碼
 app.post('/api/auth/change-password', requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
@@ -1568,8 +1739,14 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
       return res.status(400).json({ error: '請提供當前密碼和新密碼' });
     }
     
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: '新密碼長度至少需要 6 個字元' });
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+      return res.status(400).json({ error: '欄位格式不正確' });
+    }
+
+    const cpState = changePasswordLimiter.check(String(userId));
+    if (cpState.blocked) {
+      res.set('Retry-After', String(cpState.retryAfterSec));
+      return res.status(429).json({ error: '嘗試次數過多，請稍後再試' });
     }
     
     // 使用系統資料庫（帳號資料庫）
@@ -1590,7 +1767,14 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
     // 驗證當前密碼
     const isValidPassword = await argon2.verify(user.password_hash, currentPassword);
     if (!isValidPassword) {
+      changePasswordLimiter.fail(String(userId));
       return res.status(401).json({ error: '當前密碼錯誤' });
+    }
+    changePasswordLimiter.reset(String(userId));
+
+    const newPwError = security.validatePassword(newPassword, user.username);
+    if (newPwError) {
+      return res.status(400).json({ error: newPwError });
     }
     
     // 檢查新密碼是否與舊密碼相同
@@ -1605,7 +1789,7 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
     // 更新密碼
     await new Promise((resolve, reject) => {
       systemDb.run(
-        'UPDATE accounts SET password_hash = ? WHERE id = ?',
+        'UPDATE accounts SET password_hash = ?, must_change_password = 0 WHERE id = ?',
         [newPasswordHash, userId],
         function(err) {
           if (err) reject(err);
@@ -1613,6 +1797,10 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
         }
       );
     });
+    req.session.mustChangePassword = false;
+    // 改密碼後，該帳號在其他裝置上的登入全部失效
+    sessionStore.destroyByUserId(userId, req.sessionID);
+    logAudit(req, 'update', 'account', userId, user.username, null, { event: 'change_password' });
     
     console.log(`✓ 使用者 ${user.username} 已成功修改密碼`);
     
@@ -1641,7 +1829,8 @@ app.get('/api/auth/status', (req, res) => {
         canInvite: !!(req.session.canInvite || req.session.role === 'admin'),
         permissionLevel: req.session.permissionLevel || 'editor',
         allowedDatabases: req.session.allowedDatabases || [],
-        database: req.session.userDatabase
+        database: req.session.userDatabase,
+        mustChangePassword: !!req.session.mustChangePassword
       }
     });
   } else {
@@ -1653,7 +1842,7 @@ app.get('/api/auth/status', (req, res) => {
 app.get('/api/auth/has-accounts', (req, res) => {
   db.get('SELECT COUNT(*) as count FROM accounts', [], (err, row) => {
     if (err) {
-      return res.status(500).json({ error: err.message });
+      return internalError(res, err);
     }
     res.json({ hasAccounts: row.count > 0 });
   });
@@ -1674,7 +1863,7 @@ app.get('/api/admin/accounts', requireAdmin, (req, res) => {
     [],
     (err, rows) => {
       if (err) {
-        return res.status(500).json({ error: err.message });
+        return internalError(res, err);
       }
       const mapped = (rows || []).map(row => ({
         ...row,
@@ -1768,10 +1957,12 @@ app.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res)
       );
     });
 
+    // 角色／權限／可存取資料庫都快取在 session 內，變更後讓該帳號的既有登入失效，強制以新權限重新登入
+    sessionStore.destroyByUserId(account.id, req.sessionID);
     res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: sanitized, roleLevel: finalRoleLevel, canInvite: !!finalCanInvite });
   } catch (error) {
     console.error('更新帳號權限失敗:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -1813,10 +2004,11 @@ app.post('/api/admin/accounts/set-admin-role', requireAdmin, async (req, res) =>
     });
 
     console.log(`✓ ${makeAdmin ? '升級' : '降級'} 管理員: ${account.username}`);
+    sessionStore.destroyByUserId(account.id, req.sessionID);
     res.json({ success: true, message: `${account.username} 已${makeAdmin ? '升為系統管理員' : '取消管理員身份'}` });
   } catch (err) {
     console.error('set-admin-role 失敗:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -1826,28 +2018,73 @@ app.post('/api/admin/accounts/set-admin-role', requireAdmin, async (req, res) =>
 app.get('/api/admin/email-config', requireAdmin, (req, res) => {
   const cfg = { ...emailConfig };
   if (cfg.smtp && cfg.smtp.auth) {
-    cfg.smtp = { ...cfg.smtp, auth: { ...cfg.smtp.auth, pass: cfg.smtp.auth.pass ? '••••••••' : '' } };
+    cfg.smtp = { ...cfg.smtp, auth: { ...cfg.smtp.auth, pass: cfg.smtp.auth.pass ? SECRET_MASK : '' } };
   }
   res.json(cfg);
 });
 
+// 只接受已知欄位並檢查型別，避免把任意 request body 寫進設定檔
+const SECRET_MASK = '••••••••';
+function sanitizeEmailConfig(body, current) {
+  const out = { ...current };
+  const str = (v, max = 255) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+  if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
+  if (body.from !== undefined) out.from = str(body.from);
+  if (body.subjectPrefix !== undefined) out.subjectPrefix = str(body.subjectPrefix, 100);
+  if (body.batchMinutes !== undefined) {
+    const n = parseInt(body.batchMinutes, 10);
+    if (Number.isFinite(n)) out.batchMinutes = Math.min(Math.max(n, 1), 1440);
+  }
+  if (body.to !== undefined) {
+    const list = Array.isArray(body.to) ? body.to : String(body.to).split(/[,;\s]+/);
+    out.to = list.map(v => str(v)).filter(Boolean).slice(0, 50);
+  }
+  if (body.notifyEvents && typeof body.notifyEvents === 'object') {
+    out.notifyEvents = { ...(current.notifyEvents || {}) };
+    for (const [k, v] of Object.entries(body.notifyEvents)) {
+      if (typeof v === 'boolean' && /^[a-z_]{1,40}$/.test(k)) out.notifyEvents[k] = v;
+    }
+  }
+  if (body.smtp && typeof body.smtp === 'object') {
+    const cur = current.smtp || {};
+    const smtp = { ...cur };
+    if (body.smtp.host !== undefined) smtp.host = str(body.smtp.host);
+    if (body.smtp.port !== undefined) {
+      const port = parseInt(body.smtp.port, 10);
+      if (Number.isInteger(port) && port > 0 && port < 65536) smtp.port = port;
+    }
+    if (typeof body.smtp.secure === 'boolean') smtp.secure = body.smtp.secure;
+    if (typeof body.smtp.ignoreTLS === 'boolean') smtp.ignoreTLS = body.smtp.ignoreTLS;
+    if (['tls', 'starttls', 'none'].includes(body.smtp.encryption)) smtp.encryption = body.smtp.encryption;
+    if (body.smtp.auth && typeof body.smtp.auth === 'object') {
+      const curAuth = cur.auth || {};
+      const auth = { ...curAuth };
+      if (body.smtp.auth.user !== undefined) auth.user = str(body.smtp.auth.user);
+      const newPass = body.smtp.auth.pass;
+      if (typeof newPass === 'string' && newPass !== '' && newPass !== SECRET_MASK) auth.pass = newPass.slice(0, 512);
+      smtp.auth = auth;
+    }
+    out.smtp = smtp;
+  }
+  return out;
+}
+
+function writeSecretConfig(file, obj) {
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2), { encoding: 'utf8', mode: 0o600 });
+  try { fs.chmodSync(file, 0o600); } catch (e) { /* 非 POSIX 檔案系統 */ }
+}
+
 // 更新郵件設定
 app.post('/api/admin/email-config', requireAdmin, async (req, res) => {
   try {
-    const body = req.body;
-    // 若密碼為遮蔽字元，保留原密碼
-    const newConfig = { ...emailConfig, ...body };
-    if (body.smtp && body.smtp.auth) {
-      const newPass = body.smtp.auth.pass;
-      if (!newPass || newPass === '••••••••') {
-        newConfig.smtp.auth.pass = emailConfig.smtp?.auth?.pass || '';
-      }
-    }
-    fs.writeFileSync(EMAIL_CONFIG_PATH, JSON.stringify(newConfig, null, 2), 'utf8');
+    const newConfig = sanitizeEmailConfig(req.body || {}, emailConfig);
+    writeSecretConfig(EMAIL_CONFIG_PATH, newConfig);
     loadEmailConfig();
+    logAudit(req, 'update', 'config', null, 'email_config', null, { enabled: !!newConfig.enabled });
     res.json({ success: true, message: '郵件設定已儲存並重新載入' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('儲存郵件設定失敗:', err);
+    res.status(500).json({ error: '儲存郵件設定失敗' });
   }
 });
 
@@ -2006,7 +2243,7 @@ app.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
 
     res.json({ success: true, token, link: inviteLink, expiresAt });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -2018,7 +2255,7 @@ app.get('/api/admin/invitations', requireCanInvite, (req, res) => {
     : 'SELECT * FROM invitations WHERE created_by = ? ORDER BY created_at DESC';
   const params = isAdmin ? [] : [req.session.username];
   db.all(query, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json((rows || []).map(r => ({
       ...r,
       allowed_databases: (() => { try { return JSON.parse(r.allowed_databases || '[]'); } catch { return []; } })(),
@@ -2043,12 +2280,12 @@ app.delete('/api/admin/invitations/:id', requireCanInvite, async (req, res) => {
     });
     res.json({ success: true, message: '邀請已撤銷' });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 // 驗證邀請 token（公開，不需登入）
-app.get('/api/invite/:token', async (req, res) => {
+app.get('/api/invite/:token', inviteLimiter, async (req, res) => {
   const { token } = req.params;
   try {
     const inv = await new Promise((resolve, reject) => {
@@ -2066,18 +2303,20 @@ app.get('/api/invite/:token', async (req, res) => {
       expires_at: inv.expires_at
     });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 // 透過邀請連結建立帳號（公開）
-app.post('/api/invite/:token/register', async (req, res) => {
+app.post('/api/invite/:token/register', inviteLimiter, async (req, res) => {
   const { token } = req.params;
   const { username, password, full_name } = req.body;
 
   if (!username || !password) return res.status(400).json({ error: '請提供使用者名稱和密碼' });
-  if (password.length < 6) return res.status(400).json({ error: '密碼長度至少需要 6 個字元' });
-  if (!/^[a-zA-Z0-9_]+$/.test(username)) return res.status(400).json({ error: '使用者名稱只能包含英數字和底線' });
+  if (typeof username !== 'string' || typeof password !== 'string') return res.status(400).json({ error: '欄位格式不正確' });
+  if (!/^[a-zA-Z0-9_]+$/.test(username) || username.length > 64) return res.status(400).json({ error: '使用者名稱只能包含英數字和底線' });
+  const invitePwError = security.validatePassword(password, username);
+  if (invitePwError) return res.status(400).json({ error: invitePwError });
 
   try {
     const inv = await new Promise((resolve, reject) => {
@@ -2091,6 +2330,11 @@ app.post('/api/invite/:token/register', async (req, res) => {
       db.get('SELECT id FROM accounts WHERE username = ?', [username], (err, row) => { if (err) reject(err); else resolve(row); });
     });
     if (existing) return res.status(400).json({ error: '使用者名稱已存在' });
+
+    const inviteCollision = await usernameCollisionOf(username);
+    if (inviteCollision) {
+      return res.status(400).json({ error: `使用者名稱與既有帳號「${inviteCollision}」衝突，請改用其他名稱` });
+    }
 
     const passwordHash = await argon2.hash(password);
     const userDbName = `user_${username}.db`;
@@ -2134,7 +2378,7 @@ app.post('/api/invite/:token/register', async (req, res) => {
     res.json({ success: true, message: '帳號建立成功，請使用您的帳號登入。' });
   } catch (error) {
     console.error('邀請註冊錯誤:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -2149,7 +2393,7 @@ app.get('/api/my-team-accounts', requireAuth, (req, res) => {
     'SELECT id, username, full_name, role_level, permission_level, allowed_databases, user_database, status, created_at FROM accounts WHERE status = ? AND role != ?',
     ['active', 'admin'],
     (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) return internalError(res, err);
       const result = (rows || []).filter(r => {
         const dbs = (() => {
           try { return JSON.parse(r.allowed_databases || '[]'); } catch { return []; }
@@ -2180,8 +2424,8 @@ app.post('/api/admin/accounts/reset-password', requireAdmin, async (req, res) =>
     return res.status(400).json({ error: '缺少必要參數' });
   }
   
-  if (typeof newPassword !== 'string' || newPassword.length < 6) {
-    return res.status(400).json({ error: '新密碼長度需至少 6 個字元' });
+  if (typeof newPassword !== 'string') {
+    return res.status(400).json({ error: '新密碼格式不正確' });
   }
   
   try {
@@ -2199,21 +2443,29 @@ app.post('/api/admin/accounts/reset-password', requireAdmin, async (req, res) =>
     if (account.role === 'admin') {
       return res.status(400).json({ error: '無法透過此功能修改管理員帳號密碼' });
     }
+
+    const resetPwError = security.validatePassword(newPassword, account.username);
+    if (resetPwError) {
+      return res.status(400).json({ error: resetPwError });
+    }
     
     const passwordHash = await argon2.hash(newPassword);
     
+    // 重設後的密碼視為臨時密碼：使用者下次登入必須自行修改，且既有登入全部失效
     await new Promise((resolve, reject) => {
-      db.run('UPDATE accounts SET password_hash = ? WHERE id = ?', [passwordHash, accountId], function(err) {
+      db.run('UPDATE accounts SET password_hash = ?, must_change_password = 1 WHERE id = ?', [passwordHash, accountId], function(err) {
         if (err) reject(err);
         else if (this.changes === 0) reject(new Error('更新失敗'));
         else resolve();
       });
     });
+    sessionStore.destroyByUserId(account.id, null);
+    logAudit(req, 'update', 'account', account.id, account.username, null, { event: 'admin_reset_password' });
     
     res.json({ success: true, message: `已更新 ${account.username} 的密碼` });
   } catch (error) {
     console.error('重設密碼失敗:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -2222,23 +2474,41 @@ app.post('/api/admin/accounts/reset-password', requireAdmin, async (req, res) =>
 // 取得 SSO 設定（遮蔽 clientSecret）
 app.get('/api/admin/sso-config', requireAdmin, (req, res) => {
   const cfg = { ...msalConfig };
-  if (cfg.clientSecret) cfg.clientSecret = '••••••••';
+  if (cfg.clientSecret) cfg.clientSecret = SECRET_MASK;
   res.json(cfg);
 });
 
-// 儲存 SSO 設定
+// 儲存 SSO 設定（僅接受已知欄位）
 app.post('/api/admin/sso-config', requireAdmin, async (req, res) => {
   try {
-    const body = req.body;
-    const newConfig = { ...msalConfig, ...body };
-    if (!body.clientSecret || body.clientSecret === '••••••••') {
+    const body = req.body || {};
+    const newConfig = { ...msalConfig };
+    const str = (v, max = 512) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+    if (typeof body.enabled === 'boolean') newConfig.enabled = body.enabled;
+    if (body.clientId !== undefined) newConfig.clientId = str(body.clientId);
+    if (body.tenantId !== undefined) newConfig.tenantId = str(body.tenantId);
+    if (body.redirectUri !== undefined) {
+      const uri = str(body.redirectUri);
+      let ok = false;
+      try {
+        const u = new URL(uri);
+        ok = u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(u.hostname));
+      } catch (e) { ok = false; }
+      if (uri && !ok) return res.status(400).json({ error: 'redirectUri 必須是 https 網址' });
+      newConfig.redirectUri = uri;
+    }
+    if (typeof body.clientSecret === 'string' && body.clientSecret !== '' && body.clientSecret !== SECRET_MASK) {
+      newConfig.clientSecret = body.clientSecret.slice(0, 512);
+    } else {
       newConfig.clientSecret = msalConfig.clientSecret || '';
     }
-    fs.writeFileSync(MSAL_CONFIG_PATH, JSON.stringify(newConfig, null, 2), 'utf8');
+    writeSecretConfig(MSAL_CONFIG_PATH, newConfig);
     loadMsalConfig();
+    logAudit(req, 'update', 'config', null, 'msal_config', null, { enabled: !!newConfig.enabled });
     res.json({ success: true, message: 'SSO 設定已儲存並重新載入', enabled: !!(msalConfig.enabled && msalClient) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('儲存 SSO 設定失敗:', err);
+    res.status(500).json({ error: '儲存 SSO 設定失敗' });
   }
 });
 
@@ -2272,7 +2542,7 @@ app.post('/api/admin/accounts/set-ms-email', requireAdmin, async (req, res) => {
     res.json({ success: true, message: emailVal ? `已綁定 M365 Email: ${emailVal}` : '已清除 M365 Email 綁定' });
   } catch (err) {
     console.error('set-ms-email 失敗:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -2613,10 +2883,11 @@ app.delete('/api/admin/accounts/:id', requireAdmin, async (req, res) => {
     });
 
     console.log(`✓ 帳號已刪除: ID ${id}（資料庫檔案保留）`);
+    sessionStore.destroyByUserId(parseInt(id, 10), null);
     res.json({ success: true, message: '帳號已刪除' });
   } catch (error) {
     console.error('刪除帳號失敗:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -2666,7 +2937,7 @@ function buildPathWithDb(database, id, callback, visited = new Set()) {
 app.get('/api/folders', withUserDatabase, (req, res) => {
   console.log('Hit /api/folders');
   req.userDb.all('SELECT * FROM folders', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -2676,7 +2947,7 @@ app.get('/api/folders/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;
   console.log(`Hit GET /api/folders/${id}`);
   req.userDb.get('SELECT * FROM folders WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!row) return res.status(404).json({ error: 'Not found' });
     res.json(row);
   });
@@ -2686,7 +2957,7 @@ app.post('/api/folders', withUserDatabase, (req, res) => {
   console.log('Hit POST /api/folders', req.body);
   const { name, parent_id } = req.body;
   req.userDb.run('INSERT INTO folders (name, parent_id) VALUES (?, ?)', [name, parent_id || null], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     const folderId = this.lastID;
     buildPathWithDb(req.userDb, folderId, (err, path) => {
       if (err) return res.status(500).json({ error: err });
@@ -2707,7 +2978,7 @@ app.put('/api/folders/:id', withUserDatabase, (req, res) => {
   
   // 先獲取舊值
   userDb.get('SELECT name, parent_id, path FROM folders WHERE id = ?', [id], (err, oldFolder) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!oldFolder) return res.status(404).json({ error: 'Not found' });
     
     // 更新名稱和父資料夾
@@ -2777,7 +3048,7 @@ app.delete('/api/folders', withUserDatabase, (req, res) => {
     if (!force) {
       // 檢查是否有子資料夾
       req.userDb.get('SELECT COUNT(*) as count FROM folders WHERE parent_id = ?', [id], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) return internalError(res, err);
         
         if (row.count > 0) {
           return res.status(400).json({ 
@@ -2845,7 +3116,7 @@ app.delete('/api/folders', withUserDatabase, (req, res) => {
       
       // 開始遞迴刪除
       deleteFolderRecursive(parseInt(id), (err) => {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) return internalError(res, err);
         // 記錄審計日誌
         logAudit(req, 'delete', 'folder', parseInt(id), folder.name, { ...folder, force: true }, null);
         console.log(`✓ Force deleted folder: ${id}`);
@@ -2859,7 +3130,7 @@ app.delete('/api/folders', withUserDatabase, (req, res) => {
 app.get('/api/users', withUserDatabase, (req, res) => {
   console.log('Hit /api/users');
   req.userDb.all('SELECT * FROM users', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -2896,7 +3167,7 @@ app.get('/api/online-users', requireAdmin, (req, res) => {
     (err, rows) => {
       if (err) {
         console.error('獲取在線用戶錯誤:', err);
-        return res.status(500).json({ error: err.message });
+        return internalError(res, err);
       }
       
       res.json({
@@ -3026,8 +3297,8 @@ app.get('/api/system/health', requireAdmin, (req, res) => {
             
             // 檢查資料庫目錄的磁碟空間
             try {
-              const { execSync } = require('child_process');
-              const dfOutput = execSync(`df -h "${DB_DIR}"`, { encoding: 'utf8' });
+              const { execFileSync } = require('child_process');
+              const dfOutput = execFileSync('df', ['-h', DB_DIR], { encoding: 'utf8' });
               const lines = dfOutput.trim().split('\n');
               if (lines.length > 1) {
                 const parts = lines[1].split(/\s+/);
@@ -3060,11 +3331,11 @@ app.get('/api/system/health', requireAdmin, (req, res) => {
       });
     } catch (err) {
       console.error('Health check error:', err);
-      res.status(500).json({ error: err.message });
+      internalError(res, err);
     }
   } catch (err) {
     console.error('Health check error:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 console.log('Registered /api/system/health');
@@ -3095,8 +3366,7 @@ app.post('/api/admin/backup/run', requireAdmin, async (req, res) => {
     console.error('備份腳本搜尋失敗，已嘗試的路徑：', possiblePaths);
     return res.status(404).json({ 
       error: '備份腳本不存在',
-      message: '找不到備份腳本，請確認 backup_databases.sh 是否存在',
-      searchedPaths: possiblePaths
+      message: '找不到備份腳本，請確認 backup_databases.sh 是否存在'
     });
   }
   
@@ -3105,7 +3375,7 @@ app.post('/api/admin/backup/run', requireAdmin, async (req, res) => {
   
   try {
     // 執行備份腳本（非同步執行，不等待完成）
-    exec(`bash "${BACKUP_SCRIPT}"`, { 
+    execFile('bash', [BACKUP_SCRIPT], { 
       cwd: SCRIPT_DIR,  // 在腳本所在目錄執行
       timeout: 300000 // 5 分鐘超時
     }, (error, stdout, stderr) => {
@@ -3116,7 +3386,7 @@ app.post('/api/admin/backup/run', requireAdmin, async (req, res) => {
       
       // 記錄審計日誌
       logAudit(req, 'create', 'backup', null, '手動備份', null, {
-        script: BACKUP_SCRIPT,
+        script: path.basename(BACKUP_SCRIPT),
         stdout: stdout?.substring(0, 500), // 只記錄前 500 字元
         error: error ? error.message : null
       });
@@ -3126,14 +3396,12 @@ app.post('/api/admin/backup/run', requireAdmin, async (req, res) => {
     res.json({ 
       success: true, 
       message: '備份任務已啟動，正在背景執行中...',
-      note: '備份完成後，請重新整理頁面查看最新備份檔案',
-      scriptPath: BACKUP_SCRIPT
+      note: '備份完成後，請重新整理頁面查看最新備份檔案'
     });
   } catch (err) {
     console.error('啟動備份失敗:', err);
     res.status(500).json({ 
-      error: '啟動備份失敗',
-      message: err.message 
+      error: '啟動備份失敗'
     });
   }
 });
@@ -3148,7 +3416,7 @@ app.get('/api/admin/backup/download/:filename', requireAdmin, (req, res) => {
   const resolvedPath = path.resolve(filePath);
   const resolvedBackupRoot = path.resolve(BACKUP_ROOT);
   
-  if (!resolvedPath.startsWith(resolvedBackupRoot)) {
+  if (!resolvedPath.startsWith(resolvedBackupRoot + path.sep)) {
     return res.status(403).json({ error: '無權限存取此檔案' });
   }
   
@@ -3232,16 +3500,26 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: '請提供使用者名稱和密碼' });
   }
   
-  if (password.length < 6) {
-    return res.status(400).json({ error: '密碼長度至少需要 6 個字元' });
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: '欄位格式不正確' });
   }
-  
+
   // 驗證使用者名稱格式（只允許英數字和底線）
-  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+  if (!/^[a-zA-Z0-9_]+$/.test(username) || username.length > 64) {
     return res.status(400).json({ error: '使用者名稱只能包含英數字和底線' });
+  }
+
+  const pwError = security.validatePassword(password, username);
+  if (pwError) {
+    return res.status(400).json({ error: pwError });
   }
   
   try {
+    const collision = await usernameCollisionOf(username);
+    if (collision) {
+      return res.status(400).json({ error: `使用者名稱與既有帳號「${collision}」衝突（兩者互為底線前綴，會造成個人資料庫歸屬混淆），請改用其他名稱` });
+    }
+
     // 檢查使用者是否已存在
     const existingUser = await new Promise((resolve, reject) => {
       db.get('SELECT id FROM accounts WHERE username = ?', [username], (err, row) => {
@@ -3275,7 +3553,7 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
     // 建立帳號（直接啟用，無需審核）
     const accountId = await new Promise((resolve, reject) => {
       db.run(
-        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO accounts (username, password_hash, full_name, role, status, user_database, permission_level, allowed_databases, created_at, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)',
         [username, passwordHash, full_name || null, 'user', 'active', userDbName, finalPermissionLevel, serializedAllowed, nowISO()],
         function(err) {
           if (err) reject(err);
@@ -3301,7 +3579,7 @@ app.post('/api/admin/accounts/create', requireAdmin, async (req, res) => {
     
   } catch (error) {
     console.error('建立帳號錯誤:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 console.log('Registered /api/admin/accounts/create');
@@ -3310,7 +3588,7 @@ app.get('/api/users/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;
   console.log(`Hit GET /api/users/${id}`);
   req.userDb.get('SELECT * FROM users WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!row) return res.status(404).json({ error: 'Not found' });
     res.json(row);
   });
@@ -3323,7 +3601,7 @@ app.post('/api/users', withUserDatabase, (req, res) => {
     'INSERT INTO users (name, email, department, company, title, phone, description, account_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     [name, email, department || null, company || null, title || null, phone || null, description || null, account_key || null],
     function(err) {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) return internalError(res, err);
       const userId = this.lastID;
       logAudit(req, 'create', 'user', userId, name, null, { name, email, department, company, title, phone, description, account_key });
       res.json({ id: userId });
@@ -3337,7 +3615,7 @@ app.put('/api/users/:id', withUserDatabase, (req, res) => {
   console.log('Hit PUT /api/users/' + id, req.body);
 
   req.userDb.get('SELECT name, email, department, company, title, phone, description, account_key FROM users WHERE id = ?', [id], (err, oldUser) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!oldUser) return res.status(404).json({ error: 'Not found' });
 
     req.userDb.run(
@@ -3363,7 +3641,7 @@ app.delete('/api/users', withUserDatabase, (req, res) => {
     LEFT JOIN folders f ON p.folder_id = f.id
     WHERE p.user_id = ?
   `, [id], (err, permissions) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     
     if (permissions && permissions.length > 0) {
       // 有關聯的權限，禁止刪除
@@ -3408,7 +3686,7 @@ app.post('/api/users/:id/copy', withUserDatabase, (req, res) => {
 
   // 1. 取得來源人員資料
   db.get('SELECT * FROM users WHERE id = ?', [sourceId], (err, source) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!source) return res.status(404).json({ error: '來源人員不存在' });
 
     // 2. 建立新人員（name / account_key / description 用新值，其餘照抄）
@@ -3550,7 +3828,7 @@ app.delete('/api/users/batch', withUserDatabase, (req, res) => {
 app.get('/api/groups', withUserDatabase, (req, res) => {
   console.log('Hit /api/groups');
   req.userDb.all('SELECT * FROM groups', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -3560,7 +3838,7 @@ app.get('/api/groups/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;
   console.log(`Hit GET /api/groups/${id}`);
   req.userDb.get('SELECT * FROM groups WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!row) return res.status(404).json({ error: 'Not found' });
     res.json(row);
   });
@@ -3570,7 +3848,7 @@ app.post('/api/groups', withUserDatabase, (req, res) => {
   console.log('Hit POST /api/groups', req.body);
   const { name, description } = req.body;
   req.userDb.run('INSERT INTO groups (name, description) VALUES (?, ?)', [name, description || ''], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     const groupId = this.lastID;
     // 記錄審計日誌
     logAudit(req, 'create', 'group', groupId, name, null, { name, description });
@@ -3585,7 +3863,7 @@ app.put('/api/groups/:id', withUserDatabase, (req, res) => {
 
   // 先獲取舊值
   req.userDb.get('SELECT name, description FROM groups WHERE id = ?', [id], (err, oldGroup) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!oldGroup) return res.status(404).json({ error: 'Not found' });
 
     req.userDb.run('UPDATE groups SET name = ?, description = ? WHERE id = ?', [name, description !== undefined ? description : (oldGroup.description || ''), id], (err2) => {
@@ -3608,7 +3886,7 @@ app.delete('/api/groups', withUserDatabase, (req, res) => {
     LEFT JOIN folders f ON p.folder_id = f.id
     WHERE p.group_id = ?
   `, [id], (err, permissions) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     
     if (permissions && permissions.length > 0) {
       // 有關聯的權限，禁止刪除
@@ -3727,7 +4005,7 @@ app.get('/api/groups/:id/users', withUserDatabase, (req, res) => {
   const { id } = req.params;
   console.log('Hit /api/groups/' + id + '/users');
   req.userDb.all('SELECT u.* FROM users u JOIN group_users gu ON u.id = gu.user_id WHERE gu.group_id = ?', [id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -3737,7 +4015,7 @@ app.get('/api/users/:id/groups', withUserDatabase, (req, res) => {
   const { id } = req.params;
   console.log('Hit /api/users/' + id + '/groups');
   req.userDb.all('SELECT g.* FROM groups g JOIN group_users gu ON g.id = gu.group_id WHERE gu.user_id = ?', [id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -3754,7 +4032,7 @@ app.post('/api/groups/:id/users', withUserDatabase, (req, res) => {
     FROM groups g, users u
     WHERE g.id = ? AND u.id = ?
   `, [parseInt(id), parseInt(user_id)], (err, info) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!info) return res.status(404).json({ error: 'Group or user not found' });
     
     req.userDb.run('INSERT INTO group_users (group_id, user_id) VALUES (?, ?)', [parseInt(id), parseInt(user_id)], (err2) => {
@@ -3787,7 +4065,7 @@ app.delete('/api/groups/:id/users', withUserDatabase, (req, res) => {
     FROM groups g, users u
     WHERE g.id = ? AND u.id = ?
   `, [parseInt(id), parseInt(user_id)], (err, info) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!info) return res.status(404).json({ error: 'Group or user not found' });
     
     req.userDb.run('DELETE FROM group_users WHERE group_id = ? AND user_id = ?', [parseInt(id), parseInt(user_id)], (err2) => {
@@ -3819,7 +4097,7 @@ app.get('/api/groups/:id/permissions', withUserDatabase, (req, res) => {
     WHERE p.group_id = ?
     ORDER BY f.path
   `, [id], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -3831,7 +4109,7 @@ app.post('/api/groups/:id/apply-permissions', withUserDatabase, requireAuth, (re
 
   // 取得群組成員
   db.all('SELECT user_id FROM group_users WHERE group_id = ?', [groupId], (err, members) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (members.length === 0) return res.json({ applied: 0, skipped: 0, message: '群組無成員' });
 
     // 取得群組的資料夾權限
@@ -3943,7 +4221,7 @@ app.get('/api/permissions', withUserDatabase, (req, res) => {
           LEFT JOIN folders f ON p.folder_id = f.id
           LEFT JOIN users u ON p.user_id = u.id
           LEFT JOIN groups g ON p.group_id = g.id`, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -3969,7 +4247,7 @@ app.post('/api/permissions', withUserDatabase, (req, res) => {
   `, [user_id || null, group_id || null, folder_id], (err, info) => {
     if (err) {
       console.error('Get permission info error:', err.message);
-      return res.status(500).json({ error: err.message });
+      return internalError(res, err);
     }
     
     insertPermissionRecord(req.userDb, {
@@ -4016,7 +4294,7 @@ app.delete('/api/permissions', withUserDatabase, (req, res) => {
     LEFT JOIN groups g ON p.group_id = g.id
     WHERE p.id = ?
   `, [id], (err, permission) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!permission) return res.status(404).json({ error: 'Not found' });
     
     // 構建資源名稱
@@ -4242,7 +4520,7 @@ app.post('/api/permission-requests', withUserDatabase, async (req, res) => {
 
     res.json({ batch_id: batchId, ids: insertedIds });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -4278,7 +4556,7 @@ app.get('/api/permission-requests', withUserDatabase, (req, res) => {
   sql += ' ORDER BY r.requested_at DESC';
 
   req.userDb.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     res.json(rows || []);
   });
 });
@@ -4403,7 +4681,7 @@ app.post('/api/permission-requests/:id/approve', requireStaffRole, withUserDatab
       applied_via_group_name: appliedViaGroupName
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -4416,7 +4694,7 @@ app.post('/api/permission-requests/:id/reject', requireStaffRole, withUserDataba
   }
 
   req.userDb.get('SELECT * FROM permission_requests WHERE id = ?', [id], (err, request) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     if (!request) return res.status(404).json({ error: 'Not found' });
     if (request.status !== 'pending') {
       return res.status(400).json({ error: '此申請單已處理過' });
@@ -4595,12 +4873,30 @@ app.get('/api/permission-requests/pending-summary', requireStaffRole, async (req
     res.json({ total, current: req.session.userDatabase || null, byDatabase });
   } catch (error) {
     console.error('pending-summary error:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
 // 清空所有資料（使用 Promise 確保操作完成）
-app.post('/api/clear_all', withUserDatabase, async (req, res) => {
+// 清空前先把整個資料庫以 VACUUM INTO 備份到 backups/pre-clear/（權限 700），只保留最近 20 份
+const PRE_CLEAR_BACKUP_DIR = path.join(__dirname, 'backups', 'pre-clear');
+async function backupBeforeClear(userDb, dbName) {
+  fs.mkdirSync(PRE_CLEAR_BACKUP_DIR, { recursive: true, mode: 0o700 });
+  const safeName = String(dbName).replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5.]/g, '_');
+  const target = path.join(PRE_CLEAR_BACKUP_DIR, `${safeName}.${nowFileStamp()}.bak`);
+  await new Promise((resolve, reject) => {
+    userDb.run(`VACUUM INTO '${target.replace(/'/g, "''")}'`, (err) => (err ? reject(err) : resolve()));
+  });
+  try { fs.chmodSync(target, 0o600); } catch (e) { /* ignore */ }
+  const files = fs.readdirSync(PRE_CLEAR_BACKUP_DIR).filter(f => f.endsWith('.bak')).sort();
+  files.slice(0, Math.max(0, files.length - 20)).forEach(f => {
+    try { fs.unlinkSync(path.join(PRE_CLEAR_BACKUP_DIR, f)); } catch (e) { /* ignore */ }
+  });
+  return target;
+}
+
+// 清空資料庫：僅限內部帳號（管理員／工程師／一般內部帳號），客戶帳號與唯讀帳號不可使用
+app.post('/api/clear_all', requireStaffRole, withUserDatabase, async (req, res) => {
   console.log('Hit /api/clear_all - Clearing all data');
   const { confirm } = req.body;
   
@@ -4610,6 +4906,9 @@ app.post('/api/clear_all', withUserDatabase, async (req, res) => {
   }
   
   try {
+    const backupFile = await backupBeforeClear(req.userDb, req.session.userDatabase);
+    logAudit(req, 'delete', 'database_data', null, req.session.userDatabase, null, { event: 'clear_all', backup: path.basename(backupFile) });
+
     // 依序刪除所有資料（注意外鍵關係）
     const tables = ['permissions', 'group_users', 'groups', 'users', 'folders'];
     
@@ -4641,10 +4940,10 @@ app.post('/api/clear_all', withUserDatabase, async (req, res) => {
     });
     
     console.log(`All data cleared successfully for user: ${req.session.username}`);
-    res.json({ success: true, message: 'All data cleared' });
+    res.json({ success: true, message: 'All data cleared', backup: path.basename(backupFile) });
   } catch (error) {
     console.error('Clear all error:', error);
-    res.status(500).json({ error: 'Failed to clear data: ' + error.message });
+    res.status(500).json({ error: 'Failed to clear data' });
   }
 });
 
@@ -4657,7 +4956,7 @@ app.get('/export_csv', ensureEditorAccess, withUserDatabase, (req, res) => {
           LEFT JOIN users u ON p.user_id = u.id
           LEFT JOIN groups g ON p.group_id = g.id
           ORDER BY p.id`, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     
     // 手動建立 CSV 內容，並加入 UTF-8 BOM
     // 使用標準格式，可直接匯入
@@ -4708,7 +5007,7 @@ app.get('/export_csv', ensureEditorAccess, withUserDatabase, (req, res) => {
 app.get('/export_folders_csv', withUserDatabase, (req, res) => {
   console.log('Hit /export_folders_csv');
   req.userDb.all('SELECT * FROM folders ORDER BY id', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     
     // 手動建立 CSV 內容，並加入 UTF-8 BOM
     const BOM = '\uFEFF';
@@ -4750,7 +5049,7 @@ app.get('/export_folders_csv', withUserDatabase, (req, res) => {
 app.get('/export_users_csv', withUserDatabase, (req, res) => {
   console.log('Hit /export_users_csv');
   req.userDb.all('SELECT * FROM users ORDER BY id', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) return internalError(res, err);
     
     // 手動建立 CSV 內容，並加入 UTF-8 BOM
     const BOM = '\uFEFF';
@@ -4795,7 +5094,34 @@ app.get('/export_users_csv', withUserDatabase, (req, res) => {
 });
 
 // multer 上傳處理（所有需要 file upload 的端點共用）
-const upload = multer({ dest: UPLOAD_DIR });
+// 上傳限制：單檔 10MB、只收 Excel / CSV；無論成功或失敗，回應結束後一律刪除暫存檔
+const UPLOAD_ALLOWED_EXT = new Set(['.xlsx', '.csv']);
+const uploadRaw = multer({
+  dest: UPLOAD_DIR,
+  limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 20 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(Buffer.from(file.originalname || '', 'latin1').toString('utf8')).toLowerCase();
+    if (!UPLOAD_ALLOWED_EXT.has(ext)) return cb(new Error('UNSUPPORTED_FILE_TYPE'));
+    cb(null, true);
+  }
+});
+const upload = {
+  single(field) {
+    const handler = uploadRaw.single(field);
+    return (req, res, next) => {
+      res.on('close', () => {
+        if (req.file && req.file.path) fs.unlink(req.file.path, () => {});
+      });
+      handler(req, res, (err) => {
+        if (!err) return next();
+        if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: '檔案過大，上限 10MB' });
+        if (err.message === 'UNSUPPORTED_FILE_TYPE') return res.status(400).json({ error: '僅支援 .xlsx 或 .csv 檔案' });
+        console.error('Upload error:', err);
+        return res.status(400).json({ error: '檔案上傳失敗' });
+      });
+    };
+  }
+};
 
 // 下載資料夾 Excel 範本（3 sheet，階層欄位格式）
 app.get('/download_folders_template', withUserDatabase, (req, res) => {
@@ -4887,7 +5213,7 @@ app.get('/download_folders_template', withUserDatabase, (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="folders_template.xlsx"');
   wb.xlsx.write(res).then(() => res.end()).catch(err => {
-    if (!res.headersSent) res.status(500).json({ error: err.message });
+    if (!res.headersSent) internalError(res, err);
   });
 });
 
@@ -5001,7 +5327,7 @@ app.post('/import_folders_xlsx', withUserDatabase, upload.single('file'), async 
   } catch (err) {
     console.error('[import_folders_xlsx]', err);
     fs.unlink(req.file.path, () => {});
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -5059,7 +5385,7 @@ app.get('/download_users_template', withUserDatabase, (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="users_template.xlsx"');
   wb.xlsx.write(res).then(() => res.end()).catch(err => {
     console.error('Template gen error:', err);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
+    if (!res.headersSent) internalError(res, err);
   });
 });
 
@@ -5161,7 +5487,7 @@ app.post('/import_users_xlsx', withUserDatabase, upload.single('file'), async (r
   } catch (err) {
     console.error('[import_users_xlsx] error:', err);
     fs.unlink(req.file.path, () => {});
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -5247,7 +5573,7 @@ app.get('/export_groups_csv', withUserDatabase, async (req, res) => {
     });
   } catch (error) {
     console.error('Export groups error:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -5423,7 +5749,7 @@ app.get('/export_full_csv', ensureEditorAccess, withUserDatabase, async (req, re
     });
   } catch (error) {
     console.error('Export full data error:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -6064,7 +6390,7 @@ app.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) => {
         if (fs.existsSync(req.file.path)) {
           fs.unlinkSync(req.file.path);
         }
-        res.status(500).json({ error: error.message });
+        internalError(res, error);
       }
     })
     .on('error', (error) => {
@@ -6258,7 +6584,7 @@ app.post('/import_permission_matrix_xlsx', withUserDatabase, upload.single('file
   } catch (error) {
     console.error('[xlsx import] error:', error);
     if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -6268,7 +6594,7 @@ app.get('/api/import-history', withUserDatabase, (req, res) => {
     'SELECT * FROM import_history ORDER BY imported_at DESC LIMIT 100',
     [],
     (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) return internalError(res, err);
       res.json(rows);
     }
   );
@@ -6281,7 +6607,7 @@ app.get('/api/import-history/:id/details', withUserDatabase, (req, res) => {
     'SELECT * FROM import_history_detail WHERE history_id = ? ORDER BY id ASC',
     [id],
     (err, rows) => {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) return internalError(res, err);
       res.json(rows);
     }
   );
@@ -6297,6 +6623,16 @@ app.get('/login.html', (req, res) => {
       console.error('SendFile login.html error:', err);
       res.status(404).send('login.html not found');
     }
+  });
+});
+
+// 共用主題樣式：與 login.html 相同，同時相容 public/ 與根目錄兩種部署位置（過去只有 public/ 有檔案時才找得到）
+app.get('/megapower-theme.css', (req, res) => {
+  const inPublic = path.join(__dirname, 'public', 'megapower-theme.css');
+  const inRoot   = path.join(__dirname, 'megapower-theme.css');
+  const target   = fs.existsSync(inPublic) ? inPublic : inRoot;
+  res.sendFile(target, (err) => {
+    if (err && !res.headersSent) res.status(404).type('text/plain').send('not found');
   });
 });
 
@@ -6587,7 +6923,7 @@ app.get('/export_excel', withUserDatabase, async (req, res) => {
     
   } catch (error) {
     console.error('Export Excel error:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -6977,7 +7313,7 @@ app.get('/api/databases', requireAuth, (req, res) => {
     try {
       const files = fs.readdirSync(DB_DIR);
       let databases = files
-        .filter(f => f.endsWith('.db') && !f.startsWith('deleted_'))
+        .filter(f => f.endsWith('.db') && !f.startsWith('deleted_') && (isAdmin || !SYSTEM_DB_NAMES.has(f)))
         .map(f => {
           const dbPath = path.join(DB_DIR, f);
           const stats = fs.statSync(dbPath);
@@ -7047,7 +7383,7 @@ app.get('/api/databases', requireAuth, (req, res) => {
       });
     } catch (err) {
       console.error('Failed to list databases:', err);
-      res.status(500).json({ error: err.message });
+      internalError(res, err);
     }
   });
 });
@@ -7074,7 +7410,7 @@ app.post('/api/databases', requireAuth, async (req, res) => {
     // 一般使用者只能創建以 user_{username}_ 開頭的資料庫
     if (!isAdmin) {
       const requiredPrefix = `user_${username}_`;
-      if (!name.startsWith(requiredPrefix)) {
+      if (!name.startsWith(requiredPrefix) || !isDatabaseOwnedBy(name, username)) {
         return res.status(403).json({ 
           error: '權限不足',
           message: `一般使用者只能創建以 "${requiredPrefix}" 開頭的資料庫\n例如：${requiredPrefix}project1.db`
@@ -7147,7 +7483,7 @@ app.post('/api/databases', requireAuth, async (req, res) => {
     res.json({ success: true, message: '資料庫建立成功', name, isAdmin });
   } catch (err) {
     console.error('Failed to create database:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -7176,7 +7512,7 @@ app.post('/api/databases/switch', requireAuth, async (req, res) => {
       // 或者是他們最初註冊時的資料庫 user_{username}.db
       const initialDb = `user_${username}.db`;
 
-      if (!name.startsWith(requiredPrefix) && name !== initialDb) {
+      if (!isDatabaseOwnedBy(name, username)) {
         return res.status(403).json({
           error: '權限不足',
           message: `您只能切換到自己的資料庫（以 "${requiredPrefix}" 開頭或 "${initialDb}"）`
@@ -7241,7 +7577,7 @@ app.post('/api/databases/switch', requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('Failed to switch database:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -7288,7 +7624,7 @@ app.delete('/api/databases', requireAuth, (req, res) => {
     res.json({ message: '資料庫已刪除', name });
   } catch (err) {
     console.error('Failed to delete database:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -7320,12 +7656,16 @@ app.post('/api/databases/copy', requireAuth, (req, res) => {
         return res.status(403).json({ error: '唯讀帳號無法複製資料庫' });
       }
       const requiredPrefix = `user_${username}_`;
-      const defaultName = `user_${username}.db`;
-      if (!(target === defaultName || target.startsWith(requiredPrefix))) {
+      if (!isDatabaseOwnedBy(target, username)) {
         return res.status(403).json({ 
           error: '權限不足',
           message: `一般使用者複製時，目標資料庫名稱須以 "${requiredPrefix}" 開頭`
         });
+      }
+      // 系統資料庫（含全部帳號與密碼雜湊）絕不可被非管理員複製。
+      // 複製他人的（非系統）資料庫供參考是既有設計，僅限內部帳號，客戶帳號已在上方被擋下。
+      if (SYSTEM_DB_NAMES.has(source)) {
+        return res.status(403).json({ error: '權限不足', message: '無法複製系統資料庫' });
       }
     }
     
@@ -7347,7 +7687,7 @@ app.post('/api/databases/copy', requireAuth, (req, res) => {
     res.json({ message: '資料庫已複製', source, target });
   } catch (err) {
     console.error('Failed to copy database:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -7384,8 +7724,7 @@ app.post('/api/databases/rename', requireAuth, (req, res) => {
         return res.status(403).json({ error: '只能重新命名自己的資料庫' });
       }
       const requiredPrefix = `user_${username}_`;
-      const defaultName = `user_${username}.db`;
-      if (!(newName === defaultName || newName.startsWith(requiredPrefix))) {
+      if (!isDatabaseOwnedBy(newName, username)) {
         return res.status(403).json({ error: `新名稱必須以 ${requiredPrefix} 開頭` });
       }
     }
@@ -7424,7 +7763,7 @@ app.post('/api/databases/rename', requireAuth, (req, res) => {
     res.json({ message: '資料庫已重新命名', oldName, newName });
   } catch (err) {
     console.error('Failed to rename database:', err);
-    res.status(500).json({ error: err.message });
+    internalError(res, err);
   }
 });
 
@@ -7443,7 +7782,7 @@ app.patch('/api/admin/databases/:name', requireAdmin, (req, res) => {
      created_by ?? null, created_by ?? null,
      description ?? null, description ?? null],
     function(err) {
-      if (err) return res.status(500).json({ error: err.message });
+      if (err) return internalError(res, err);
       res.json({ success: true, name, display_name, created_by, description });
     }
   );
@@ -7647,7 +7986,7 @@ app.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
     
   } catch (error) {
     console.error('自動生成群組時發生錯誤:', error);
-    res.status(500).json({ error: error.message });
+    internalError(res, error);
   }
 });
 
@@ -7666,7 +8005,7 @@ process.on('unhandledRejection', (reason, p) => {
   console.error('[unhandledRejection]', reason, p);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, HOST, () => {
   console.log(`Server on ${PORT}`);
 });
 
