@@ -61,13 +61,17 @@ echo "DMS 部署驗證 → $URL"
 # ---------------------------------------------------------------- 1. 連線與 TLS
 section "1. HTTPS 與 TLS"
 if [ "$IS_HTTPS" = 1 ]; then
-  HTTP_URL="http://$HOST_PART"
-  code="$(curl -sS $INSECURE -m 15 -o /dev/null -w '%{http_code} %{redirect_url}' "$HTTP_URL/" 2>/dev/null || echo "000 ")"
-  case "$code" in
-    30[1278]*https://*) pass "HTTP 自動轉址到 HTTPS（$code）" ;;
-    000*) warn "無法連線 $HTTP_URL（80 埠未開？）" "若刻意不開 80 埠可忽略" ;;
-    *) fail "HTTP 沒有轉址到 HTTPS（$code）" "nginx 加 server { listen 80; return 301 https://\$host\$request_uri; }" ;;
-  esac
+  if echo "$HOST_PART" | grep -q ":[0-9]*$"; then
+    warn "網址含非標準埠（$HOST_PART），略過 HTTP→HTTPS 轉址檢查" "正式環境請用標準的 443"
+  else
+    HTTP_URL="http://$HOST_PART"
+    code="$(curl -sS $INSECURE -m 15 -o /dev/null -w '%{http_code} %{redirect_url}' "$HTTP_URL/" 2>/dev/null || echo "000 ")"
+    case "$code" in
+      30[1278]*https://*) pass "HTTP 自動轉址到 HTTPS（$code）" ;;
+      000*) warn "無法連線 $HTTP_URL（80 埠未開？）" "若刻意不開 80 埠可忽略" ;;
+      *) fail "HTTP 沒有轉址到 HTTPS（$code）" "nginx 加 server { listen 80; return 301 https://\$host\$request_uri; }" ;;
+    esac
+  fi
   if curl -sS $INSECURE -m 10 --tlsv1.1 --tls-max 1.1 -o /dev/null "$URL/" 2>/dev/null; then
     fail "伺服器仍接受 TLS 1.1 以下" "ssl_protocols TLSv1.2 TLSv1.3;"
   else
@@ -138,7 +142,7 @@ req POST /api/auth/login -H 'Content-Type: application/json' -H 'Origin: https:/
 req POST /api/auth/login -H 'Content-Type: application/json' -H "Origin: $URL" -d "$BADBODY"
 case "$STATUS" in
   401) pass "同站 Origin 正常通過 Origin 檢查（帳密錯誤回 401）——代表 nginx 有正確轉送 Host" ;;
-  403) fail "同站 Origin 被當成跨站拒絕" "nginx 必須 proxy_set_header Host \$host;（或設定 ALLOWED_ORIGINS）；日誌會有 [CSRF] 拒絕來源" ;;
+  403) fail "同站 Origin 被當成跨站拒絕" "nginx 必須 proxy_set_header Host \$http_host;（用 \$host 會丟掉非標準埠的埠號；或設定 ALLOWED_ORIGINS）；日誌會有 [CSRF] 拒絕來源" ;;
   429) warn "被限速（429），無法判斷 Host 轉送" "稍後再執行" ;;
   *) fail "同站 Origin 回應 $STATUS（預期 401）" ;;
 esac

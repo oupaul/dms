@@ -111,7 +111,7 @@ sudo journalctl -u dms-dev -n 40 --no-pager
 
    | 標頭 | 缺了會怎樣 |
    |---|---|
-   | `Host $host` | 所有寫入請求被 Origin 檢查擋成 403（日誌：`[CSRF] 拒絕來源`） |
+   | `Host $http_host` | 所有寫入請求被 Origin 檢查擋成 403（日誌：`[CSRF] 拒絕來源`）。對外網址是標準的 80／443 時 `$host` 也可以；**非標準埠（如 8443）一定要用 `$http_host`**，因為 `$host` 會丟掉埠號、與 Origin 對不上 |
    | `X-Forwarded-For $remote_addr` | 登入限速把所有人算成同一個 IP，一人被鎖全員被鎖 |
    | `X-Forwarded-Proto $scheme` | Cookie 是 Secure，應用程式以為是 http → **無法登入** |
 3. `client_max_body_size` 要 ≥ 12m（應用程式上傳上限 10MB）。
@@ -319,6 +319,13 @@ sudo systemctl start dms-dev
 2. 範例 nginx 登入限速 10r/m 太緊（腳本自己的測試就會把額度用完）→ 改為 30r/m、burst 10
 3. `/opt/backups` 需事先建立；備份檔原本是 644（任何本機使用者可讀帳號與密碼雜湊）→ `umask 027`，並在 `check-host.sh` 加檢查
 4. `verify-deployment.sh` 加 `--insecure`，並把「登入流程」排在「限速」之前，避免被限速影響
+
+**後續以 Mac 上的 nginx 1.31（Homebrew，前景執行）取代 SSH 通道再測一次：**
+- 範例 nginx 設定（只改 IP／埠／憑證路徑）可以直接載入，`verify-deployment.sh` 41 項通過、0 失敗
+- 抓到：**Host 若用 `$host`，在非標準埠會被 Origin 檢查擋掉**（Origin 帶 `:8443`、Host 沒有）→ 範例改用 `$http_host`，驗證腳本與日誌提示同步更新
+- 偽造 `X-Forwarded-For: 6.6.6.6` 登入：不論用範例的 `$remote_addr` 或正式環境常見的 `$proxy_add_x_forwarded_for`，dms 記錄到的都是真實來源（稽核日誌 IP 正確）
+- 13MB 上傳由 nginx 回 413
+- macOS 注意：背景化（daemon）的 nginx 會連不到區網 VM（`No route to host`，本地網路權限），要用前景模式（`daemon off`）從終端機啟動
 
 **環境限制（不是程式問題）：**
 - VirtualBuddy 預設 NAT 下，**兩台 VM 之間無法互連**（彼此 ARP 解析失敗，只有 Mac 能連到兩台），因此本次以 Mac 的 SSH 通道（`ssh -R`）當中繼，
