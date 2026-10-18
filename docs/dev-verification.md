@@ -54,6 +54,9 @@ npm install --omit=dev          # nodemailer 升到 10.x，需重新安裝
       `sudo -u <service user> test -w /opt/dms-dev && echo OK`
 - [ ] 舊主機（dms-dev 原本沒有 `.session_secret`）：**不需要手動建立**，首次啟動會自動產生（權限 600）。
 - [ ] 既有的 `admin` 帳號與資料不會被改動；不會產生新的初始密碼。
+- [ ] 後台「手動備份」要用的 `/opt/backups` 必須**事先建立且服務帳號可寫**（服務帳號通常不能在 `/opt` 底下建目錄）：
+      `sudo install -d -o <service user> -g <service user> -m 750 /opt/backups`
+      新備份檔為 640（`backup_databases.sh` 已加 `umask 027`）；排程（cron）與網頁備份請用同一個帳號，否則對方讀不到。
 
 ---
 
@@ -112,6 +115,7 @@ sudo journalctl -u dms-dev -n 40 --no-pager
    | `X-Forwarded-For $remote_addr` | 登入限速把所有人算成同一個 IP，一人被鎖全員被鎖 |
    | `X-Forwarded-Proto $scheme` | Cookie 是 Secure，應用程式以為是 http → **無法登入** |
 3. `client_max_body_size` 要 ≥ 12m（應用程式上傳上限 10MB）。
+4. Ubuntu 22.04／24.04 的 nginx（1.18／1.24）不認得獨立的 `http2 on;`（會 `unknown directive`），範例檔已改為 `listen 443 ssl http2;`。
 
 ```bash
 sudo nginx -t && sudo systemctl reload nginx
@@ -160,6 +164,7 @@ scripts/verify-deployment.sh \
 **同站 Origin 通過（驗證 nginx 有轉送 Host）**、登入限速（429 + Retry-After）、
 **繞過 nginx 直連被擋**、Cookie 旗標、登入／登出與登出後 session 失效。
 
+> 自簽憑證的測試環境加上 `--insecure`（略過憑證驗證，正式環境請勿使用）。
 > 限速測試會累計你來源 IP 的失敗次數（上限 30 次／15 分鐘），15 分鐘內請勿重複執行。
 > 管理員若還在「必須改密碼」狀態，第 8 段會提示先手動改密碼。
 > 兩支腳本的 Linux 專屬部分（systemctl、ufw、journalctl）尚未在實機跑過，第一次執行請對照輸出人工確認。
@@ -288,3 +293,35 @@ sudo systemctl start dms-dev
 
 通過後：push 分支 → 開 PR 到 `main` → 合併 → dms-prod 先備份、確認 `git status` 乾淨與 `databases/` 未被追蹤，
 再依第 2–6 節對 dms-prod 重複一次（**prod 的 PROXY_ALLOWLIST 要填 prod 的 nginx IP**）。
+
+
+---
+
+## 附錄：Ubuntu VM（VirtualBuddy）實測記錄 — 2026-10-18
+
+環境：兩台 Ubuntu 24.04.5 arm64（dev01 = 應用程式、nginx01 = nginx 1.24），Node 22.23.3（nodejs.org 官方 tarball，已驗證 SHA256）。
+
+**已在實機驗證通過：**
+- systemd 服務（`User=dms`）啟動；`PROXY_ALLOWLIST` 生效；`.session_secret`（600）、`sessions/`（700）、`sessions.sqlite`（600）自動建立
+- 初始密碼檔機制：首次啟動建立 admin 並刪除 `.initial_admin_password`；首次登入強制改密碼
+- nginx（自簽 TLS、HTTP→HTTPS、安全標頭、HSTS、Secure Cookie）→ 應用程式全程正常；`Host` 轉送正確（同站 Origin 通過、跨站被拒）
+- 應用程式自身的登入鎖定（429 + `Retry-After: 900`）
+- 重啟服務後 session 仍有效（SQLite session store）
+- 上傳：13MB → nginx 413；11MB → 應用程式 413；`.txt` → 400；`uploads/` 無殘留
+- 手動備份在 systemd 沙箱（`NoNewPrivileges`、`ProtectSystem=full`、`ProtectHome`、`PrivateTmp`）下可正常運作
+- 直連應用埠：白名單層（403）與 ufw 層（連線被丟棄）各自都會擋下
+- `npm test` 在 Ubuntu arm64 / Node 22 上全數通過
+- `check-host.sh`、`verify-deployment.sh` 的 Linux 專屬檢查實際跑過，行為符合預期
+
+**實測中發現並已修正：**
+1. 範例 nginx 設定的 `http2 on;` 在 nginx 1.24 無法載入 → 改用 `listen 443 ssl http2;`
+2. 範例 nginx 登入限速 10r/m 太緊（腳本自己的測試就會把額度用完）→ 改為 30r/m、burst 10
+3. `/opt/backups` 需事先建立；備份檔原本是 644（任何本機使用者可讀帳號與密碼雜湊）→ `umask 027`，並在 `check-host.sh` 加檢查
+4. `verify-deployment.sh` 加 `--insecure`，並把「登入流程」排在「限速」之前，避免被限速影響
+
+**環境限制（不是程式問題）：**
+- VirtualBuddy 預設 NAT 下，**兩台 VM 之間無法互連**（彼此 ARP 解析失敗，只有 Mac 能連到兩台），因此本次以 Mac 的 SSH 通道（`ssh -R`）當中繼，
+  應用程式看到的來源 IP 是 Mac（192.168.64.1）而不是 nginx VM。要測「真正跨主機」請把兩台 VM 的網路改為 Bridge。
+- VM 內 Node 的 HTTPS 連線到 npm registry 常被重置（curl 正常），所以 `npm ci` 失敗；本次改在 Mac 安裝純 JS 相依後送入，再於 VM 內編譯 sqlite3
+  （`npm_config_nodedir=/usr/local npm rebuild sqlite3`）。`npm audit` 在 VM 內因此無法執行。
+- 尚未實測：M365 SSO、Email 寄送、瀏覽器端完整功能走查（第 7 節）。

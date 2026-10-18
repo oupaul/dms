@@ -133,6 +133,13 @@ check_perm "$DIR/msal_config.json" "600 400" "msal_config.json"
 check_perm "$DIR/sessions" "700" "sessions/ 目錄"
 check_perm "$DIR/sessions/sessions.sqlite" "600" "sessions.sqlite"
 check_perm "$DIR/backups" "700 750 755 775" "backups/ 目錄"
+if [ -d /opt/backups ]; then
+  bp="$(perm /opt/backups)"
+  other="${bp: -1}"
+  [ "$other" = 0 ] && pass "/opt/backups 權限 $bp（其他使用者不可讀）" || warn "/opt/backups 權限 $bp，其他使用者可讀取備份（含帳號與密碼雜湊）" "chmod 750 /opt/backups；舊備份檔 chmod 640 /opt/backups/*.tar.gz"
+  loose="$(find /opt/backups -maxdepth 1 -name '*.tar.gz' -perm -004 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$loose" = 0 ] && pass "/opt/backups 內沒有其他人可讀的備份檔" || warn "有 $loose 個備份檔其他使用者可讀" "chmod 640 /opt/backups/*.tar.gz"
+fi
 [ -e "$DIR/.initial_admin_password" ] && fail "殘留 .initial_admin_password" "管理員帳號建立後應已刪除；確認已登入並改密碼後 rm 此檔" || pass "沒有殘留 .initial_admin_password"
 [ -f "$DIR/.session_secret" ] && [ "$(wc -c < "$DIR/.session_secret" | tr -d ' ')" -ge 32 ] && pass ".session_secret 長度足夠" || warn ".session_secret 不存在或過短" "沒設環境變數時，服務啟動會自動產生"
 if [ -n "$SVC_USER" ] && [ "$(id -u)" -eq 0 ] && have sudo; then

@@ -9,6 +9,7 @@
 #   scripts/verify-deployment.sh --url https://dms-dev.example.com \
 #       [--app http://<應用主機IP>:<PORT>]            # 確認「繞過 nginx 直連」會被擋
 #       [--admin-user admin --admin-pass-file ~/.dms-dev-pass]   # 可選：登入流程檢查
+#       [--insecure]                                  # 自簽憑證的測試環境：不驗證憑證（正式環境請勿使用）
 #
 # 注意：
 #   - 會用隨機帳號送出數次錯誤登入以驗證限速；這會累計該來源 IP 的失敗次數（上限 30 次／15 分鐘），
@@ -18,13 +19,14 @@
 # ============================================================================
 set -u
 
-URL=""; APP_URL=""; ADMIN_USER=""; ADMIN_PASS_FILE=""
+URL=""; APP_URL=""; ADMIN_USER=""; ADMIN_PASS_FILE=""; INSECURE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) URL="${2%/}"; shift 2 ;;
     --app) APP_URL="${2%/}"; shift 2 ;;
     --admin-user) ADMIN_USER="$2"; shift 2 ;;
     --admin-pass-file) ADMIN_PASS_FILE="$2"; shift 2 ;;
+    --insecure) INSECURE="-k"; shift ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "未知參數：$1"; exit 2 ;;
   esac
@@ -46,7 +48,7 @@ HOST_PART="${URL#*://}"; HOST_PART="${HOST_PART%%/*}"
 STATUS=""
 req() {
   local method="$1" path="$2"; shift 2
-  STATUS="$(curl -sS -m 20 -X "$method" -o "$TMP/body" -D "$TMP/headers" -w '%{http_code}' "$@" "$URL$path" 2>"$TMP/curl_err" || true)"
+  STATUS="$(curl -sS $INSECURE -m 20 -X "$method" -o "$TMP/body" -D "$TMP/headers" -w '%{http_code}' "$@" "$URL$path" 2>"$TMP/curl_err" || true)"
   [ -z "$STATUS" ] && STATUS="000"
 }
 hdr() { grep -i "^$1:" "$TMP/headers" | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'; }
@@ -60,18 +62,20 @@ echo "DMS 部署驗證 → $URL"
 section "1. HTTPS 與 TLS"
 if [ "$IS_HTTPS" = 1 ]; then
   HTTP_URL="http://$HOST_PART"
-  code="$(curl -sS -m 15 -o /dev/null -w '%{http_code} %{redirect_url}' "$HTTP_URL/" 2>/dev/null || echo "000 ")"
+  code="$(curl -sS $INSECURE -m 15 -o /dev/null -w '%{http_code} %{redirect_url}' "$HTTP_URL/" 2>/dev/null || echo "000 ")"
   case "$code" in
     30[1278]*https://*) pass "HTTP 自動轉址到 HTTPS（$code）" ;;
     000*) warn "無法連線 $HTTP_URL（80 埠未開？）" "若刻意不開 80 埠可忽略" ;;
     *) fail "HTTP 沒有轉址到 HTTPS（$code）" "nginx 加 server { listen 80; return 301 https://\$host\$request_uri; }" ;;
   esac
-  if curl -sS -m 10 --tlsv1.1 --tls-max 1.1 -o /dev/null "$URL/" 2>/dev/null; then
+  if curl -sS $INSECURE -m 10 --tlsv1.1 --tls-max 1.1 -o /dev/null "$URL/" 2>/dev/null; then
     fail "伺服器仍接受 TLS 1.1 以下" "ssl_protocols TLSv1.2 TLSv1.3;"
   else
     pass "不接受 TLS 1.1 以下"
   fi
-  if curl -sS -m 10 -o /dev/null "$URL/" 2>"$TMP/tls_err"; then
+  if [ -n "$INSECURE" ]; then
+    warn "已指定 --insecure，略過憑證驗證" "僅限自簽憑證的測試環境"
+  elif curl -sS -m 10 -o /dev/null "$URL/" 2>"$TMP/tls_err"; then
     pass "憑證驗證通過"
   else
     warn "憑證驗證失敗：$(head -c 120 "$TMP/tls_err")" "內部自簽憑證可忽略；正式環境需有效憑證"
@@ -139,42 +143,9 @@ case "$STATUS" in
   *) fail "同站 Origin 回應 $STATUS（預期 401）" ;;
 esac
 
-# ---------------------------------------------------------------- 6. 登入限速
-section "6. 登入失敗限速"
-rnd="verify$RANDOM$RANDOM"; BADBODY="$(json_login "$rnd" 'Wrong-Pass-1!')"
-first=""; got429=0; n=0
-while [ $n -lt 12 ]; do
-  n=$((n+1))
-  req POST /api/auth/login -H 'Content-Type: application/json' -H "Origin: $URL" -d "$BADBODY"
-  [ -z "$first" ] && first="$STATUS"
-  if [ "$STATUS" = 429 ]; then got429=$n; break; fi
-done
-[ "$first" = 401 ] && pass "第 1 次錯誤登入回 401" || fail "第 1 次錯誤登入回 $first（預期 401）"
-if [ "$got429" -ge 4 ] && [ "$got429" -le 8 ]; then
-  pass "第 $got429 次失敗後被鎖定（429）"
-  ra="$(hdr retry-after)"; [ -n "$ra" ] && pass "回應帶 Retry-After: $ra" || warn "429 沒有 Retry-After"
-elif [ "$got429" -gt 0 ]; then
-  warn "第 $got429 次才 429（預期約第 6 次）" "可能被 nginx 限速或計數受其他請求影響"
-else
-  fail "連續 12 次錯誤登入都沒被限速"
-fi
-
-# ---------------------------------------------------------------- 7. 直連應用埠
-section "7. 繞過 nginx 直連應用埠"
-if [ -n "$APP_URL" ]; then
-  code="$(curl -sS -m 8 -o /dev/null -w '%{http_code}' "$APP_URL/login.html" 2>/dev/null || true)"
-  case "$code" in
-    403) pass "直連應用埠被拒（403，PROXY_ALLOWLIST 生效）" ;;
-    000|"") pass "直連應用埠連不上（防火牆已擋）" ;;
-    *) fail "直連應用埠回應 $code" "設定 PROXY_ALLOWLIST=<nginx IP>，並以 ufw 只允許 nginx 主機連入" ;;
-  esac
-else
-  warn "未指定 --app，略過直連檢查" "建議加上 --app http://<應用主機IP>:<PORT>，並在「非 nginx」的機器上執行"
-fi
-
-# ---------------------------------------------------------------- 8. 登入流程（可選）
+# ---------------------------------------------------------------- 6. 登入流程（可選）
 if [ -n "$ADMIN_USER" ] && [ -n "$ADMIN_PASS_FILE" ]; then
-  section "8. 登入流程與 Cookie（使用 $ADMIN_USER）"
+  section "6. 登入流程與 Cookie（使用 $ADMIN_USER）"
   if [ ! -r "$ADMIN_PASS_FILE" ]; then
     fail "讀不到密碼檔 $ADMIN_PASS_FILE"
   else
@@ -213,6 +184,44 @@ if [ -n "$ADMIN_USER" ] && [ -n "$ADMIN_PASS_FILE" ]; then
       fail "登入失敗（$STATUS）：$(head -c 120 "$TMP/body")"
     fi
   fi
+fi
+
+# ---------------------------------------------------------------- 7. 登入限速
+section "7. 登入失敗限速"
+rnd="verify$RANDOM$RANDOM"; BADBODY="$(json_login "$rnd" 'Wrong-Pass-1!')"
+first=""; got429=0; n=0
+while [ $n -lt 12 ]; do
+  n=$((n+1))
+  req POST /api/auth/login -H 'Content-Type: application/json' -H "Origin: $URL" -d "$BADBODY"
+  [ -z "$first" ] && first="$STATUS"
+  if [ "$STATUS" = 429 ]; then got429=$n; break; fi
+done
+[ "$first" = 401 ] && pass "第 1 次錯誤登入回 401" || fail "第 1 次錯誤登入回 $first（預期 401）"
+if [ "$got429" -ge 4 ] && [ "$got429" -le 8 ]; then
+  if grep -q "<html" "$TMP/body" 2>/dev/null; then
+    pass "第 $got429 次失敗後被 nginx 限速擋下（429）"
+    warn "此次 429 來自 nginx（limit_req），未觀察到應用程式自身的 429" "應用程式限速已有自動化測試；若要實測，暫時調高 nginx 的 dms_login 速率後重跑"
+  else
+    pass "第 $got429 次失敗後被應用程式鎖定（429）"
+    ra="$(hdr retry-after)"; [ -n "$ra" ] && pass "回應帶 Retry-After: $ra" || warn "429 沒有 Retry-After"
+  fi
+elif [ "$got429" -gt 0 ]; then
+  warn "第 $got429 次才 429（預期約第 6 次）" "可能被 nginx 限速或計數受其他請求影響"
+else
+  fail "連續 12 次錯誤登入都沒被限速"
+fi
+
+# ---------------------------------------------------------------- 8. 直連應用埠
+section "8. 繞過 nginx 直連應用埠"
+if [ -n "$APP_URL" ]; then
+  code="$(curl -sS $INSECURE -m 8 -o /dev/null -w '%{http_code}' "$APP_URL/login.html" 2>/dev/null || true)"
+  case "$code" in
+    403) pass "直連應用埠被拒（403，PROXY_ALLOWLIST 生效）" ;;
+    000|"") pass "直連應用埠連不上（防火牆已擋）" ;;
+    *) fail "直連應用埠回應 $code" "設定 PROXY_ALLOWLIST=<nginx IP>，並以 ufw 只允許 nginx 主機連入" ;;
+  esac
+else
+  warn "未指定 --app，略過直連檢查" "建議加上 --app http://<應用主機IP>:<PORT>，並在「非 nginx」的機器上執行"
 fi
 
 echo
