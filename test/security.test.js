@@ -160,7 +160,8 @@ function makeClient(base, ip = '203.0.113.10') {
     put: (u, json, o) => request('PUT', u, { json, ...o }),
     del: (u, json, o) => request('DELETE', u, { json, ...o }),
     raw: request,
-    sid: () => cookie
+    sid: () => cookie,
+    cookie: () => cookie
   };
 }
 
@@ -503,4 +504,88 @@ test('整合：未設定 SESSION_SECRET 時產生主機專屬密鑰檔（權限 
   assert.equal(fs.statSync(file).mode & 0o077, 0);
   assert.ok(fs.readFileSync(file, 'utf8').trim().length >= 32);
   assert.ok(!fs.readFileSync(path.join(srv.dir, 'app.js'), 'utf8').includes('your-secret-key-change-this'));
+});
+
+test('整合：資料夾不會重複（手動新增 409、重複匯入 CSV／xlsx 重用既有資料夾）', async (t) => {
+  const NM = process.env.DMS_TEST_NODE_MODULES || path.join(ROOT, 'node_modules');
+  const ExcelJS = require(path.join(NM, 'exceljs'));
+  const srv = await startServer();
+  t.after(() => srv.stop());
+
+  const admin = makeClient(srv.base, '192.0.2.80');
+  assert.equal((await admin.post('/api/auth/login', { username: 'admin', password: INITIAL_PASSWORD })).status, 200);
+  assert.equal((await admin.post('/api/auth/change-password', { currentPassword: INITIAL_PASSWORD, newPassword: NEW_ADMIN_PASSWORD })).status, 200);
+
+  const count = async () => (await admin.get('/api/folders')).data.length;
+  const paths = async () => (await admin.get('/api/folders')).data.map(f => f.path).sort();
+
+  await t.test('手動新增：同一父層同名回 409，不同父層同名可以', async () => {
+    const a = await admin.post('/api/folders', { name: 'A', parent_id: null });
+    assert.equal(a.status, 200);
+    const dupRoot = await admin.post('/api/folders', { name: 'A', parent_id: null });
+    assert.equal(dupRoot.status, 409);
+    assert.match(dupRoot.data.error, /已有名稱相同/);
+    const b = await admin.post('/api/folders', { name: 'B', parent_id: a.data.id });
+    assert.equal(b.status, 200);
+    assert.equal((await admin.post('/api/folders', { name: 'B', parent_id: a.data.id })).status, 409);
+    // 不同父層可以同名
+    const other = await admin.post('/api/folders', { name: 'Other', parent_id: null });
+    assert.equal((await admin.post('/api/folders', { name: 'B', parent_id: other.data.id })).status, 200);
+    assert.equal(await count(), 4);
+  });
+
+  await t.test('改名／搬移到同一父層已有同名資料夾 → 409', async () => {
+    const all = (await admin.get('/api/folders')).data;
+    const otherB = all.find(f => f.path === '/Other/B');
+    const rootA = all.find(f => f.path === '/A');
+    // 把 /Other/B 搬到 /A 底下，而 /A/B 已存在
+    const r = await admin.put(`/api/folders/${otherB.id}`, { name: 'B', parent_id: rootA.id });
+    assert.equal(r.status, 409);
+    // 改名成同層既有名稱
+    const aB = all.find(f => f.path === '/A/B');
+    await admin.post('/api/folders', { name: 'C', parent_id: rootA.id });
+    const c = (await admin.get('/api/folders')).data.find(f => f.path === '/A/C');
+    assert.equal((await admin.put(`/api/folders/${c.id}`, { name: 'B', parent_id: rootA.id })).status, 409);
+    // 原地存檔（名稱不變）不應被當成衝突
+    assert.equal((await admin.put(`/api/folders/${aB.id}`, { name: 'B', parent_id: rootA.id })).status, 200);
+  });
+
+  await t.test('匯出完整 CSV 再匯入：資料夾數量不變', async () => {
+    const before = await paths();
+    const res = await fetch(`${srv.base}/export_full_csv`, { headers: { Cookie: admin.cookie(), 'X-Forwarded-Proto': 'https' } });
+    assert.equal(res.status, 200);
+    const csvBlob = await res.blob();
+    for (let i = 0; i < 2; i++) {
+      const form = new FormData();
+      form.append('file', csvBlob, 'roundtrip.csv');
+      const r = await admin.raw('POST', '/import_csv', { body: form });
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+    }
+    assert.deepEqual(await paths(), before, '重複匯入不應產生重複資料夾');
+  });
+
+  await t.test('xlsx 階層匯入兩次：只建立一次', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('填寫清單');
+    ws.addRow(['第一層', '第二層', '第三層']);
+    ws.addRow(['說明', '說明', '說明']);
+    ws.addRow(['Share', '管理部', '財務組']);
+    ws.addRow(['Share', '管理部', '人事組']);
+    const buf = Buffer.from(await wb.xlsx.writeBuffer());
+    const upload = async () => {
+      const form = new FormData();
+      form.append('file', new Blob([buf]), 'folders.xlsx');
+      return admin.raw('POST', '/import_folders_xlsx', { body: form });
+    };
+    const first = await upload();
+    assert.equal(first.status, 200, JSON.stringify(first.data));
+    assert.equal(first.data.stats.inserted, 4); // Share、管理部、財務組、人事組
+    const afterFirst = await paths();
+    const second = await upload();
+    assert.equal(second.status, 200);
+    assert.equal(second.data.stats.inserted, 0);
+    assert.equal(second.data.stats.skipped, 4);
+    assert.deepEqual(await paths(), afterFirst);
+    assert.ok(afterFirst.includes('/Share/管理部/財務組'));
+  });
 });

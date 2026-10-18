@@ -6,7 +6,7 @@ const express = require('express');
 const { internalError } = require('../lib/http');
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
-const { buildPathWithDb } = require('../services/folders');
+const { buildPathWithDb, findFolderByNameAndParent, DUPLICATE_FOLDER_ERROR } = require('../services/folders');
 
 const router = express.Router();
 
@@ -31,9 +31,20 @@ router.get('/api/folders/:id', withUserDatabase, (req, res) => {
   });
 });
 
-router.post('/api/folders', withUserDatabase, (req, res) => {
+router.post('/api/folders', withUserDatabase, async (req, res) => {
   console.log('Hit POST /api/folders', req.body);
   const { name, parent_id } = req.body;
+  if (typeof name !== 'string' || name.trim() === '') {
+    return res.status(400).json({ error: '資料夾名稱不可為空' });
+  }
+  try {
+    const existing = await findFolderByNameAndParent(req.userDb, name, parent_id || null);
+    if (existing) {
+      return res.status(409).json({ error: DUPLICATE_FOLDER_ERROR, id: existing.id, path: existing.path });
+    }
+  } catch (errCheck) {
+    return internalError(res, errCheck);
+  }
   req.userDb.run('INSERT INTO folders (name, parent_id) VALUES (?, ?)', [name, parent_id || null], function(err) {
     if (err) return internalError(res, err);
     const folderId = this.lastID;
@@ -85,9 +96,17 @@ router.put('/api/folders/:id', withUserDatabase, (req, res) => {
       userDb.get(CYCLE_CHECK_SQL, [newParentId, folderId], (errCheck, row) => callback(errCheck, !!row));
     };
     
-    checkCycle((errCheck, wouldCycle) => {
+    checkCycle(async (errCheck, wouldCycle) => {
       if (errCheck) return internalError(res, errCheck);
       if (wouldCycle) return res.status(400).json({ error: CYCLE_ERROR });
+      
+      // 改名／搬移後，同一父層底下不可出現同名資料夾（排除自己）
+      try {
+        const clash = await findFolderByNameAndParent(userDb, name, newParentId, folderId);
+        if (clash) return res.status(409).json({ error: DUPLICATE_FOLDER_ERROR, id: clash.id, path: clash.path });
+      } catch (errClash) {
+        return internalError(res, errClash);
+      }
       
       // 更新名稱和父資料夾。WHERE 再檢查一次循環，避免檢查與寫入之間被並行請求改動而形成循環
       userDb.run(

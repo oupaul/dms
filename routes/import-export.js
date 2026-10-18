@@ -11,7 +11,7 @@ const { nowFileStamp, todayString } = require('../lib/time');
 const { upload } = require('../middleware/upload');
 const { withUserDatabase } = require('../middleware/user-database');
 const { ensureEditorAccess } = require('../middleware/viewer');
-const { buildPathWithDb } = require('../services/folders');
+const { buildPathWithDb, findFolderByNameAndParent } = require('../services/folders');
 const { dbAll, dbGet, dbRun } = require('../lib/db');
 
 const router = express.Router();
@@ -353,23 +353,21 @@ router.post('/import_folders_xlsx', withUserDatabase, upload.single('file'), asy
       // 找 parent 在資料庫的真實 id
       const parentDbId = n.parentTempId ? (tempToDbId[n.parentTempId] || null) : null;
 
-      const result = await new Promise((resolve, reject) => {
-        req.userDb.run(
-          'INSERT OR IGNORE INTO folders (name, parent_id) VALUES (?, ?)',
-          [n.name, parentDbId],
-          function(err) { if (err) reject(err); else resolve(this); }
-        );
-      });
-
-      if (result.lastID) {
-        tempToDbId[n.tempId] = result.lastID;
-        inserted++;
-      } else {
-        // 已存在，查出真實 id（用 name + parent_id 查）
-        const existing = await dbGet(req.userDb, 'SELECT id FROM folders WHERE name = ? AND (parent_id = ? OR (parent_id IS NULL AND ? IS NULL))', [n.name, parentDbId, parentDbId]);
-        if (existing) tempToDbId[n.tempId] = existing.id;
+      // 同一父層底下已有同名資料夾就重用，不重複建立（重複匯入同一份檔案是冪等的）
+      const existing = await findFolderByNameAndParent(req.userDb, n.name, parentDbId);
+      if (existing) {
+        tempToDbId[n.tempId] = existing.id;
         skipped++;
+        continue;
       }
+
+      const result = await dbRun(req.userDb, 'INSERT INTO folders (name, parent_id) VALUES (?, ?)', [n.name, parentDbId]);
+      tempToDbId[n.tempId] = result.lastID;
+      const folderPath = await new Promise((resolve) => {
+        buildPathWithDb(req.userDb, result.lastID, (err, pth) => resolve(err ? '/' + n.name : pth));
+      });
+      await dbRun(req.userDb, 'UPDATE folders SET path = ? WHERE id = ?', [folderPath, result.lastID]);
+      inserted++;
     }
 
     fs.unlink(req.file.path, () => {});
@@ -992,6 +990,14 @@ router.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) =
               }
             }
             
+            // 同一父層底下已有同名資料夾就略過，不重複建立
+            const existingFolder = await findFolderByNameAndParent(req.userDb, name, parent_id);
+            if (existingFolder) {
+              console.log(`↷ Folder already exists, skipped: ${name} (ID ${existingFolder.id})`);
+              stats.foldersSkipped = (stats.foldersSkipped || 0) + 1;
+              continue;
+            }
+
             // 插入資料夾（循序執行，確保順序）
             await new Promise((resolve, reject) => {
               req.userDb.run('INSERT INTO folders (name, parent_id) VALUES (?, ?)', 
