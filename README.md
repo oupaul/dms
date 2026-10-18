@@ -135,6 +135,22 @@ pm2 logs <service-name>
 
 ---
 
+## 程式結構
+
+`app.js` 只負責組裝（中介軟體、路由掛載、啟動），邏輯依領域分在以下目錄：
+
+| 目錄 | 內容 |
+|---|---|
+| `routes/` | API 路由：`auth`、`admin`、`folders`、`users`、`groups`、`permissions`、`permission-requests`、`databases`、`import-export`、`pages` |
+| `middleware/` | `auth`（登入／角色檢查）、`session`（Session、閒置逾時、強制改密碼）、`viewer`（唯讀帳號）、`user-database`（`req.userDb`）、`upload` |
+| `services/` | `database`（連線、啟動、使用者連線快取）、`schema`、`email`、`sso`、`audit`、`backup`、`folders`、`permissions`、`accounts` |
+| `lib/` | `security`、`session-store`、`db`（`dbGet`／`dbAll`／`dbRun` 等 Promise 包裝）、`connection-cache`、`config`、`time`、`http` |
+
+- 使用者資料庫連線快取上限預設 20 條、閒置 30 分鐘自動關閉，可用環境變數 `USER_DB_CACHE_MAX`、`USER_DB_IDLE_MINUTES` 調整。
+- 部署時整個目錄一起複製（`deploy.sh` 用 rsync／cp 整個資料夾），不要只複製 `app.js`。
+
+---
+
 ## 文件索引
 
 | 文件 | 內容 |

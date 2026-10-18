@@ -83,7 +83,9 @@ function copyApp(dest) {
     'csv_generator.html', 'user_csv_generator.html', 'permission_generator.html', 'backup_databases.sh']) {
     if (fs.existsSync(path.join(ROOT, f))) fs.copyFileSync(path.join(ROOT, f), path.join(dest, f));
   }
-  fs.cpSync(path.join(ROOT, 'lib'), path.join(dest, 'lib'), { recursive: true });
+  for (const d of ['lib', 'routes', 'middleware', 'services']) {
+    if (fs.existsSync(path.join(ROOT, d))) fs.cpSync(path.join(ROOT, d), path.join(dest, d), { recursive: true });
+  }
   // 可用 DMS_TEST_NODE_MODULES 指向針對目前 Node 版本編譯過的 node_modules（原生模組 sqlite3/argon2 與 Node 版本相關）
   const nm = process.env.DMS_TEST_NODE_MODULES || path.join(ROOT, 'node_modules');
   fs.symlinkSync(nm, path.join(dest, 'node_modules'), 'dir');
