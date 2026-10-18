@@ -152,6 +152,17 @@ pm2 logs <service-name>
 
 ---
 
+## 授權
+
+本專案以 **GNU Affero General Public License v3.0（AGPL-3.0-only）** 授權，完整條文見 [LICENSE](LICENSE)。
+
+- 可自由使用、修改與散布；散布時（含修改版）必須以相同授權提供對應的完整原始碼。
+- **網路服務條款（AGPL 第 13 條）**：若你修改本程式並讓其他人透過網路與它互動（例如部署成內部或對外的網站），必須讓這些使用者能取得你修改後版本的原始碼。純粹使用未修改版本不受此限。
+- 以 Apache-2.0 授權取得的舊版本（本次授權變更之前的 commit）仍可依 Apache-2.0 使用。
+- 隨附的第三方前端函式庫（jQuery、Bootstrap、Bootstrap Icons，皆為 MIT）放在 `public/vendor/`，授權檔與聲明見 [public/vendor/NOTICE.md](public/vendor/NOTICE.md)；npm 相依套件各自維持其原本的授權（皆與 AGPL-3.0 相容）。
+
+---
+
 ## 文件索引
 
 | 文件 | 內容 |
