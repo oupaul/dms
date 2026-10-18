@@ -47,6 +47,19 @@ router.post('/api/folders', withUserDatabase, (req, res) => {
   });
 });
 
+// 檢查「把 folderId 的父資料夾設為 newParentId」是否會形成循環的 SQL 片段：
+// 從 newParentId 沿 parent 鏈往上收集所有祖先（UNION 會去重，即使既有資料已有循環也會終止），
+// 若 folderId 在其中（含 newParentId 自己），表示新父資料夾是自己或自己的後代。
+const CYCLE_CHECK_SQL = `
+  WITH RECURSIVE ancestors(id) AS (
+    SELECT ?
+    UNION
+    SELECT f.parent_id FROM folders f JOIN ancestors a ON f.id = a.id WHERE f.parent_id IS NOT NULL
+  )
+  SELECT 1 FROM ancestors WHERE id = ?`;
+
+const CYCLE_ERROR = '不能將資料夾移到自己或自己的子資料夾底下';
+
 router.put('/api/folders/:id', withUserDatabase, (req, res) => {
   const { id } = req.params;
   const { name, parent_id } = req.body;
@@ -59,52 +72,80 @@ router.put('/api/folders/:id', withUserDatabase, (req, res) => {
     if (err) return internalError(res, err);
     if (!oldFolder) return res.status(404).json({ error: 'Not found' });
     
-    // 更新名稱和父資料夾
-    userDb.run('UPDATE folders SET name = ?, parent_id = ? WHERE id = ?', [name, parent_id, id], function(err) {
-      if (err || this.changes === 0) return res.status(500).json({ error: err ? err.message : 'Not found' });
+    // 正規化 ID：之後的比對與遞迴一律使用整數
+    const folderId = Number(id);
+    const newParentId = parent_id ? Number(parent_id) : null;
+    if (newParentId !== null && (!Number.isInteger(newParentId) || newParentId < 1)) {
+      return res.status(400).json({ error: 'parent_id 格式不正確' });
+    }
+    
+    // 防循環：新的父資料夾不可以是自己或自己的任何後代，否則 updateChildPaths 會無限遞迴
+    const checkCycle = (callback) => {
+      if (newParentId === null) return callback(null, false);
+      userDb.get(CYCLE_CHECK_SQL, [newParentId, folderId], (errCheck, row) => callback(errCheck, !!row));
+    };
+    
+    checkCycle((errCheck, wouldCycle) => {
+      if (errCheck) return internalError(res, errCheck);
+      if (wouldCycle) return res.status(400).json({ error: CYCLE_ERROR });
       
-      // 重新計算此資料夾的路徑
-      buildPathWithDb(userDb, id, (err, path) => {
-        if (err) return res.status(500).json({ error: err });
-        userDb.run('UPDATE folders SET path = ? WHERE id = ?', [path, id], (err2) => {
-          if (err2) return res.status(500).json({ error: err2.message });
-          
-          // 記錄審計日誌
-          logAudit(req, 'update', 'folder', parseInt(id), name, oldFolder, { name, parent_id, path });
-          
-          // 重新計算所有子資料夾的路徑（因為父資料夾可能改變了）
-          userDb.all('SELECT id FROM folders WHERE parent_id = ?', [id], (err3, children) => {
-            if (err3) return res.status(500).json({ error: err3.message });
+      // 更新名稱和父資料夾。WHERE 再檢查一次循環，避免檢查與寫入之間被並行請求改動而形成循環
+      userDb.run(
+        `UPDATE folders SET name = ?, parent_id = ? WHERE id = ? AND (? IS NULL OR NOT EXISTS (${CYCLE_CHECK_SQL}))`,
+        [name, newParentId, folderId, newParentId, newParentId, folderId],
+        function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        if (this.changes === 0) return res.status(409).json({ error: '資料夾結構已變更，請重新整理後再試' });
+        
+        // 重新計算此資料夾的路徑
+        buildPathWithDb(userDb, folderId, (err, path) => {
+          if (err) return res.status(500).json({ error: err });
+          userDb.run('UPDATE folders SET path = ? WHERE id = ?', [path, folderId], (err2) => {
+            if (err2) return res.status(500).json({ error: err2.message });
             
-            // 遞迴更新所有子資料夾的路徑
-            const updateChildPaths = (childIds, callback) => {
-              if (childIds.length === 0) return callback();
+            // 記錄審計日誌
+            logAudit(req, 'update', 'folder', folderId, name, oldFolder, { name, parent_id, path });
+            
+            // 重新計算所有子資料夾的路徑（因為父資料夾可能改變了）
+            userDb.all('SELECT id FROM folders WHERE parent_id = ?', [folderId], (err3, children) => {
+              if (err3) return res.status(500).json({ error: err3.message });
               
-              const childId = childIds[0];
-              buildPathWithDb(userDb, childId, (err, childPath) => {
-                if (err) return callback(err);
-                userDb.run('UPDATE folders SET path = ? WHERE id = ?', [childPath, childId], (err2) => {
-                  if (err2) return callback(err2);
-                  
-                  // 查找此子資料夾的子資料夾
-                  userDb.all('SELECT id FROM folders WHERE parent_id = ?', [childId], (err3, grandchildren) => {
-                    if (err3) return callback(err3);
+              // 遞迴更新所有子資料夾的路徑；visited 防止既有的壞資料（循環）造成無限遞迴
+              const visited = new Set([folderId]);
+              const updateChildPaths = (childIds, callback) => {
+                if (childIds.length === 0) return callback();
+                
+                const childId = childIds[0];
+                if (visited.has(childId)) {
+                  console.error(`Circular reference detected while updating descendants of folder ${folderId} (folder ${childId})`);
+                  return updateChildPaths(childIds.slice(1), callback);
+                }
+                visited.add(childId);
+                buildPathWithDb(userDb, childId, (err, childPath) => {
+                  if (err) return callback(err);
+                  userDb.run('UPDATE folders SET path = ? WHERE id = ?', [childPath, childId], (err2) => {
+                    if (err2) return callback(err2);
                     
-                    // 遞迴處理
-                    updateChildPaths(grandchildren.map(g => g.id), (err4) => {
-                      if (err4) return callback(err4);
-                      // 繼續處理同層的其他子資料夾
-                      updateChildPaths(childIds.slice(1), callback);
+                    // 查找此子資料夾的子資料夾
+                    userDb.all('SELECT id FROM folders WHERE parent_id = ?', [childId], (err3, grandchildren) => {
+                      if (err3) return callback(err3);
+                      
+                      // 遞迴處理
+                      updateChildPaths(grandchildren.map(g => g.id), (err4) => {
+                        if (err4) return callback(err4);
+                        // 繼續處理同層的其他子資料夾
+                        updateChildPaths(childIds.slice(1), callback);
+                      });
                     });
                   });
                 });
+              };
+              
+              updateChildPaths(children.map(c => c.id), (err4) => {
+                if (err4) return res.status(500).json({ error: err4.message });
+                console.log(`✓ Updated folder ${id} and all its descendants`);
+                res.json({ success: true });
               });
-            };
-            
-            updateChildPaths(children.map(c => c.id), (err4) => {
-              if (err4) return res.status(500).json({ error: err4.message });
-              console.log(`✓ Updated folder ${id} and all its descendants`);
-              res.json({ success: true });
             });
           });
         });
