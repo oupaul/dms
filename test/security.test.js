@@ -290,6 +290,23 @@ test('整合：登入／強制改密碼／限速／CSRF／授權／上傳／清�
     assert.equal(list.status, 200);
     const names = list.data.databases.map(d => d.name);
     assert.ok(!names.includes('system.db'), '一般帳號不應看到系統資料庫');
+    assert.ok(names.includes('user_alice_proj.db'));
+  });
+
+  await t.test('一般內部帳號看不到、也不能複製他人／客戶的資料庫；可複製自己的', async () => {
+    const created = await admin.post('/api/databases', { name: 'customer_ref.db' });
+    assert.equal(created.status, 200, JSON.stringify(created.data));
+
+    const names = (await alice.get('/api/databases')).data.databases.map(d => d.name);
+    assert.ok(!names.includes('customer_ref.db'), '不應看到他人的資料庫');
+    assert.ok(!names.includes('admin.db'), '不應看到管理員的資料庫');
+
+    const copyOther = await alice.post('/api/databases/copy', { source: 'customer_ref.db', target: 'user_alice_steal.db' });
+    assert.equal(copyOther.status, 403);
+    assert.equal(fs.existsSync(path.join(srv.dir, 'databases', 'user_alice_steal.db')), false);
+
+    const copyOwn = await alice.post('/api/databases/copy', { source: 'user_alice_proj.db', target: 'user_alice_proj2.db' });
+    assert.equal(copyOwn.status, 200, JSON.stringify(copyOwn.data));
   });
 
   await t.test('非管理員不能呼叫管理 API', async () => {

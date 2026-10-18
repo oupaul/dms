@@ -108,6 +108,10 @@ router.get('/api/databases', requireAuth, (req, res) => {
 
       if (isViewer || isEngineerDb || isClientDb) {
         databases = databases.filter(d => allowedForViewer.includes(d.name));
+      } else if (!isAdmin) {
+        // 一般內部帳號只看得到自己的資料庫（以及管理員明確授權給自己的），看不到他人／客戶的資料庫
+        databases = databases.filter(d =>
+          isDatabaseOwnedBy(d.name, username) || d.created_by === username || allowedForViewer.includes(d.name));
       }
 
       const enriched = databases.map(d => {
@@ -156,7 +160,7 @@ router.get('/api/databases', requireAuth, (req, res) => {
           : isViewer
           ? '此帳號為唯讀模式，僅能檢視被授權的資料庫'
           : (isEngineerDb ? '工程師帳號可存取被授權的資料庫，僅供編輯，無法管理資料庫'
-          : (isAdmin ? '管理員可查看並管理所有資料庫' : '您可以查看所有資料庫；僅能管理自己的資料庫，其他人的資料庫可複製以便參考'))
+          : (isAdmin ? '管理員可查看並管理所有資料庫' : '您只能查看並管理自己的資料庫；需要存取其他資料庫請聯繫管理員授權'))
       });
     } catch (err) {
       console.error('Failed to list databases:', err);
@@ -415,10 +419,11 @@ router.post('/api/databases/copy', requireAuth, (req, res) => {
           message: `一般使用者複製時，目標資料庫名稱須以 "${requiredPrefix}" 開頭`
         });
       }
-      // 系統資料庫（含全部帳號與密碼雜湊）絕不可被非管理員複製。
-      // 複製他人的（非系統）資料庫供參考是既有設計，僅限內部帳號，客戶帳號已在上方被擋下。
-      if (SYSTEM_DB_NAMES.has(source)) {
-        return res.status(403).json({ error: '權限不足', message: '無法複製系統資料庫' });
+      // 來源只能是自己的資料庫，或管理員明確授權給自己的資料庫；
+      // 系統資料庫（含全部帳號與密碼雜湊）與他人／客戶的資料庫一律不可複製。
+      const allowedSources = req.session.allowedDatabases || [];
+      if (SYSTEM_DB_NAMES.has(source) || !(isDatabaseOwnedBy(source, username) || allowedSources.includes(source))) {
+        return res.status(403).json({ error: '權限不足', message: '只能複製自己的資料庫或已授權給您的資料庫' });
       }
     }
     
