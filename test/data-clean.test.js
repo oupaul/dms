@@ -124,6 +124,23 @@ test('資料清理', async (t) => {
     assert.equal(fs.readdirSync(backupDir).length, filesBefore, '沒有變更就不備份');
   });
 
+  await t.test('沒有寫入權限：給出明確訊息、不建立備份、資料庫不變', (st) => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) { st.skip('root 不受檔案權限限制'); return; }
+    const { app: app3, dbDir: dbDir3 } = prepare();
+    t.after(() => { for (const f of fs.readdirSync(dbDir3)) fs.chmodSync(path.join(dbDir3, f), 0o644); fs.rmSync(app3, { recursive: true, force: true }); });
+    for (const f of fs.readdirSync(dbDir3)) fs.chmodSync(path.join(dbDir3, f), 0o444);   // 模擬「複本屬於別人／唯讀」
+    const before = hashDir(dbDir3);
+    const bk = path.join(app3, 'bk');
+    const proc = clean(app3, dbDir3, ['--only', 'dirty.db', '--apply', '--yes', '--backup-dir', bk]);
+    assert.equal(proc.status, 3);
+    const r = json(proc);
+    assert.equal(r.errors.length, 1);
+    assert.match(r.errors[0].error, /沒有寫入權限/);
+    assert.match(r.errors[0].error, /chown/);
+    assert.ok(!fs.existsSync(bk), '權限不足時不應建立備份目錄');
+    assert.deepEqual(hashDir(dbDir3), before);
+  });
+
   await t.test('--fix 可限定項目：只處理 paths 時，其餘不動', () => {
     const { app: app2, dbDir: dbDir2 } = prepare();
     t.after(() => fs.rmSync(app2, { recursive: true, force: true }));

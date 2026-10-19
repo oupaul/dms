@@ -130,9 +130,15 @@ sudo -u <服務帳號> node scripts/data-clean.js --only paul_test.db --apply --
 ### 建議的上線流程
 
 1. **預覽並閱讀**：`node scripts/data-clean.js > clean-preview.txt`，特別看「重複權限」的每一筆決定（保留哪筆、刪哪筆、依據）。
-2. **用複本演練**：`cp -a databases /tmp/dbcopy`，然後
-   `node scripts/data-clean.js --dir /tmp/dbcopy --backup-dir /tmp/dbcopy-bak --apply --yes`，再跑一次
-   `node scripts/data-audit.js --dir /tmp/dbcopy` 確認結果。不碰正式資料。
+2. **用複本演練**（不碰正式資料）。複本要屬於你執行工具的帳號，否則會因沒有寫入權限而被拒絕（什麼都不會被改）：
+   ```bash
+   sudo cp -a databases /tmp/dbcopy
+   sudo chown -R "$(id -un)": /tmp/dbcopy && chmod 700 /tmp/dbcopy   # 複本屬於你、且不讓其他人讀
+   sudo rm -f /tmp/dbcopy/*-shm                                       # 清掉複製來的共用記憶體檔，開啟時會重建
+   node scripts/data-clean.js --dir /tmp/dbcopy --backup-dir /tmp/dbcopy-bak --apply --yes
+   node scripts/data-audit.js --dir /tmp/dbcopy
+   ```
+   演練完請刪除：`rm -rf /tmp/dbcopy /tmp/dbcopy-bak`（裡面是完整的客戶資料）。
 3. **正式套用**：先挑測試用的資料庫（例如 `paul_test.db`、`test.db`），確認沒問題再一個個做；最後才做 `system.db`。
 4. **保留備份**：確認使用者回報正常後再刪除 `backups/data-clean/`。
 5. 全部清零（只剩人工處理的項目）後，才進一步加上唯一索引與外鍵。
