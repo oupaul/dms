@@ -17,6 +17,7 @@
     <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
     <script src="/js/folder-access.js"></script>
     <script src="/js/folder-access-ui.js"></script>
+    <script src="/js/script-builders.js"></script>
     <script>FolderAccessUI.init({ getFolders: function () { return window.folderTreeData || []; } });</script>
     <style>
         /* 防止未認證內容閃爍 - 頁面載入時先隱藏內容 */
@@ -7422,47 +7423,7 @@ group_member,,2,4</code></pre>
             // 取得 OU 路徑
             const ouPath = $('#users-ou-path').val().trim() || 'OU=Users,DC=yourdomain,DC=com';
 
-            let script = '# 產生 AD 使用者的 PowerShell 語法\n';
-            script += `# 共 ${selectedUsers.length} 位人員\n`;
-            script += `# OU 路徑: ${ouPath}\n`;
-            script += '# 注意：如果使用者已存在，會出現錯誤，請先檢查或使用 -ErrorAction SilentlyContinue\n\n';
-            script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-            script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-            selectedUsers.forEach(function(user) {
-                const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                const displayName = user.name || samAccountName;
-                const email = user.email || `${samAccountName}@yourdomain.com`;
-                const description = user.description || '';
-                const department = user.department || '';
-                const company = user.company || '';
-                const title = user.title || '';
-                const phone = user.phone || '';
-
-                // 建立單行指令，不使用分行符號
-                let cmd = `New-ADUser -Name "${displayName}" -SamAccountName "${samAccountName}" -UserPrincipalName "${email}" -DisplayName "${displayName}" -EmailAddress "${email}"`;
-                
-                if (description) {
-                    cmd += ` -Description "${description.replace(/"/g, '""')}"`;
-                }
-                if (department) {
-                    cmd += ` -Department "${department.replace(/"/g, '""')}"`;
-                }
-                if (company) {
-                    cmd += ` -Company "${company.replace(/"/g, '""')}"`;
-                }
-                if (title) {
-                    cmd += ` -Title "${title.replace(/"/g, '""')}"`;
-                }
-                if (phone) {
-                    cmd += ` -OfficePhone "${phone}"`;
-                }
-                
-                cmd += ` -Path "${ouPath}" -Enabled $true -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -ChangePasswordAtLogon $true`;
-                
-                script += `# 建立使用者: ${displayName}\n`;
-                script += cmd + '\n\n';
-            });
+            const script = ScriptBuilders.buildUsersScript(selectedUsers, ouPath);
 
             displayPowerShellOutput(script);
         }
@@ -7551,85 +7512,12 @@ group_member,,2,4</code></pre>
                 $.get('/api/groups'),
                 $.get('/api/permissions')
             ).done(function(groupsResp, permissionsResp) {
-                const groups = groupsResp[0];
-                const permissions = permissionsResp[0];
-
-                // 建立群組 ID 到群組的映射
-                const groupMap = {};
-                groups.forEach(function(group) {
-                    groupMap[group.id] = group;
+                const script = ScriptBuilders.buildGroupsScript({
+                    folders: selectedFolders,
+                    groups: groupsResp[0],
+                    permissions: permissionsResp[0],
+                    rootOU: rootOU
                 });
-
-                // 建立資料夾 ID 到群組列表的映射（從權限表）
-                const folderGroupsMap = {};
-                permissions.forEach(function(permission) {
-                    if (!permission.group_id || !permission.folder_id) return;
-                    
-                    if (!folderGroupsMap[permission.folder_id]) {
-                        folderGroupsMap[permission.folder_id] = [];
-                    }
-                    if (folderGroupsMap[permission.folder_id].indexOf(permission.group_id) === -1) {
-                        folderGroupsMap[permission.folder_id].push(permission.group_id);
-                    }
-                });
-
-                let script = '# 產生 AD 群組（Group）的 PowerShell 語法\n';
-                script += `# 共 ${selectedFolders.length} 個資料夾\n`;
-                script += `# 群組路徑: ${rootOU}\n\n`;
-                script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-                script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-                // 建立資料夾 ID 到資料夾的映射
-                const folderMap = {};
-                allFoldersData.forEach(function(folder) {
-                    folderMap[folder.id] = folder;
-                });
-
-                // 收集所有需要建立的群組（避免重複）
-                const groupsToCreate = new Map(); // key: groupName, value: {group, folder}
-
-                selectedFolders.forEach(function(folder) {
-                    const folderGroups = folderGroupsMap[folder.id] || [];
-                    
-                    if (folderGroups.length > 0) {
-                        // 使用系統中對應的群組名稱
-                        folderGroups.forEach(function(groupId) {
-                            const group = groupMap[groupId];
-                            if (group && !groupsToCreate.has(group.name)) {
-                                groupsToCreate.set(group.name, {
-                                    group: group,
-                                    folder: folder
-                                });
-                            }
-                        });
-                    } else {
-                        // 如果沒有對應的群組，使用資料夾路徑生成群組名稱（與自動生成群組的規則一致）
-                        const folderPath = (folder.path || folder.name).replace(/[\/\\]/g, '_').replace(/"/g, '""');
-                        // 生成 RO 和 RW 兩個群組（與系統自動生成群組的規則一致）
-                        ['RO', 'RW'].forEach(function(suffix) {
-                            const groupName = `${folderPath}_${suffix}`;
-                            if (!groupsToCreate.has(groupName)) {
-                                groupsToCreate.set(groupName, {
-                                    group: { name: groupName },
-                                    folder: folder
-                                });
-                            }
-                        });
-                    }
-                });
-
-                // 生成群組建立指令
-                groupsToCreate.forEach(function(item, groupName) {
-                    const description = `資料夾: ${(item.folder.path || item.folder.name).replace(/"/g, '""')}`;
-                    const cmd = `New-ADGroup -Name "${groupName.replace(/"/g, '""')}" -GroupScope Global -GroupCategory Security -Path "${rootOU}" -Description "${description}"`;
-                    
-                    script += `# 建立群組: ${groupName} (對應資料夾: ${item.folder.name})\n`;
-                    script += cmd + '\n\n';
-                });
-
-                if (groupsToCreate.size === 0) {
-                    script += '# 沒有找到需要建立的群組\n';
-                }
 
                 displayPowerShellOutput(script);
             }).fail(function(xhr) {
@@ -7794,275 +7682,25 @@ group_member,,2,4</code></pre>
                 return selectedSet.has(key);
             });
 
-            let script = '# 產生將人員加入 AD 群組的 PowerShell 語法\n';
-            script += `# 共 ${selectedFolderGroupPairs.length} 個資料夾-群組組合\n`;
-            script += '# 請根據實際環境調整 Domain 和群組名稱格式\n\n';
-            script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-            script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-            // 建立使用者 ID 到使用者的映射
-            const userMap = {};
-            allGroupMembersData.users.forEach(function(user) {
-                userMap[user.id] = user;
-            });
-
-            // 建立群組 ID 到群組的映射
-            const groupMap = {};
-            allGroupMembersData.groups.forEach(function(group) {
-                groupMap[group.id] = group;
-            });
-
-            // 建立資料夾 ID 到資料夾的映射
-            const folderMap = {};
-            allGroupMembersData.folders.forEach(function(folder) {
-                folderMap[folder.id] = folder;
-            });
-
-            // 載入所有群組的成員
-            const groupPromises = allGroupMembersData.groups.map(function(group) {
+            // 載入所有群組的成員（$.when 只有一個請求時，回傳的不是「結果陣列的陣列」，這裡一併處理）
+            const groupList = allGroupMembersData.groups;
+            $.when.apply($, groupList.map(function(group) {
                 return $.get(`/api/groups/${group.id}/users`);
-            });
-
-            $.when.apply($, groupPromises).done(function() {
-                // 建立群組 ID 到群組成員的映射
-                const groupMembersMap = {};
-                const memberArrays = Array.prototype.slice.call(arguments);
-                allGroupMembersData.groups.forEach(function(group, index) {
-                    groupMembersMap[group.id] = memberArrays[index] && memberArrays[index][0] ? memberArrays[index][0] : [];
+            })).done(function() {
+                const results = groupList.length === 1 ? [[arguments[0]]] : Array.prototype.slice.call(arguments);
+                const membersByGroup = {};
+                groupList.forEach(function(group, index) {
+                    membersByGroup[group.id] = (results[index] && results[index][0]) || [];
                 });
-
-                // 按資料夾組織輸出
-                const folderGroupsMap = {};
-                selectedFolderGroupPairs.forEach(function(pair) {
-                    if (!folderGroupsMap[pair.folder_id]) {
-                        folderGroupsMap[pair.folder_id] = [];
-                    }
-                    folderGroupsMap[pair.folder_id].push(pair.group_id);
-                });
-
-                const processedGroupMembers = new Set(); // 追蹤已經處理過的（群組ID, 用戶ID）組合
-
-                Object.keys(folderGroupsMap).forEach(function(folderId) {
-                    const folder = folderMap[folderId];
-                    const folderPath = folder ? folder.path || folder.name : '未知資料夾';
-                    
-                    const groupIds = folderGroupsMap[folderId];
-                    let hasMembers = false;
-
-                    groupIds.forEach(function(groupId) {
-                        const group = groupMap[groupId];
-                        if (!group) return;
-
-                        const members = groupMembersMap[groupId] || [];
-                        if (members.length === 0) return;
-
-                        if (!hasMembers) {
-                            script += `# ========== 資料夾: ${folderPath} ==========\n`;
-                            hasMembers = true;
-                        }
-
-                        script += `\n# 群組: ${group.name}\n`;
-
-                        members.forEach(function(member) {
-                            const user = userMap[member.id];
-                            if (!user) return;
-
-                            // 檢查是否已經處理過這個組合
-                            const key = `${groupId}-${member.id}`;
-                            if (processedGroupMembers.has(key)) {
-                                script += `# 將使用者 "${user.name}" 加入群組 "${group.name}" (已在其他資料夾中處理)\n`;
-                                return;
-                            }
-                            processedGroupMembers.add(key);
-
-                            const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                            
-                            script += `Add-ADGroupMember -Identity "${group.name}" -Members "${samAccountName}"\n`;
-                        });
-                    });
-
-                    if (hasMembers) {
-                        script += '\n';
-                    }
-                });
-
-                if (processedGroupMembers.size === 0) {
-                    script += '# 目前選中的資料夾群組組合沒有成員資料。\n';
-                }
-
-                displayPowerShellOutput(script);
+                displayPowerShellOutput(ScriptBuilders.buildMembersScript({
+                    pairs: selectedFolderGroupPairs,
+                    users: allGroupMembersData.users,
+                    groups: groupList,
+                    folders: allGroupMembersData.folders,
+                    membersByGroup: membersByGroup
+                }));
             }).fail(function(xhr) {
                 alert('載入群組成員資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
-            });
-        }
-
-        // 生成資料夾群組成員的 AD PowerShell 語法（保留舊函數以備不時之需）
-        function generateGroupMembersPowerShell() {
-            // 同時取得群組、人員和權限資料
-            $.when(
-                $.get('/api/groups'),
-                $.get('/api/users'),
-                $.get('/api/permissions')
-            ).done(function(groupsResp, usersResp, permissionsResp) {
-                const groups = groupsResp[0];  // jQuery 返回 [data, textStatus, jqXHR]
-                const users = usersResp[0];
-                const permissions = permissionsResp[0];
-
-                if (!groups || groups.length === 0) {
-                    alert('目前沒有群組資料，無法生成語法。');
-                    return;
-                }
-
-                if (!users || users.length === 0) {
-                    alert('目前沒有人員資料，無法生成語法。');
-                    return;
-                }
-
-                let script = '# 產生將人員加入 AD 群組的 PowerShell 語法\n';
-                script += '# 請根據實際環境調整 Domain 和群組名稱格式\n\n';
-                script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-                script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-                // 建立使用者 ID 到使用者的映射
-                const userMap = {};
-                users.forEach(function(user) {
-                    userMap[user.id] = user;
-                });
-
-                // 建立群組 ID 到群組的映射
-                const groupMap = {};
-                groups.forEach(function(group) {
-                    groupMap[group.id] = group;
-                });
-
-                // 取得資料夾資訊
-                $.get('/api/folders').done(function(folders) {
-                    const folderMap = {};
-                    folders.forEach(function(folder) {
-                        folderMap[folder.id] = folder;
-                    });
-
-                    // 建立群組 ID 到群組成員的映射（從 group_users 關聯表）
-                    const groupMembersMap = {};
-                    const groupPromises = groups.map(function(group) {
-                        return $.get(`/api/groups/${group.id}/users`);
-                    });
-                    
-                    $.when.apply($, groupPromises).done(function() {
-                        // arguments 包含所有回傳值
-                        const memberArrays = Array.prototype.slice.call(arguments);
-                        groups.forEach(function(group, index) {
-                            groupMembersMap[group.id] = memberArrays[index] && memberArrays[index][0] ? memberArrays[index][0] : [];
-                        });
-
-                        // 根據權限資料，按資料夾組織群組成員
-                        // 建立資料夾 ID 到群組列表的映射
-                        const folderGroupsMap = {};
-                        permissions.forEach(function(permission) {
-                            if (!permission.group_id || !permission.folder_id) return;
-                            
-                            if (!folderGroupsMap[permission.folder_id]) {
-                                folderGroupsMap[permission.folder_id] = [];
-                            }
-                            if (folderGroupsMap[permission.folder_id].indexOf(permission.group_id) === -1) {
-                                folderGroupsMap[permission.folder_id].push(permission.group_id);
-                            }
-                        });
-
-                        // 按資料夾生成語法
-                        const processedGroupMembers = new Set(); // 追蹤已經處理過的（群組ID, 用戶ID）組合，避免重複
-
-                        Object.keys(folderGroupsMap).forEach(function(folderId) {
-                            const folder = folderMap[folderId];
-                            const folderPath = folder ? folder.path || folder.name : '未知資料夾';
-                            
-                            const groupIds = folderGroupsMap[folderId];
-                            let hasMembers = false;
-
-                            groupIds.forEach(function(groupId) {
-                                const group = groupMap[groupId];
-                                if (!group) return;
-
-                                const members = groupMembersMap[groupId] || [];
-                                if (members.length === 0) return;
-
-                                if (!hasMembers) {
-                                    script += `# ========== 資料夾: ${folderPath} ==========\n`;
-                                    hasMembers = true;
-                                }
-
-                                script += `\n# 群組: ${group.name}\n`;
-
-                                members.forEach(function(member) {
-                                    const user = userMap[member.id];
-                                    if (!user) return;
-
-                                    // 檢查是否已經處理過這個組合
-                                    const key = `${groupId}-${member.id}`;
-                                    if (processedGroupMembers.has(key)) {
-                                        script += `# 將使用者 "${user.name}" 加入群組 "${group.name}" (已在其他資料夾中處理)\n`;
-                                        return;
-                                    }
-                                    processedGroupMembers.add(key);
-
-                                    const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                                    
-                                    script += `Add-ADGroupMember -Identity "${group.name}" -Members "${samAccountName}"\n`;
-                                });
-                            });
-
-                            if (hasMembers) {
-                                script += '\n';
-                            }
-                        });
-
-                        // 如果還有沒有在權限中出現的群組，也生成它們的成員加入語法
-                        const groupsInPermissions = new Set();
-                        permissions.forEach(function(p) {
-                            if (p.group_id) groupsInPermissions.add(p.group_id);
-                        });
-
-                        let hasUnassignedGroups = false;
-                        groups.forEach(function(group) {
-                            if (groupsInPermissions.has(group.id)) return;
-
-                            const members = groupMembersMap[group.id] || [];
-                            if (members.length === 0) return;
-
-                            if (!hasUnassignedGroups) {
-                                script += `# ========== 未指派到資料夾的群組 ==========\n\n`;
-                                hasUnassignedGroups = true;
-                            }
-
-                            script += `# 群組: ${group.name}\n`;
-
-                            members.forEach(function(member) {
-                                const user = userMap[member.id];
-                                if (!user) return;
-
-                                const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                                
-                                script += `Add-ADGroupMember -Identity "${group.name}" -Members "${samAccountName}"\n`;
-                            });
-
-                            script += '\n';
-                        });
-
-                        // 檢查是否沒有任何資料
-                        const hasAnyMembers = processedGroupMembers.size > 0 || hasUnassignedGroups;
-                        if (!hasAnyMembers) {
-                            script += '# 目前沒有群組成員資料，無法生成語法。\n';
-                        }
-
-                        displayPowerShellOutput(script);
-                    }).fail(function(xhr) {
-                        alert('載入群組成員資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
-                    });
-                }).fail(function(xhr) {
-                    alert('載入資料夾資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
-                });
-            }).fail(function(xhr) {
-                alert('載入資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
             });
         }
 
@@ -9602,10 +9240,10 @@ group_member,,2,4</code></pre>
                     container.append(`
                         <div class="form-check">
                             <input class="form-check-input nas-folder-checkbox" type="checkbox" value="${f.id}" id="nas-f-${f.id}"
-                                   data-path="${label}" data-name="${f.name}"
+                                   data-path="${escapeHtml(label)}" data-name="${escapeHtml(f.name)}"
                                    onchange="updateNasSelectionCount('folders')">
                             <label class="form-check-label" for="nas-f-${f.id}">
-                                <i class="bi bi-folder-fill text-warning"></i> ${label}
+                                <i class="bi bi-folder-fill text-warning"></i> ${escapeHtml(label)}
                             </label>
                         </div>`);
                 });
@@ -9627,13 +9265,13 @@ group_member,,2,4</code></pre>
                 nasAllUsers.sort((a,b) => (a.name||'').localeCompare(b.name||'','zh-TW'));
                 nasAllUsers.forEach(u => {
                     const display = u.account_key
-                        ? `${u.name} <span class="text-muted">(${u.account_key})</span>`
-                        : `${u.name} <span class="text-muted">(${u.email || '無帳號'})</span>`;
+                        ? `${escapeHtml(u.name)} <span class="text-muted">(${escapeHtml(u.account_key)})</span>`
+                        : `${escapeHtml(u.name)} <span class="text-muted">(${escapeHtml(u.email || '無帳號')})</span>`;
                     container.append(`
                         <div class="form-check">
                             <input class="form-check-input nas-user-checkbox" type="checkbox" value="${u.id}" id="nas-u-${u.id}"
-                                   data-account="${u.account_key || u.email?.split('@')[0] || u.name}"
-                                   data-name="${u.name}" data-email="${u.email || ''}"
+                                   data-account="${escapeHtml(u.account_key || u.email?.split('@')[0] || u.name)}"
+                                   data-name="${escapeHtml(u.name)}" data-email="${escapeHtml(u.email || '')}"
                                    onchange="updateNasSelectionCount('users')">
                             <label class="form-check-label" for="nas-u-${u.id}">
                                 <i class="bi bi-person-fill text-primary"></i> ${display}
@@ -9675,179 +9313,22 @@ group_member,,2,4</code></pre>
 
             const selFolders = nasAllFolders.filter(f => selFolderIds.has(f.id));
 
-            // 建立 folderId → groups map from permissions
-            const folderGroupMap = {}; // folderId → [{name, isRO}]
-            nasAllPerms.forEach(p => {
-                if (!p.group_id || !p.folder_id) return;
-                if (!selFolderIds.has(p.folder_id)) return;
-                const grp = nasAllGroups.find(g => g.id === p.group_id);
-                if (!grp) return;
-                if (!folderGroupMap[p.folder_id]) folderGroupMap[p.folder_id] = [];
-                const existing = folderGroupMap[p.folder_id].find(g => g.name === grp.name);
-                if (!existing) {
-                    folderGroupMap[p.folder_id].push({
-                        name: grp.name,
-                        isRO: /[_-]ro$/i.test(grp.name) || p.permission_type === 'read'
-                    });
-                }
-            });
-
-            // 若資料夾沒有對應群組，用路徑自動推算 _RO/_RW
-            selFolders.forEach(f => {
-                if (!folderGroupMap[f.id] || folderGroupMap[f.id].length === 0) {
-                    const base = (f.path || f.name).replace(/[\/\\]/g,'_');
-                    folderGroupMap[f.id] = [
-                        { name: base + '_RO', isRO: true },
-                        { name: base + '_RW', isRO: false }
-                    ];
-                }
-            });
-
             // 選中的人員（本地模式用）
             const selUsers = [];
             if (adMode === 'local') {
                 $('.nas-user-checkbox:checked').each(function() {
                     selUsers.push({
-                        account: $(this).data('account'),
-                        name: $(this).data('name'),
-                        email: $(this).data('email')
+                        account: $(this).attr('data-account'),
+                        name: $(this).attr('data-name'),
+                        email: $(this).attr('data-email')
                     });
                 });
             }
 
-            let script = '';
-            const nasTypeName = nasType === 'synology' ? 'Synology DSM' : 'QNAP QTS';
-            const adModeLabel = adMode === 'ad' ? '已加入 AD 網域' : '本地帳號';
-
-            script += `#!/bin/bash\n`;
-            script += `# ${'='.repeat(60)}\n`;
-            script += `# NAS 腳本生成 — ${nasTypeName}（${adModeLabel}）\n`;
-            script += `# NAS IP   : ${nasIP}\n`;
-            if (adMode === 'ad') script += `# AD 網域  : ${domain}\n`;
-            script += `# Volume   : ${volume}\n`;
-            script += `# 生成時間 : ${now}\n`;
-            script += `# 執行方式 : sudo bash this_script.sh\n`;
-            script += `# ${'='.repeat(60)}\n\n`;
-
-            script += `set -e  # 遇到錯誤時停止執行\n`;
-            script += `VOLUME="${volume}"\n`;
-            if (adMode === 'ad') script += `DOMAIN="${domain}"\n`;
-            script += `\n`;
-
-            // ── 本地帳號：建立群組 ──────────────────────────────
-            if (adMode === 'local') {
-                const allGroups = new Set();
-                selFolders.forEach(f => {
-                    (folderGroupMap[f.id] || []).forEach(g => allGroups.add(g.name));
-                });
-
-                if (allGroups.size > 0) {
-                    script += `echo "=== 建立本地群組 ==="\n`;
-                    if (nasType === 'synology') {
-                        allGroups.forEach(gname => {
-                            script += `synogroup --add "${gname}" 2>/dev/null && echo "  ✔ 群組建立: ${gname}" || echo "  ⚠ 群組已存在: ${gname}"\n`;
-                        });
-                    } else {
-                        // QNAP
-                        allGroups.forEach(gname => {
-                            script += `# QNAP: 請透過 QTS 管理介面或 API 建立群組 "${gname}"\n`;
-                            script += `# /sbin/qgroup.sh -a "${gname}" 2>/dev/null || true\n`;
-                        });
-                    }
-                    script += `\n`;
-                }
-
-                // 建立使用者
-                if (selUsers.length > 0) {
-                    script += `echo "=== 建立本地使用者 ==="\n`;
-                    if (nasType === 'synology') {
-                        selUsers.forEach(u => {
-                            script += `synouser --add "${u.account}" "${u.name}" "${tmpPass}" 0 "${u.email}" 0 2>/dev/null && echo "  ✔ 使用者建立: ${u.account}" || echo "  ⚠ 使用者已存在: ${u.account}"\n`;
-                        });
-                    } else {
-                        selUsers.forEach(u => {
-                            script += `# QNAP: 請透過 QTS 管理介面建立使用者 "${u.account}" (${u.name})\n`;
-                        });
-                    }
-                    script += `\n`;
-                }
-
-                // 加入群組成員（僅 Synology，需知道每個人對應哪個群組）
-                if (nasType === 'synology' && selUsers.length > 0) {
-                    script += `echo "=== 加入群組成員（請依實際需求調整 _RO/_RW）==="\n`;
-                    script += `# 以下將所有選中人員加入各資料夾的 _RO 群組（唯讀）\n`;
-                    script += `# 如需 _RW（讀寫）存取，請手動調整或複製對應指令\n`;
-                    selFolders.forEach(f => {
-                        const groups = folderGroupMap[f.id] || [];
-                        const roGroup = groups.find(g => g.isRO);
-                        const rwGroup = groups.find(g => !g.isRO);
-                        if (roGroup) {
-                            selUsers.forEach(u => {
-                                script += `# synogroup --memberadd "${roGroup.name}" "${u.account}"  # 唯讀\n`;
-                            });
-                        }
-                        if (rwGroup) {
-                            selUsers.forEach(u => {
-                                script += `# synogroup --memberadd "${rwGroup.name}" "${u.account}"  # 讀寫（取消 # 啟用）\n`;
-                            });
-                        }
-                    });
-                    script += `\n`;
-                }
-            }
-
-            // ── ACL 設定 ──────────────────────────────────────────
-            script += `echo "=== 設定資料夾 ACL ==="\n`;
-            selFolders.forEach(f => {
-                const folderPath = (f.path || f.name).replace(/\\/g, '/');
-                const fullPath = `\${VOLUME}/${folderPath}`;
-                const groups = folderGroupMap[f.id] || [];
-
-                script += `\n# 資料夾: ${folderPath}\n`;
-                script += `if [ -d "${fullPath}" ]; then\n`;
-
-                groups.forEach(g => {
-                    let groupRef, perms;
-                    if (adMode === 'ad') {
-                        groupRef = `\${DOMAIN}\\\\${g.name}`;
-                    } else {
-                        groupRef = g.name;
-                    }
-                    perms = g.isRO ? 'r-x' : 'rwx';
-                    const permLabel = g.isRO ? '唯讀 (RO)' : '讀寫 (RW)';
-
-                    script += `    # ${g.name} — ${permLabel}\n`;
-                    script += `    setfacl -Rm "group:${groupRef}:${perms}" "${fullPath}"\n`;
-                    script += `    setfacl -Rdm "group:${groupRef}:${perms}" "${fullPath}"\n`;
-                });
-
-                script += `    echo "  ✔ ACL 設定完成: ${folderPath}"\n`;
-                script += `else\n`;
-                script += `    echo "  ✗ 資料夾不存在，略過: ${fullPath}"\n`;
-                script += `fi\n`;
+            const script = ScriptBuilders.buildNasScript({
+                nasType: nasType, adMode: adMode, nasIP: nasIP, domain: domain, volume: volume, tmpPass: tmpPass, now: now,
+                folders: selFolders, permissions: nasAllPerms, groups: nasAllGroups, users: selUsers
             });
-
-            script += `\necho ""\necho "✅ 腳本執行完成！"\n`;
-
-            // AD 模式附註
-            if (adMode === 'ad') {
-                script += `\n# ────────────────────────────────────────────────────────\n`;
-                script += `# 注意事項：\n`;
-                script += `# 1. 請確認 NAS 已正確加入 AD 網域\n`;
-                script += `# 2. AD 群組格式因 NAS 版本可能有差異（DOMAIN\\Group 或 DOMAIN+Group）\n`;
-                script += `#    若 setfacl 失敗，請改用 NAS 管理介面手動設定\n`;
-                script += `# 3. 建議先在單一資料夾測試後再批次執行\n`;
-                if (nasType === 'synology') {
-                    script += `# 4. Synology 亦可用 synoaclset 指令（DSM 7+ 支援較好）\n`;
-                    script += `#    synoaclset -name "ShareName/SubPath" -user "DOMAIN\\\\Group" -acl "r--" -group\n`;
-                }
-            } else {
-                script += `\n# ────────────────────────────────────────────────────────\n`;
-                script += `# 注意事項：\n`;
-                script += `# 1. 群組成員指令已用 # 標示，請依需求取消註解後執行\n`;
-                script += `# 2. 臨時密碼：${tmpPass}（請要求使用者首次登入後立即更改）\n`;
-                script += `# 3. 建議先確認 Volume 路徑正確（ls \${VOLUME}）\n`;
-            }
 
             $('#nas-output').text(script);
             $('#nas-output-card').show();

@@ -70,7 +70,7 @@ AD PowerShell 語法生成功能是管理員專用功能，可根據系統中的
 Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 
 # 建立使用者: 張三
-New-ADUser -Name "張三" -SamAccountName "zhang" -UserPrincipalName "zhang@contoso.com.tw" -DisplayName "張三" -EmailAddress "zhang@contoso.com.tw" -Department "IT部" -Company "contoso" -Path "OU=PN,DC=123456,DC=corp" -Enabled $true -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -ChangePasswordAtLogon $true
+New-ADUser -Name '張三' -SamAccountName 'zhang' -UserPrincipalName 'zhang@contoso.com.tw' -DisplayName '張三' -EmailAddress 'zhang@contoso.com.tw' -Department 'IT部' -Company 'contoso' -Path 'OU=PN,DC=123456,DC=corp' -Enabled $true -AccountPassword (ConvertTo-SecureString 'TempPassword123!' -AsPlainText -Force) -ChangePasswordAtLogon $true
 ```
 
 #### 生成的欄位說明
@@ -144,10 +144,10 @@ New-ADUser -Name "張三" -SamAccountName "zhang" -UserPrincipalName "zhang@cont
 Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 
 # 建立群組: RD_Test_RO (對應資料夾: Test)
-New-ADGroup -Name "RD_Test_RO" -GroupScope Global -GroupCategory Security -Path "DC=123456,DC=corp" -Description "資料夾: /RD/Test"
+New-ADGroup -Name 'RD_Test_RO' -GroupScope Global -GroupCategory Security -Path 'DC=123456,DC=corp' -Description '資料夾: /RD/Test'
 
 # 建立群組: RD_Test_RW (對應資料夾: Test)
-New-ADGroup -Name "RD_Test_RW" -GroupScope Global -GroupCategory Security -Path "DC=123456,DC=corp" -Description "資料夾: /RD/Test"
+New-ADGroup -Name 'RD_Test_RW' -GroupScope Global -GroupCategory Security -Path 'DC=123456,DC=corp' -Description '資料夾: /RD/Test'
 ```
 
 #### 群組參數說明
@@ -192,13 +192,13 @@ Import-Module ActiveDirectory -ErrorAction SilentlyContinue
 # ========== 資料夾: /RD/Test ==========
 
 # 群組: RD_Test_RO
-Add-ADGroupMember -Identity "RD_Test_RO" -Members "zhang"
-Add-ADGroupMember -Identity "RD_Test_RO" -Members "li"
+Add-ADGroupMember -Identity 'RD_Test_RO' -Members 'zhang'
+Add-ADGroupMember -Identity 'RD_Test_RO' -Members 'li'
 
 # ========== 資料夾: /RA/DCC ==========
 
 # 群組: RA_DCC_RW
-Add-ADGroupMember -Identity "RA_DCC_RW" -Members "wang"
+Add-ADGroupMember -Identity 'RA_DCC_RW' -Members 'wang'
 ```
 
 #### 輸出特點
@@ -236,6 +236,10 @@ Add-ADGroupMember -Identity "RA_DCC_RW" -Members "wang"
 
 所有生成的指令都是**單行格式**，不使用分行符號（`\`），可直接複製到 PowerShell 執行。
 
+所有值（姓名、帳號、群組名稱、OU 路徑、描述…）一律以 **PowerShell 單引號字串**輸出。單引號字串不會展開 `$()`、`$變數` 與反引號，
+所以名稱即使含有這些符號，也只是資料，不會被執行；值本身若含單引號，會重複兩次（`it's` → `'it''s'`）。
+註解與值中的換行會被壓成空白，確保每個指令維持單行。這些規則有自動化測試，並用 PowerShell 的剖析器驗證。
+
 ---
 
 ## 📝 使用範例
@@ -250,7 +254,7 @@ Add-ADGroupMember -Identity "RA_DCC_RW" -Members "wang"
 
 **結果：**
 ```powershell
-New-ADUser -Name "張三" -SamAccountName "zhang" -UserPrincipalName "zhang@contoso.com.tw" -DisplayName "張三" -EmailAddress "zhang@contoso.com.tw" -Path "OU=PN,DC=123456,DC=corp" -Enabled $true -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -ChangePasswordAtLogon $true
+New-ADUser -Name '張三' -SamAccountName 'zhang' -UserPrincipalName 'zhang@contoso.com.tw' -DisplayName '張三' -EmailAddress 'zhang@contoso.com.tw' -Path 'OU=PN,DC=123456,DC=corp' -Enabled $true -AccountPassword (ConvertTo-SecureString 'TempPassword123!' -AsPlainText -Force) -ChangePasswordAtLogon $true
 ```
 
 ### 範例 2：生成多個資料夾的群組
@@ -264,13 +268,13 @@ New-ADUser -Name "張三" -SamAccountName "zhang" -UserPrincipalName "zhang@cont
 **結果：**
 ```powershell
 # 建立群組: RD_Test_RO (對應資料夾: Test)
-New-ADGroup -Name "RD_Test_RO" -GroupScope Global -GroupCategory Security -Path "DC=123456,DC=corp" -Description "資料夾: /RD/Test"
+New-ADGroup -Name 'RD_Test_RO' -GroupScope Global -GroupCategory Security -Path 'DC=123456,DC=corp' -Description '資料夾: /RD/Test'
 
 # 建立群組: RD_Test_RW (對應資料夾: Test)
-New-ADGroup -Name "RD_Test_RW" -GroupScope Global -GroupCategory Security -Path "DC=123456,DC=corp" -Description "資料夾: /RD/Test"
+New-ADGroup -Name 'RD_Test_RW' -GroupScope Global -GroupCategory Security -Path 'DC=123456,DC=corp' -Description '資料夾: /RD/Test'
 
 # 建立群組: RA_DCC_RO (對應資料夾: DCC)
-New-ADGroup -Name "RA_DCC_RO" -GroupScope Global -GroupCategory Security -Path "DC=123456,DC=corp" -Description "資料夾: /RA/DCC"
+New-ADGroup -Name 'RA_DCC_RO' -GroupScope Global -GroupCategory Security -Path 'DC=123456,DC=corp' -Description '資料夾: /RA/DCC'
 ```
 
 ### 範例 3：生成群組成員
@@ -285,8 +289,8 @@ New-ADGroup -Name "RA_DCC_RO" -GroupScope Global -GroupCategory Security -Path "
 # ========== 資料夾: /RD/Test ==========
 
 # 群組: RD_Test_RO
-Add-ADGroupMember -Identity "RD_Test_RO" -Members "zhang"
-Add-ADGroupMember -Identity "RD_Test_RO" -Members "li"
+Add-ADGroupMember -Identity 'RD_Test_RO' -Members 'zhang'
+Add-ADGroupMember -Identity 'RD_Test_RO' -Members 'li'
 ```
 
 ---
