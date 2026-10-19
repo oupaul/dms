@@ -10,6 +10,7 @@
  *   node scripts/data-clean.js --only user_a.db                 # 只預覽指定資料庫
  *   node scripts/data-clean.js --fix orphans,paths              # 只預覽指定的修正項目
  *   node scripts/data-clean.js --only user_a.db --apply --yes   # 套用（先自動備份）
+ *   node scripts/data-clean.js --only a.db --fix merge          # 預覽「合併重複的群組／資料夾」（兩份都在使用的）
  *   node scripts/data-clean.js --json                           # 輸出 JSON
  *
  * 參數
@@ -18,6 +19,7 @@
  *   --fix <項目>        safe（預設，全部）或逗號分隔：
  *                       orphans, duplicate-permissions, permission-types, paths,
  *                       unused-duplicate-groups, unused-duplicate-folders, allowed-databases
+ *                       merge＝選用的合併（merge-groups, merge-folders），不在 safe 內；可合用：safe,merge
  *   --apply --yes       真的修改。每個資料庫：先 VACUUM INTO 備份 → 單一交易修正 → 失敗整個回復
  *   --backup-dir <路徑> 備份存放處，預設 ./backups/data-clean（權限 700）
  *
@@ -49,7 +51,7 @@ function table(rows) {
 
 async function main() {
   const o = parseArgs(process.argv.slice(2));
-  if (o.help) { console.log(require('fs').readFileSync(__filename, 'utf8').split('\n').slice(3, 29).join('\n')); return 0; }
+  if (o.help) { const src = require('fs').readFileSync(__filename, 'utf8').split('\n'); console.log(src.slice(3, src.indexOf(' */')).join('\n')); return 0; }
   if (o.apply && !o.yes) {
     console.error('要真的修改資料，請同時加上 --apply --yes（先不加 --apply 預覽即可）。');
     return 2;
