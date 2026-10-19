@@ -84,4 +84,29 @@ async function waitForColumn(db, table, column) {
     (1,   'user', 1, 'write', 'weird',         'weird',   1, 'c', '2026-10-01T00:00:00+08:00', NULL),
     (1,   'user', 1, 'write', 'applied gone',  'approved',1, 'c', '2026-10-01T00:00:00+08:00', 4242)`);
   await close(bad);
+
+  // ---- dirty.db：給「資料清理」測試用的情境（每一種可自動處理的項目與需人工處理的項目）
+  const dirty = await open('dirty.db');
+  await init(dirty);
+  await waitForColumn(dirty, 'users', 'account_key');
+  await run(dirty, `INSERT INTO folders (id, name, parent_id, path) VALUES
+    (1, 'Root', NULL, '/Root'), (7, 'Sub', 1, '/WRONG'),
+    (9, 'Lonely', NULL, '/Lonely'), (10, 'Lonely', NULL, '/Lonely'),
+    (11, 'Both', NULL, '/Both'), (12, 'Both', NULL, '/Both')`);
+  await run(dirty, `INSERT INTO users (id, name, email) VALUES (1, 'U1', 'u1@example.com'), (2, 'U2', 'u2@example.com')`);
+  await run(dirty, `INSERT INTO groups (id, name) VALUES
+    (1, 'G_RO'), (2, 'G_RW'), (3, 'Holder'),
+    (4, 'Mix_RW'), (5, 'Mix_RO'), (6, 'Mix_Plain'),
+    (7, 'Dup'), (8, 'dup'),
+    (9, 'DupUsed'), (10, 'dupused')`);
+  await run(dirty, `INSERT INTO group_users (group_id, user_id) VALUES (9, 1), (10, 2), (99, 1), (1, 98)`);  // 後兩筆是孤兒
+  await run(dirty, `INSERT INTO permissions (id, folder_id, user_id, group_id, permission_type) VALUES
+    (1, 1, NULL, 4, 'write'), (2, 1, NULL, 4, 'read'),
+    (3, 1, NULL, 5, 'read'),  (4, 1, NULL, 5, 'write'),
+    (5, 1, NULL, 6, 'read'),  (6, 1, NULL, 6, 'write'),
+    (7, 7, NULL, 1, 'RO'),    (8, 7, NULL, 2, 'rw'),
+    (9, 1, 1, NULL, 'read'),  (10, 1, 1, NULL, 'read'),
+    (11, 11, NULL, 3, 'read'), (12, 12, NULL, 3, 'read'),
+    (13, 77, 1, NULL, 'read')`);                                       // 13：指向不存在的資料夾
+  await close(dirty);
 })().catch((e) => { console.error(e); process.exit(1); });

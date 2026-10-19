@@ -95,10 +95,51 @@ sudo -u <服務帳號> node scripts/data-audit.js
 腳本會告訴你有幾筆是「個人 read、群組 write」——若之後把規則改成「取最高值」，這些人的實際權限會**變高**，
 需要先和使用者確認。若這項是 0，改規則就沒有任何人受影響。
 
-## 清理（請先備份！）
+## 清理工具（`scripts/data-clean.js`）
 
-本腳本不會修改資料。確認內容後，若要清理，**先備份該資料庫檔案**（服務執行中可用
-`sqlite3 <db> ".backup '<備份檔>'"`），再用 `sqlite3` 逐一執行。以下語句已在測試資料上驗證過：
+把健檢發現、且**有明確規則**的問題自動修正。**預設只預覽，不修改任何資料。**
+
+```bash
+cd /opt/dms-dev
+sudo -u <服務帳號> node scripts/data-clean.js                      # 預覽全部資料庫（不修改）
+sudo -u <服務帳號> node scripts/data-clean.js --only paul_test.db  # 只預覽一個
+sudo -u <服務帳號> node scripts/data-clean.js --only paul_test.db --apply --yes   # 套用
+```
+
+套用時每個資料庫：先用 `VACUUM INTO` 備份（預設 `./backups/data-clean/`，目錄 700、檔案 600，並驗證備份可開啟）
+→ 在**單一交易**內修正 → 任何一步失敗整個回復 → 套用後立刻重新健檢並顯示剩下的項目。
+沒有變更的資料庫不備份、不寫入；再跑一次是冪等的。備份失敗（例如空間不足）時，該資料庫完全不會被修改。
+需要用服務帳號執行（要有寫入權限）；服務正在執行時也可以做，但請避開大量編輯的時段。
+
+| `--fix` 項目 | 做什麼 | 規則 |
+|---|---|---|
+| `orphans` | 刪除孤兒成員、指向不存在對象的權限 | 沒有對應對象，無法生效 |
+| `duplicate-permissions` | 合併同資料夾同對象的重複權限 | 類型相同 → 保留最早一筆；read 與 write 並存 → **依群組名稱後綴**：`_RW` 留 write、`_RO` 留 read（一律往名稱的語意走，因此一定不會比名稱承諾的更高）；沒有後綴或對象是人員 → 不動，列入人工處理 |
+| `permission-types` | `RO`／`RW`（含大小寫）→ `read`／`write` | 其他不認得的值不動 |
+| `paths` | 由階層重新計算資料夾路徑 | 循環中的資料夾不動 |
+| `unused-duplicate-groups` | 刪除同名群組中**沒有成員、沒有權限、沒有申請單**的多餘複本 | 每個名稱至少保留一組；兩組以上都有資料 → 人工處理 |
+| `unused-duplicate-folders` | 刪除同層同名資料夾中**沒有子資料夾、沒有權限、沒有申請單**的多餘複本 | 每組至少保留一個；兩個以上都有資料 → 人工處理 |
+| `allowed-databases` | 只對 `system.db`：移除帳號可存取清單中檔案已不存在的資料庫名稱 | 不是合法 JSON 的不動；`--fix` 不指定時預設包含 |
+
+`--fix safe`（預設）等於以上全部；也可只指定其中幾項，例如 `--fix orphans,paths`。
+
+**這支工具不會處理（只列出完整清單供你判斷）：** 兩組以上都有資料的同名群組或同名資料夾（需要合併）、
+類型不同且無法判斷的重複權限、不認得的權限類型、資料夾名稱含 `/` 等非法字元、循環、帳號名稱互為底線前綴、
+`permissions.direct_vs_group`（要先決定有效權限規則）。
+
+### 建議的上線流程
+
+1. **預覽並閱讀**：`node scripts/data-clean.js > clean-preview.txt`，特別看「重複權限」的每一筆決定（保留哪筆、刪哪筆、依據）。
+2. **用複本演練**：`cp -a databases /tmp/dbcopy`，然後
+   `node scripts/data-clean.js --dir /tmp/dbcopy --backup-dir /tmp/dbcopy-bak --apply --yes`，再跑一次
+   `node scripts/data-audit.js --dir /tmp/dbcopy` 確認結果。不碰正式資料。
+3. **正式套用**：先挑測試用的資料庫（例如 `paul_test.db`、`test.db`），確認沒問題再一個個做；最後才做 `system.db`。
+4. **保留備份**：確認使用者回報正常後再刪除 `backups/data-clean/`。
+5. 全部清零（只剩人工處理的項目）後，才進一步加上唯一索引與外鍵。
+
+### 手動清理語句（沒有這支工具時的備案）
+
+請先備份該資料庫檔案（服務執行中可用 `sqlite3 <db> ".backup '<備份檔>'"`）。以下語句已在測試資料上驗證過：
 
 ```sql
 -- 1) 孤兒成員

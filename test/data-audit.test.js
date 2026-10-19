@@ -14,25 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
-const ROOT = path.join(__dirname, '..');
-
-function prepare() {
-  const app = fs.mkdtempSync(path.join(os.tmpdir(), 'dms-audit-'));
-  fs.cpSync(path.join(ROOT, 'lib'), path.join(app, 'lib'), { recursive: true });
-  fs.cpSync(path.join(ROOT, 'scripts'), path.join(app, 'scripts'), { recursive: true });
-  fs.cpSync(path.join(ROOT, 'services'), path.join(app, 'services'), { recursive: true });
-  fs.mkdirSync(path.join(app, 'test', 'fixtures'), { recursive: true });
-  fs.copyFileSync(path.join(__dirname, 'fixtures', 'build-audit-fixture.js'), path.join(app, 'test', 'fixtures', 'build-audit-fixture.js'));
-  fs.symlinkSync(process.env.DMS_TEST_NODE_MODULES || path.join(ROOT, 'node_modules'), path.join(app, 'node_modules'), 'dir');
-  const dbDir = path.join(app, 'databases');
-  fs.mkdirSync(dbDir);
-  const build = spawnSync(process.execPath, [path.join(app, 'test', 'fixtures', 'build-audit-fixture.js'), dbDir], { cwd: app, encoding: 'utf8' });
-  assert.equal(build.status, 0, build.stderr);
-  return { app, dbDir };
-}
-
-const hashDir = (dir) => Object.fromEntries(fs.readdirSync(dir).sort().map(f =>
-  [f, crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, f))).digest('hex')]));
+const { ROOT, prepare, hashDir } = require('./helpers/audit-fixture');
 
 function runAudit(app, dbDir, extra = []) {
   return spawnSync(process.execPath, [path.join(app, 'scripts', 'data-audit.js'), '--json', '--dir', dbDir, ...extra], { cwd: app, encoding: 'utf8' });
@@ -105,7 +87,7 @@ test('資料健檢：抓得到各類壞資料，乾淨資料庫沒有問題，�
     assert.equal(find(bad.findings, 'schema.missing_indexes').count, 6);
     assert.ok(!find(bad.findings, 'schema.empty_accounts'), '空 accounts 表不再逐庫輸出');
     const agg = find(report.system.findings, 'schema.empty_accounts');
-    assert.equal(agg.count, 2);                                           // clean.db 與 bad.db
+    assert.equal(agg.count, 3);                                           // clean.db、bad.db、dirty.db
     assert.ok(!find(report.system.findings, 'schema.accounts_in_tenant'));
     // clean.db 已有 permissions(folder_id) 索引、且 permission_requests 沒資料 → 只剩 4 項
     const cleanIdx = find(clean.findings, 'schema.missing_indexes');
@@ -121,7 +103,7 @@ test('資料健檢：抓得到各類壞資料，乾淨資料庫沒有問題，�
     assert.equal(find(sys, 'accounts.prefix_clash').count, 1);
     assert.equal(find(sys, 'accounts.legacy_status').count, 1);
     assert.equal(find(sys, 'databases.registry_missing_file').count, 1);
-    assert.equal(find(sys, 'databases.unregistered_file').count, 1);       // bad.db 沒登記
+    assert.equal(find(sys, 'databases.unregistered_file').count, 2);       // bad.db 與 dirty.db 沒登記
   });
 
   await t.test('--strict：有 error 時結束碼為 1；--only 只檢查指定資料庫', () => {
