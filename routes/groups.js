@@ -15,7 +15,8 @@ const router = express.Router();
 // API: 群組
 router.get('/api/groups', withUserDatabase, (req, res) => {
   console.log('Hit /api/groups');
-  req.userDb.all('SELECT * FROM groups', (err, rows) => {
+  // member_count：資料夾權限卡片顯示人數用（只計人員仍存在的成員）；新增欄位，不影響既有使用者
+  req.userDb.all(`SELECT g.*, (SELECT COUNT(*) FROM group_users gu JOIN users u ON u.id = gu.user_id WHERE gu.group_id = g.id) AS member_count FROM groups g`, (err, rows) => {
     if (err) return internalError(res, err);
     res.json(rows || []);
   });

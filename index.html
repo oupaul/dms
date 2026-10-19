@@ -15,6 +15,9 @@
     <script src="/vendor/jquery/jquery-3.6.0.min.js"></script>
     <!-- Bootstrap JS -->
     <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+    <script src="/js/folder-access.js"></script>
+    <script src="/js/folder-access-ui.js"></script>
+    <script>FolderAccessUI.init({ getFolders: function () { return window.folderTreeData || []; } });</script>
     <style>
         /* 防止未認證內容閃爍 - 頁面載入時先隱藏內容 */
         body {
@@ -98,6 +101,7 @@
     <link rel="stylesheet" href="https://www.megapower.asia/ds/megapower.css">
     <link rel="stylesheet" href="megapower-theme.css">
     <link rel="stylesheet" href="/css/dms-theme.css">
+    <link rel="stylesheet" href="/css/folder-access.css">
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-light bg-light">
@@ -294,7 +298,10 @@
                     <button type="button" class="btn btn-secondary" onclick="hideFolderImport(); return false;">取消</button>
                 </form>
             </div>
-            <ul id="folder-tree" class="tree"></ul>
+            <div id="folder-layout" class="folder-layout">
+                <div class="folder-tree-pane"><ul id="folder-tree" class="tree"></ul></div>
+                <aside id="folder-access-card" class="folder-access-card" role="complementary" aria-label="資料夾權限" aria-live="polite" hidden></aside>
+            </div>
         </div>
 
         <div id="users-section" style="display:none;">
@@ -3589,7 +3596,9 @@ group_member,,2,4</code></pre>
                 console.log('Loaded data for ' + type + ':', data);
                 if (type === 'folders') {
                     updateFoldersDbName();
+                    window.folderTreeData = data;
                     buildTree(data, $('#folder-tree'));
+                    FolderAccessUI.restore();   // 樹重建後：快取失效，卡片依最新資料更新（資料夾已不存在就關閉）
                 } else if (type === 'users') {
                     buildTable(data, '#users-table tbody', ['id', 'account_key', 'name', 'email', 'department', 'company', 'title', 'phone', 'description'], type);
                     allUsers = data;  // 更新全球人員清單
@@ -3680,7 +3689,12 @@ group_member,,2,4</code></pre>
                     .on('change', updateFolderBatchDeleteBtn);
 
                 // 資料夾名稱(可點擊展開/收合)
-                const folderSpan = $(`<span class="folder-item" style="cursor:pointer;">${icon}${item.name} <span class="text-muted">(ID: ${item.id})</span></span>`);
+                // 名稱一律以文字節點寫入（不拼 HTML）；icon 只含程式產生的固定標記與數字
+                const folderSpan = $('<span class="folder-item" style="cursor:pointer;" role="button" tabindex="0"></span>')
+                    .attr('data-folder-id', item.id)
+                    .html(icon)
+                    .append(document.createTextNode(String(item.name == null ? '' : item.name) + ' '))
+                    .append($('<span class="text-muted"></span>').text(`(ID: ${item.id})`));
 
                 // 編輯和刪除按鈕
                 const editBtn = $(`<button class="btn btn-sm btn-outline-primary btn-edit-folder ms-2" title="編輯"><i class="bi bi-pencil"></i></button>`)
@@ -3696,8 +3710,17 @@ group_member,,2,4</code></pre>
                 const subUl = $('<ul style="display:none;" class="sub-ul"></ul>');
 
                 // 組裝:checkbox + 資料夾名稱 + 按鈕 + 子列表
-                folderSpan.on('click', function() {
-                    toggle(this);
+                // 點三角形＝展開／收合；點名稱＝選取並在右側顯示權限卡片（雙擊名稱也可展開／收合）
+                folderSpan.on('click', function(e) {
+                    if ($(e.target).closest('.folder-icon').length) { toggle(this); return; }
+                    FolderAccessUI.select(item.id);
+                }).on('dblclick', function(e) {
+                    if (!$(e.target).closest('.folder-icon').length) toggle(this);
+                }).on('keydown', function(e) {
+                    const open = $(this).closest('li').find('> .sub-ul').is(':visible');
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); FolderAccessUI.select(item.id); }
+                    else if (e.key === 'ArrowRight' && !open) { e.preventDefault(); toggle(this); }
+                    else if (e.key === 'ArrowLeft' && open) { e.preventDefault(); toggle(this); }
                 });
 
                 li.append(checkbox);

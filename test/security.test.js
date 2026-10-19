@@ -83,7 +83,7 @@ function copyApp(dest) {
     'csv_generator.html', 'user_csv_generator.html', 'permission_generator.html', 'backup_databases.sh']) {
     if (fs.existsSync(path.join(ROOT, f))) fs.copyFileSync(path.join(ROOT, f), path.join(dest, f));
   }
-  for (const d of ['lib', 'routes', 'middleware', 'services']) {
+  for (const d of ['lib', 'routes', 'middleware', 'services', 'public']) {
     if (fs.existsSync(path.join(ROOT, d))) fs.cpSync(path.join(ROOT, d), path.join(dest, d), { recursive: true });
   }
   // 可用 DMS_TEST_NODE_MODULES 指向針對目前 Node 版本編譯過的 node_modules（原生模組 sqlite3/argon2 與 Node 版本相關）
@@ -654,6 +654,30 @@ test('整合：資料關聯完整性（不產生重複／孤兒資料）', async
     assert.match(conflict.data.error, /read/);
     assert.equal((await bad({ folder_id: folder, group_id: gid, permission_type: 'write' })).status, 200);
     assert.equal(q('SELECT COUNT(*) AS c FROM permissions')[0].c, 2);
+  });
+
+  await t.test('GET /api/groups 帶 member_count（只算人員仍存在的成員）；權限卡片用的前端檔案可取得', async () => {
+    const gid = (await admin.get('/api/groups')).data.find(g => g.name === 'Team_RW').id;
+    assert.equal((await admin.get('/api/groups')).data.find(g => g.id === gid).member_count, 0);
+    assert.equal((await admin.post(`/api/groups/${gid}/users`, { user_id: userA })).status, 200);
+    assert.equal((await admin.post(`/api/groups/${gid}/users`, { user_id: userB })).status, 200);
+    assert.equal((await admin.get('/api/groups')).data.find(g => g.id === gid).member_count, 2);
+    // 孤兒成員（人員已不存在）不計入
+    sqlOn(srv.dir, 'admin.db', `INSERT INTO group_users (group_id, user_id) VALUES (${gid}, 987654)`, { write: true });
+    assert.equal((await admin.get('/api/groups')).data.find(g => g.id === gid).member_count, 2);
+    sqlOn(srv.dir, 'admin.db', `DELETE FROM group_users WHERE user_id = 987654`, { write: true });
+
+    for (const f of ['/js/folder-access.js', '/js/folder-access-ui.js', '/css/folder-access.css']) {
+      assert.equal((await admin.get(f)).status, 200, f);
+    }
+  });
+
+  await t.test('資料夾樹節點不再把名稱拼進 HTML（避免名稱含標籤被執行）', () => {
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    assert.ok(!/\$\(`<span class="folder-item"[^`]*\$\{item\.name\}/.test(html), 'buildTree 不可再以樣板字串插入 item.name');
+    assert.match(html, /createTextNode\(String\(item\.name/);
+    const ui = fs.readFileSync(path.join(ROOT, 'public', 'js', 'folder-access-ui.js'), 'utf8');
+    assert.ok(!/\.innerHTML\s*=|insertAdjacentHTML|\.html\(/.test(ui), '卡片程式不可用 innerHTML／.html() 寫入資料');
   });
 
   await t.test('刪除群組（單筆）：一併清掉成員關聯', async () => {
