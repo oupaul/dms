@@ -6,6 +6,7 @@ const express = require('express');
 const { internalError } = require('../lib/http');
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
+const { deleteUserCascade } = require('../services/relations');
 
 const router = express.Router();
 
@@ -98,7 +99,7 @@ router.delete('/api/users', withUserDatabase, (req, res) => {
       if (!user) return res.status(404).json({ error: 'Not found' });
       
       // 沒有關聯的權限，可以刪除
-      req.userDb.run('DELETE FROM users WHERE id = ?', [id], (err3) => {
+      deleteUserCascade(req.userDb, id, (err3) => {
         if (err3) return res.status(500).json({ error: err3.message });
         // 記錄審計日誌
         logAudit(req, 'delete', 'user', parseInt(id), user.name, user, null);
@@ -242,7 +243,7 @@ router.delete('/api/users/batch', withUserDatabase, (req, res) => {
         }
         
         // 刪除人員
-        req.userDb.run('DELETE FROM users WHERE id = ?', [id], (err3) => {
+        deleteUserCascade(req.userDb, id, (err3) => {
           if (err3) {
             failed.push({ id, error: err3.message });
           } else {

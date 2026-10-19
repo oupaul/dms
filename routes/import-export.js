@@ -13,6 +13,7 @@ const { withUserDatabase } = require('../middleware/user-database');
 const { ensureEditorAccess } = require('../middleware/viewer');
 const { buildPathWithDb, findFolderByNameAndParent } = require('../services/folders');
 const { dbAll, dbGet, dbRun } = require('../lib/db');
+const { findGroupByName, findPermission } = require('../services/relations');
 
 const router = express.Router();
 
@@ -861,22 +862,19 @@ router.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) =
           } else if (type === 'group') {
             const name = row.name || row.Name;
             
-            // 插入群組
-            const groupId = await new Promise((resolve, reject) => {
-              req.userDb.run('INSERT OR IGNORE INTO groups (name) VALUES (?)', 
-                [name], 
-                function(err) {
-                  if (err) {
-                    reject(err);
-                  } else {
-                    console.log(`✓ Inserted group: ${name}, ID: ${this.lastID}`);
-                    importCount++;
-                    stats.groups++;
-                    resolve(this.lastID);
-                  }
-                }
-              );
-            });
+            // 群組已存在（名稱不分大小寫）就重用，不重複建立；重複匯入同一份檔案是冪等的
+            const existingGroup = await findGroupByName(req.userDb, name);
+            let groupId;
+            if (existingGroup) {
+              groupId = existingGroup.id;
+              console.log(`↷ Group already exists, reused: ${name}, ID: ${groupId}`);
+              stats.groupsSkipped = (stats.groupsSkipped || 0) + 1;
+            } else {
+              groupId = (await dbRun(req.userDb, 'INSERT INTO groups (name) VALUES (?)', [name])).lastID;
+              console.log(`✓ Inserted group: ${name}, ID: ${groupId}`);
+              importCount++;
+              stats.groups++;
+            }
             
             // 自動指派權限：根據群組名稱自動對應資料夾
             // 格式：完整路徑_RO 或 完整路徑_RW（例如：RD_Test_Lab_RO）
@@ -924,22 +922,18 @@ router.post('/import_csv', withUserDatabase, upload.single('file'), (req, res) =
               }
               
               if (targetFolder) {
-                // 指派權限
-                await new Promise((resolve, reject) => {
-                  req.userDb.run(
-                    'INSERT OR IGNORE INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, NULL, ?, ?)',
-                    [targetFolder.id, groupId, permissionType],
-                    (err) => {
-                      if (err) {
-                        console.error(`❌ Error assigning permission for group ${name}:`, err);
-                        reject(err);
-                      } else {
-                        console.log(`✓ Auto-assigned ${permissionType} permission: group "${name}" (${groupId}) → folder "${folderPath}" (${targetFolder.id})`);
-                        resolve();
-                      }
-                    }
-                  );
-                });
+                // 指派權限：同一資料夾、同一群組已有權限就不再新增（類型不同也不自動改，只記錄警告）
+                const existingPerm = await findPermission(req.userDb, targetFolder.id, null, groupId);
+                if (existingPerm) {
+                  if (existingPerm.permission_type !== permissionType) {
+                    console.warn(`⚠ Group "${name}" already has ${existingPerm.permission_type} on folder "${folderPath}"; kept as is (import wanted ${permissionType})`);
+                  }
+                } else {
+                  await dbRun(req.userDb,
+                    'INSERT INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, NULL, ?, ?)',
+                    [targetFolder.id, groupId, permissionType]);
+                  console.log(`✓ Auto-assigned ${permissionType} permission: group "${name}" (${groupId}) → folder "${folderPath}" (${targetFolder.id})`);
+                }
               } else {
                 console.warn(`⚠ Folder with path "${folderPath}" not found for group "${name}", skipping auto-permission`);
               }

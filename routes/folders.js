@@ -6,6 +6,7 @@ const express = require('express');
 const { internalError } = require('../lib/http');
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
+const { rejectPendingForFolderTree } = require('../services/relations');
 const { buildPathWithDb, findFolderByNameAndParent, DUPLICATE_FOLDER_ERROR } = require('../services/folders');
 
 const router = express.Router();
@@ -206,13 +207,16 @@ router.delete('/api/folders', withUserDatabase, (req, res) => {
             });
           }
           
-          // 可以安全刪除
-          req.userDb.run('DELETE FROM folders WHERE id = ?', [id], (err4) => {
-            if (err4) return res.status(500).json({ error: err4.message });
-            // 記錄審計日誌
-            logAudit(req, 'delete', 'folder', parseInt(id), folder.name, folder, null);
-            console.log(`✓ Deleted folder: ${id}`);
-            res.json({ success: true });
+          // 可以安全刪除：先把這個資料夾上待審核的申請單自動駁回，避免日後核准時寫出孤兒權限
+          rejectPendingForFolderTree(req.userDb, id, (errReject) => {
+            if (errReject) return internalError(res, errReject);
+            req.userDb.run('DELETE FROM folders WHERE id = ?', [id], (err4) => {
+              if (err4) return res.status(500).json({ error: err4.message });
+              // 記錄審計日誌
+              logAudit(req, 'delete', 'folder', parseInt(id), folder.name, folder, null);
+              console.log(`✓ Deleted folder: ${id}`);
+              res.json({ success: true });
+            });
           });
         });
       });
@@ -252,13 +256,16 @@ router.delete('/api/folders', withUserDatabase, (req, res) => {
         });
       }
       
-      // 開始遞迴刪除
-      deleteFolderRecursive(parseInt(id), (err) => {
-        if (err) return internalError(res, err);
-        // 記錄審計日誌
-        logAudit(req, 'delete', 'folder', parseInt(id), folder.name, { ...folder, force: true }, null);
-        console.log(`✓ Force deleted folder: ${id}`);
-        res.json({ success: true, force: true });
+      // 開始遞迴刪除：先駁回整棵子樹上待審核的申請單（刪除後就查不到子孫了）
+      rejectPendingForFolderTree(req.userDb, id, (errReject) => {
+        if (errReject) return internalError(res, errReject);
+        deleteFolderRecursive(parseInt(id), (err) => {
+          if (err) return internalError(res, err);
+          // 記錄審計日誌
+          logAudit(req, 'delete', 'folder', parseInt(id), folder.name, { ...folder, force: true }, null);
+          console.log(`✓ Force deleted folder: ${id}`);
+          res.json({ success: true, force: true });
+        });
       });
     }
   });

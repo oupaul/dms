@@ -589,3 +589,177 @@ test('整合：資料夾不會重複（手動新增 409、重複匯入 CSV／xls
     assert.ok(afterFirst.includes('/Share/管理部/財務組'));
   });
 });
+
+// ------------------------------------------------------------------ 資料關聯完整性（源頭修正）
+// 重現 dms-prod 資料健檢（scripts/data-audit.js）發現的問題：
+//  - 刪除群組／人員（含批次）留下孤兒成員
+//  - 匯入、建立群組與權限沒有檢查是否已存在 → 重複群組、重複權限
+//  - 權限可以填任意類型、對象不明確、指向不存在的資料夾／人員
+
+// 在暫存目錄的資料庫上直接執行 SQL（回傳查詢結果；寫入用於塞入無法由 API 產生的情境）
+function sqlOn(dir, dbName, sql, { write = false } = {}) {
+  const script = `
+    const sqlite3 = require('sqlite3');
+    const db = new sqlite3.Database(${JSON.stringify(path.join(dir, 'databases', dbName))});
+    const sql = ${JSON.stringify(sql)};
+    ${write
+      ? "db.exec(sql, (e) => { if (e) { console.error(e.message); process.exit(1); } console.log('[]'); db.close(); });"
+      : "db.all(sql, (e, rows) => { if (e) { console.error(e.message); process.exit(1); } console.log(JSON.stringify(rows)); db.close(); });"}
+  `;
+  const r = require('child_process').spawnSync(process.execPath, ['-e', script], { cwd: dir, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+
+test('整合：資料關聯完整性（不產生重複／孤兒資料）', async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+
+  const admin = makeClient(srv.base, '192.0.2.90');
+  assert.equal((await admin.post('/api/auth/login', { username: 'admin', password: INITIAL_PASSWORD })).status, 200);
+  assert.equal((await admin.post('/api/auth/change-password', { currentPassword: INITIAL_PASSWORD, newPassword: NEW_ADMIN_PASSWORD })).status, 200);
+  const q = (sql) => sqlOn(srv.dir, 'admin.db', sql);
+
+  const folder = (await admin.post('/api/folders', { name: 'F', parent_id: null })).data.id;
+  const userA = (await admin.post('/api/users', { name: 'UA', email: 'ua@example.com' })).data.id;
+  const userB = (await admin.post('/api/users', { name: 'UB', email: 'ub@example.com' })).data.id;
+
+  await t.test('建立群組：同名（不分大小寫）回 409；改名成既有名稱也回 409', async () => {
+    const g = await admin.post('/api/groups', { name: 'Team_RW' });
+    assert.equal(g.status, 200);
+    assert.equal((await admin.post('/api/groups', { name: 'Team_RW' })).status, 409);
+    assert.equal((await admin.post('/api/groups', { name: 'team_rw' })).status, 409);
+    assert.equal((await admin.post('/api/groups', { name: '   ' })).status, 400);
+    const other = await admin.post('/api/groups', { name: 'Other' });
+    assert.equal((await admin.put(`/api/groups/${other.data.id}`, { name: 'TEAM_RW' })).status, 409);
+    assert.equal((await admin.put(`/api/groups/${other.data.id}`, { name: 'Other' })).status, 200);  // 原名存檔不算衝突
+  });
+
+  await t.test('新增權限：驗證類型、對象、存在性與重複', async () => {
+    const gid = (await admin.get('/api/groups')).data.find(g => g.name === 'Team_RW').id;
+    const bad = (body) => admin.post('/api/permissions', body);
+    assert.equal((await bad({ folder_id: folder, user_id: userA, permission_type: 'banana' })).status, 400);
+    assert.equal((await bad({ folder_id: folder, user_id: userA, permission_type: 'RO' })).status, 400);
+    assert.equal((await bad({ folder_id: folder, permission_type: 'read' })).status, 400, '沒指定對象');
+    assert.equal((await bad({ folder_id: folder, user_id: userA, group_id: gid, permission_type: 'read' })).status, 400, '同時指定人員與群組');
+    assert.equal((await bad({ folder_id: 99999, user_id: userA, permission_type: 'read' })).status, 400, '資料夾不存在');
+    assert.equal((await bad({ folder_id: folder, user_id: 88888, permission_type: 'read' })).status, 400, '人員不存在');
+    assert.equal((await bad({ folder_id: folder, group_id: 77777, permission_type: 'read' })).status, 400, '群組不存在');
+
+    assert.equal((await bad({ folder_id: folder, user_id: userA, permission_type: 'read' })).status, 200);
+    const dup = await bad({ folder_id: folder, user_id: userA, permission_type: 'read' });
+    assert.equal(dup.status, 409);
+    const conflict = await bad({ folder_id: folder, user_id: userA, permission_type: 'write' });
+    assert.equal(conflict.status, 409, '同對象改類型也不能再新增一筆，避免 read 與 write 並存');
+    assert.match(conflict.data.error, /read/);
+    assert.equal((await bad({ folder_id: folder, group_id: gid, permission_type: 'write' })).status, 200);
+    assert.equal(q('SELECT COUNT(*) AS c FROM permissions')[0].c, 2);
+  });
+
+  await t.test('刪除群組（單筆）：一併清掉成員關聯', async () => {
+    const g = (await admin.post('/api/groups', { name: 'ToDelete1' })).data.id;
+    await admin.post(`/api/groups/${g}/users`, { user_id: userA });
+    await admin.post(`/api/groups/${g}/users`, { user_id: userB });
+    assert.equal(q(`SELECT COUNT(*) AS c FROM group_users WHERE group_id = ${g}`)[0].c, 2);
+    assert.equal((await admin.del('/api/groups', { id: g })).status, 200);
+    assert.equal(q(`SELECT COUNT(*) AS c FROM group_users WHERE group_id = ${g}`)[0].c, 0, '不應留下孤兒成員');
+    assert.equal(q(`SELECT COUNT(*) AS c FROM groups WHERE id = ${g}`)[0].c, 0);
+  });
+
+  await t.test('刪除群組（批次）：一併清掉成員關聯', async () => {
+    const ids = [];
+    for (const n of ['Batch1', 'Batch2']) {
+      const g = (await admin.post('/api/groups', { name: n })).data.id;
+      await admin.post(`/api/groups/${g}/users`, { user_id: userA });
+      ids.push(g);
+    }
+    const r = await admin.del('/api/groups/batch', { ids });
+    assert.equal(r.status, 200);
+    assert.equal(r.data.deleted, 2);
+    assert.equal(q(`SELECT COUNT(*) AS c FROM group_users WHERE group_id IN (${ids.join(',')})`)[0].c, 0);
+  });
+
+  await t.test('刪除人員（單筆與批次）：一併清掉成員關聯', async () => {
+    const g = (await admin.post('/api/groups', { name: 'Holder' })).data.id;
+    const u1 = (await admin.post('/api/users', { name: 'D1', email: 'd1@example.com' })).data.id;
+    const u2 = (await admin.post('/api/users', { name: 'D2', email: 'd2@example.com' })).data.id;
+    const u3 = (await admin.post('/api/users', { name: 'D3', email: 'd3@example.com' })).data.id;
+    for (const u of [u1, u2, u3]) await admin.post(`/api/groups/${g}/users`, { user_id: u });
+    assert.equal((await admin.del('/api/users', { id: u1 })).status, 200);
+    assert.equal(q(`SELECT COUNT(*) AS c FROM group_users WHERE user_id = ${u1}`)[0].c, 0);
+    const b = await admin.del('/api/users/batch', { ids: [u2, u3] });
+    assert.equal(b.status, 200);
+    assert.equal(q(`SELECT COUNT(*) AS c FROM group_users WHERE user_id IN (${u2},${u3})`)[0].c, 0);
+    assert.equal(q('SELECT COUNT(*) AS c FROM group_users gu WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.id = gu.user_id) OR NOT EXISTS (SELECT 1 FROM groups g WHERE g.id = gu.group_id)')[0].c, 0,
+      '整個資料庫不應有任何孤兒成員');
+  });
+
+  await t.test('刪除對象或資料夾時，待審核的申請單自動駁回（不會留到日後核准出孤兒權限）', async () => {
+    const g = (await admin.post('/api/groups', { name: 'ReqTarget' })).data.id;
+    const u = (await admin.post('/api/users', { name: 'ReqUser', email: 'req@example.com' })).data.id;
+    const f = (await admin.post('/api/folders', { name: 'ReqFolder', parent_id: null })).data.id;
+    const child = (await admin.post('/api/folders', { name: 'ReqChild', parent_id: f })).data.id;
+    const ins = (folderId, type, uid, gid) => `INSERT INTO permission_requests (folder_id, target_type, target_user_id, target_group_id, requested_permission_type, reason, status, requested_by_account_id, requested_by_username, requested_at)
+      VALUES (${folderId}, '${type}', ${uid}, ${gid}, 'read', 't', 'pending', 1, 'c', '2026-10-01T00:00:00+08:00');`;
+    sqlOn(srv.dir, 'admin.db', ins(folder, 'group', 'NULL', g) + ins(folder, 'user', u, 'NULL') + ins(child, 'user', userA, 'NULL'), { write: true });
+    const pending = () => q("SELECT COUNT(*) AS c FROM permission_requests WHERE status = 'pending'")[0].c;
+    assert.equal(pending(), 3);
+
+    assert.equal((await admin.del('/api/groups', { id: g })).status, 200);
+    assert.equal(pending(), 2);
+    assert.equal((await admin.del('/api/users', { id: u })).status, 200);
+    assert.equal(pending(), 1);
+    // 資料夾（含子孫）：強制刪除 f 時，子資料夾 child 上的待審核申請單也要駁回
+    sqlOn(srv.dir, 'admin.db', `UPDATE permission_requests SET folder_id = ${child}, target_user_id = ${userA} WHERE status = 'pending';`, { write: true });
+    assert.equal((await admin.del('/api/folders', { id: f, force: true })).status, 200);
+    assert.equal(pending(), 0);
+    const note = q("SELECT review_note, reviewed_by_username FROM permission_requests WHERE review_note LIKE '%資料夾已刪除%'");
+    assert.equal(note.length, 1);
+    assert.equal(note[0].reviewed_by_username, '系統');
+  });
+
+  await t.test('匯出完整 CSV 再匯入兩次：群組與權限不重複', async () => {
+    const f = (await admin.post('/api/folders', { name: 'Roundtrip', parent_id: null })).data.id;
+    const g = (await admin.post('/api/groups', { name: 'Roundtrip_RW' })).data.id;
+    assert.equal((await admin.post('/api/permissions', { folder_id: f, group_id: g, permission_type: 'write' })).status, 200);
+    const counts = () => ({
+      groups: q('SELECT COUNT(*) AS c FROM groups')[0].c,
+      permissions: q('SELECT COUNT(*) AS c FROM permissions')[0].c,
+      folders: q('SELECT COUNT(*) AS c FROM folders')[0].c,
+      members: q('SELECT COUNT(*) AS c FROM group_users')[0].c
+    });
+    const before = counts();
+    const res = await fetch(`${srv.base}/export_full_csv`, { headers: { Cookie: admin.cookie(), 'X-Forwarded-Proto': 'https' } });
+    assert.equal(res.status, 200);
+    const csvBlob = await res.blob();
+    for (let i = 0; i < 2; i++) {
+      const form = new FormData();
+      form.append('file', csvBlob, 'roundtrip.csv');
+      const r = await admin.raw('POST', '/import_csv', { body: form });
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+    }
+    assert.deepEqual(counts(), before, '重複匯入不應增加任何群組、權限、資料夾或成員');
+    assert.equal(q("SELECT COUNT(*) AS c FROM (SELECT LOWER(name) FROM groups GROUP BY LOWER(name) HAVING COUNT(*) > 1)")[0].c, 0, '不應有同名群組');
+    assert.equal(q('SELECT COUNT(*) AS c FROM (SELECT folder_id, user_id, group_id FROM permissions GROUP BY 1,2,3 HAVING COUNT(*) > 1)')[0].c, 0, '不應有重複權限');
+  });
+
+  await t.test('自動生成群組並指派權限：連續執行兩次不重複；既有的相反類型權限不會再多塞一筆', async () => {
+    const root = (await admin.post('/api/folders', { name: 'AutoRoot', parent_id: null })).data.id;
+    await admin.post('/api/folders', { name: 'Sub', parent_id: root });
+    // 同名資料夾（舊資料）會產生同名群組；用 SQL 塞入重現
+    sqlOn(srv.dir, 'admin.db', `INSERT INTO folders (name, parent_id, path) VALUES ('Sub', ${root}, '/AutoRoot/Sub');`, { write: true });
+    const run = async () => (await admin.post('/api/auto-generate-groups', { folders: (await admin.get('/api/folders')).data })).data;
+    const first = await run();
+    assert.ok(first.success, JSON.stringify(first));
+    const afterFirst = { groups: q('SELECT COUNT(*) AS c FROM groups')[0].c, permissions: q('SELECT COUNT(*) AS c FROM permissions')[0].c };
+    await run();
+    assert.deepEqual({ groups: q('SELECT COUNT(*) AS c FROM groups')[0].c, permissions: q('SELECT COUNT(*) AS c FROM permissions')[0].c }, afterFirst);
+    assert.equal(q("SELECT COUNT(*) AS c FROM (SELECT LOWER(name) FROM groups GROUP BY LOWER(name) HAVING COUNT(*) > 1)")[0].c, 0, '重複的資料夾名稱不應產生同名群組');
+
+    // 群組 AutoRoot_RO 若已有 write，再自動生成時不能再多塞一筆 read
+    const roId = q("SELECT id FROM groups WHERE name = 'AutoRoot_RO'")[0].id;
+    sqlOn(srv.dir, 'admin.db', `UPDATE permissions SET permission_type = 'write' WHERE group_id = ${roId} AND folder_id = ${root};`, { write: true });
+    await run();
+    assert.equal(q(`SELECT COUNT(*) AS c FROM permissions WHERE group_id = ${roId} AND folder_id = ${root}`)[0].c, 1);
+  });
+});

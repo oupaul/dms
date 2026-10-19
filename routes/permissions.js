@@ -7,6 +7,7 @@ const { internalError } = require('../lib/http');
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
 const { insertPermissionRecord } = require('../services/permissions');
+const { validatePermissionInput } = require('../services/relations');
 
 const router = express.Router();
 
@@ -25,13 +26,21 @@ router.get('/api/permissions', withUserDatabase, (req, res) => {
 
 console.log('Registered /api/permissions');
 
-router.post('/api/permissions', withUserDatabase, (req, res) => {
+router.post('/api/permissions', withUserDatabase, async (req, res) => {
   console.log('Hit POST /api/permissions', req.body);
   const { folder_id, user_id, group_id, permission_type } = req.body;
   // 修復：驗證 folder_id 必須為有效數字
   if (!folder_id || isNaN(folder_id) || folder_id <= 0) {
     console.error('Invalid folder_id:', folder_id);
     return res.status(400).json({ error: 'folder_id must be a positive integer' });
+  }
+
+  // 類型只能是 read／write、對象二選一、資料夾與對象必須存在、同一對象在同一資料夾不能重複
+  try {
+    const problem = await validatePermissionInput(req.userDb, { folder_id, user_id, group_id, permission_type });
+    if (problem) return res.status(problem.status).json({ error: problem.error, ...(problem.id ? { id: problem.id } : {}) });
+  } catch (errValidate) {
+    return internalError(res, errValidate);
   }
   
   // 先獲取相關資訊以便記錄

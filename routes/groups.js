@@ -8,6 +8,7 @@ const { requireAuth } = require('../middleware/auth');
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
 const { dbAll, dbRun } = require('../lib/db');
+const { DUPLICATE_GROUP_ERROR, findGroupByName, deleteGroupCascade } = require('../services/relations');
 
 const router = express.Router();
 
@@ -32,10 +33,19 @@ router.get('/api/groups/:id', withUserDatabase, (req, res) => {
   });
 });
 
-router.post('/api/groups', withUserDatabase, (req, res) => {
+router.post('/api/groups', withUserDatabase, async (req, res) => {
   console.log('Hit POST /api/groups', req.body);
   const { name, description } = req.body;
-  req.userDb.run('INSERT INTO groups (name, description) VALUES (?, ?)', [name, description || ''], function(err) {
+  if (typeof name !== 'string' || name.trim() === '') {
+    return res.status(400).json({ error: '群組名稱不可為空' });
+  }
+  try {
+    const existing = await findGroupByName(req.userDb, name);
+    if (existing) return res.status(409).json({ error: DUPLICATE_GROUP_ERROR, id: existing.id });
+  } catch (errCheck) {
+    return internalError(res, errCheck);
+  }
+  req.userDb.run('INSERT INTO groups (name, description) VALUES (?, ?)', [name.trim(), description || ''], function(err) {
     if (err) return internalError(res, err);
     const groupId = this.lastID;
     // 記錄審計日誌
@@ -44,10 +54,19 @@ router.post('/api/groups', withUserDatabase, (req, res) => {
   });
 });
 
-router.put('/api/groups/:id', withUserDatabase, (req, res) => {
+router.put('/api/groups/:id', withUserDatabase, async (req, res) => {
   const { id } = req.params;
   const { name, description } = req.body;
   console.log('Hit PUT /api/groups/' + id, { name, description });
+  if (typeof name !== 'string' || name.trim() === '') {
+    return res.status(400).json({ error: '群組名稱不可為空' });
+  }
+  try {
+    const clash = await findGroupByName(req.userDb, name, parseInt(id, 10));
+    if (clash) return res.status(409).json({ error: DUPLICATE_GROUP_ERROR, id: clash.id });
+  } catch (errCheck) {
+    return internalError(res, errCheck);
+  }
 
   // 先獲取舊值
   req.userDb.get('SELECT name, description FROM groups WHERE id = ?', [id], (err, oldGroup) => {
@@ -95,7 +114,7 @@ router.delete('/api/groups', withUserDatabase, (req, res) => {
       if (!group) return res.status(404).json({ error: 'Not found' });
       
       // 沒有關聯的權限，可以刪除
-      req.userDb.run('DELETE FROM groups WHERE id = ?', [id], (err3) => {
+      deleteGroupCascade(req.userDb, id, (err3) => {
         if (err3) return res.status(500).json({ error: err3.message });
         // 記錄審計日誌
         logAudit(req, 'delete', 'group', parseInt(id), group.name, group, null);
@@ -170,7 +189,7 @@ router.delete('/api/groups/batch', withUserDatabase, (req, res) => {
         }
         
         // 刪除群組
-        req.userDb.run('DELETE FROM groups WHERE id = ?', [id], (err3) => {
+        deleteGroupCascade(req.userDb, id, (err3) => {
           if (err3) {
             failed.push({ id, error: err3.message });
           } else {
@@ -395,15 +414,18 @@ router.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
     // 先一次性獲取所有現有權限（減少查詢次數）
     const existingPermissions = (await dbAll(req.userDb, 'SELECT folder_id, group_id, permission_type FROM permissions WHERE group_id IS NOT NULL', [])) || [];
     
-    const permissionSet = new Set();
+    // 以 (資料夾, 群組) 為鍵，不分類型：同一群組在同一資料夾已有權限（即使類型和預期相反）就不再新增，
+    // 否則會變成同一群組同時有 read 與 write 兩筆。類型相反的只計數回報，不自動改。
+    const permissionSet = new Map();
     existingPermissions.forEach(p => {
-      permissionSet.add(`${p.folder_id}-${p.group_id}-${p.permission_type}`);
+      permissionSet.set(`${p.folder_id}-${p.group_id}`, p.permission_type);
     });
+    let permissionsConflicting = 0;
     
     console.log(`現有權限數量: ${existingPermissions.length}`);
     
     // 準備批次插入的資料
-    const groupsToInsert = [];
+    const groupsToInsert = new Set();   // 以 Set 去重：資料夾重名（舊資料）會產生相同的群組名稱
     const permissionsToInsert = [];
     
     for (const folder of folders) {
@@ -427,7 +449,7 @@ router.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
           groupsExisted++;
         } else {
           // 準備插入新群組
-          groupsToInsert.push(groupName);
+          groupsToInsert.add(groupName);
         }
       }
       
@@ -435,12 +457,16 @@ router.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
     }
     
     // 批次插入群組
-    if (groupsToInsert.length > 0) {
-      console.log(`批次建立 ${groupsToInsert.length} 個群組...`);
+    if (groupsToInsert.size > 0) {
+      console.log(`批次建立 ${groupsToInsert.size} 個群組...`);
       
       for (const groupName of groupsToInsert) {
-        const groupId = (await dbRun(req.userDb, 'INSERT OR IGNORE INTO groups (name) VALUES (?)', [groupName])).lastID;
-        
+        const existing = await findGroupByName(req.userDb, groupName);
+        if (existing) {            // 不分大小寫已存在：重用，不重複建立
+          groupMap[groupName] = existing.id;
+          continue;
+        }
+        const groupId = (await dbRun(req.userDb, 'INSERT INTO groups (name) VALUES (?)', [groupName])).lastID;
         if (groupId > 0) {
           groupMap[groupName] = groupId;
           groupsCreated++;
@@ -466,11 +492,13 @@ router.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
         const groupId = groupMap[groupName];
         
         if (groupId) {
-          const permKey = `${folderId}-${groupId}-${permType}`;
-          
+          const permKey = `${folderId}-${groupId}`;
+
           if (permissionSet.has(permKey)) {
             permissionsExisted++;
+            if (permissionSet.get(permKey) !== permType) permissionsConflicting++;
           } else {
+            permissionSet.set(permKey, permType);   // 同一次執行內也不重複排入
             permissionsToInsert.push({
               folderId,
               groupId,
@@ -488,7 +516,7 @@ router.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
       for (const perm of permissionsToInsert) {
         await new Promise((resolve, reject) => {
           req.userDb.run(
-            'INSERT OR IGNORE INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, NULL, ?, ?)',
+            'INSERT INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (?, NULL, ?, ?)',
             [perm.folderId, perm.groupId, perm.permType],
             function(err) {
               if (err) reject(err);
@@ -512,6 +540,7 @@ router.post('/api/auto-generate-groups', withUserDatabase, async (req, res) => {
       groupsExisted,
       permissionsCreated,
       permissionsExisted,
+      permissionsConflicting,
       foldersProcessed
     };
     
