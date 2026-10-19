@@ -208,6 +208,12 @@ if [ -z "$USERNAME" ]; then
     exit 1
 fi
 
+# 使用者名稱只允許英數字與底線（同系統註冊規則），避免 SQL 注入
+if [[ ! "$USERNAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+    print_error "使用者名稱只能包含英數字和底線"
+    exit 1
+fi
+
 # 檢查帳號是否存在
 ACCOUNT_EXISTS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM accounts WHERE username = '$USERNAME';")
 
@@ -221,7 +227,7 @@ fi
 
 # 獲取新密碼
 if [ -z "$NEW_PASSWORD_PARAM" ]; then
-    echo "請輸入新密碼（至少 6 個字元）："
+    echo "請輸入新密碼（至少 10 個字元，含大寫、小寫、數字、符號中至少三類）："
     read -rs NEW_PASSWORD
     echo ""
     echo "請再次確認新密碼："
@@ -233,16 +239,10 @@ if [ -z "$NEW_PASSWORD_PARAM" ]; then
         exit 1
     fi
     
-    if [ ${#NEW_PASSWORD} -lt 6 ]; then
-        print_error "密碼長度至少需要 6 個字元"
-        exit 1
-    fi
 else
+    # 注意：密碼放在命令列參數會出現在 ps 與 shell 歷史紀錄中，建議改用互動輸入
+    print_warning "密碼以參數傳入會留在 shell 歷史紀錄，建議不帶密碼參數、改用互動輸入"
     NEW_PASSWORD="$NEW_PASSWORD_PARAM"
-    if [ ${#NEW_PASSWORD} -lt 6 ]; then
-        print_error "密碼長度至少需要 6 個字元"
-        exit 1
-    fi
 fi
 
 # 顯示帳號資訊
@@ -273,10 +273,17 @@ fi
 # 生成 Node.js 腳本來產生 argon2 雜湊
 cat > "$NODE_SCRIPT" << 'NODE_EOF'
 const argon2 = require('argon2');
+const security = require('./lib/security');
 
 async function generateHash() {
-    const password = process.argv[2];
+    const password = process.env.DMS_NEW_PASSWORD;
+    const username = process.env.DMS_TARGET_USER;
     try {
+        const problem = security.validatePassword(password, username);
+        if (problem) {
+            console.error('POLICY:' + problem);
+            process.exit(2);
+        }
         const hash = await argon2.hash(password);
         console.log(hash);
         process.exit(0);
@@ -324,21 +331,20 @@ APP_NODE_SCRIPT="$APP_DIR/generate_hash_$$.js"
 cp "$NODE_SCRIPT" "$APP_NODE_SCRIPT"
 
 # 執行腳本生成雜湊
-PASSWORD_HASH=$(node "$APP_NODE_SCRIPT" "$NEW_PASSWORD" 2>&1)
+PASSWORD_HASH=$(DMS_NEW_PASSWORD="$NEW_PASSWORD" DMS_TARGET_USER="$USERNAME" node "$APP_NODE_SCRIPT" 2>&1)
 EXIT_CODE=$?
 
 # 清理臨時腳本
 rm -f "$APP_NODE_SCRIPT"
 
 # 檢查是否成功
+if [ $EXIT_CODE -eq 2 ]; then
+    print_error "密碼不符合政策：${PASSWORD_HASH#POLICY:}"
+    exit 1
+fi
 if [ $EXIT_CODE -ne 0 ] || [ -z "$PASSWORD_HASH" ] || [[ ! "$PASSWORD_HASH" =~ ^\$argon2 ]]; then
     print_error "密碼雜湊生成失敗"
     echo "錯誤訊息：$PASSWORD_HASH"
-    exit 1
-fi
-
-if [ -z "$PASSWORD_HASH" ] || [ ! "$PASSWORD_HASH" =~ ^\$argon2 ]; then
-    print_error "密碼雜湊生成失敗"
     exit 1
 fi
 
@@ -349,6 +355,18 @@ UPDATE accounts
 SET password_hash = '$PASSWORD_HASH' 
 WHERE username = '$USERNAME';
 EOF
+
+# 重置後的密碼視為臨時密碼：下次登入強制修改（舊資料庫若尚無此欄位則略過）
+if sqlite3 "$DB_PATH" "PRAGMA table_info(accounts);" | grep -q "|must_change_password|"; then
+    sqlite3 "$DB_PATH" "UPDATE accounts SET must_change_password = 1 WHERE username = '$USERNAME';"
+fi
+
+# 讓該帳號既有的登入全部失效
+SESSION_DB="$APP_DIR/sessions/sessions.sqlite"
+if [ -f "$SESSION_DB" ]; then
+    TARGET_ID=$(sqlite3 "$DB_PATH" "SELECT id FROM accounts WHERE username = '$USERNAME';")
+    sqlite3 "$SESSION_DB" "DELETE FROM sessions WHERE user_id = $TARGET_ID;" 2>/dev/null || true
+fi
 
 # 驗證更新
 UPDATED=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM accounts WHERE username = '$USERNAME' AND password_hash = '$PASSWORD_HASH';")
@@ -361,7 +379,7 @@ if [ "$UPDATED" -eq 1 ]; then
     echo ""
     echo "📋 後續步驟："
     echo "  1. 使用新密碼登入系統"
-    echo "  2. 建議登入後立即修改密碼"
+    echo "  2. 系統會要求您立即自行修改密碼"
     echo ""
 else
     print_error "密碼更新失敗"

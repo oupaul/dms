@@ -1,0 +1,264 @@
+/* ============================================================================
+ * DMS 介面主題：近乎單色 + 一個節制的強調色
+ * ----------------------------------------------------------------------------
+ * 載入順序：Bootstrap → megapower.css（外部）→ megapower-theme.css → 本檔（最後載入）。
+ *
+ * 原則
+ *  - 白／極淺灰底，一種深色文字、一種灰色次要文字、細邊框
+ *  - 主要按鈕＝深板岩實心；其餘按鈕一律白底細框；破壞性動作只在 hover 才轉紅
+ *  - 橘色（品牌強調色）只用在：目前所在頁面的底線、連結 hover、輸入框 focus
+ *  - 顏色只在「本身就是資訊」時保留：錯誤訊息／必填星號（紅）、啟用狀態（綠）
+ *  - 固定淺色：內部管理工具不跟隨作業系統深色模式。依 Megapower 設計系統的規範，各頁 <html> 都釘上
+ *    data-theme="light"（外部 megapower.css 的深色 token 只在 :root:not([data-theme="light"]) 生效），
+ *    不再出現導覽列亮、頁面深的混搭，也避免只覆寫部分 token 造成對比不足。
+ * ========================================================================== */
+
+:root {
+  color-scheme: light;
+  --ds-bg: #F8FAFC;
+  --ds-surface: #FFFFFF;
+  --ds-border: #E2E8F0;
+  --ds-border-strong: #CBD5E1;
+  --ds-hover: #F1F5F9;
+  --ds-text: #1E293B;
+  --ds-muted: #64748B;
+  --ds-accent: #F06000;
+  --ds-accent-rgb: 240, 96, 0;
+  --ds-danger: #B91C1C;
+  --ds-success: #15803D;
+
+  --bs-body-bg: #F8FAFC;
+  --bs-body-color: #1E293B;
+}
+
+html, body { color-scheme: light; }
+body {
+  background: var(--ds-bg) !important;
+  color: var(--ds-text) !important;
+}
+.text-muted { color: var(--ds-muted) !important; }
+
+/* ---------------------------------------------------------------- 導覽列 */
+.navbar {
+  background: var(--ds-surface) !important;
+  border-bottom: 1px solid var(--ds-border);
+  box-shadow: none !important;
+}
+.navbar-brand { color: var(--ds-text) !important; font-weight: 700; }
+.navbar-nav { flex-wrap: wrap; }
+.navbar .nav-link,
+.navbar .nav-link[class*="text-"] {
+  color: var(--ds-muted) !important;
+  white-space: nowrap;          /* 不再把中文一個字一個字斷行 */
+  font-size: .9rem;
+  padding: .6rem .7rem !important;
+  border-radius: 0;
+}
+.navbar .nav-link i:not(.text-success) { color: var(--ds-muted) !important; }
+.navbar .nav-link:hover,
+.navbar .nav-link:focus { color: var(--ds-text) !important; }
+/* 目前所在頁面：深色文字 + 橘色底線 */
+.navbar .nav-link.active {
+  color: var(--ds-text) !important;
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--ds-accent);
+}
+.dropdown-menu {
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, .10);
+  background: var(--ds-surface);
+}
+.dropdown-item { color: var(--ds-text) !important; font-size: .9rem; }
+.dropdown-item i:not(.text-success) { color: var(--ds-muted) !important; }
+.dropdown-item:hover, .dropdown-item:focus { background: var(--ds-hover); }
+.dropdown-item.active, .dropdown-item:active {
+  background: var(--ds-hover) !important;
+  color: var(--ds-text) !important;
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--ds-accent);
+}
+.dropdown-header { color: var(--ds-muted); font-weight: 600; }
+/* 破壞性選項：平常中性，hover 才轉紅 */
+.dropdown-item.item-danger:hover { background: #FEF2F2; color: var(--ds-danger) !important; }
+.dropdown-item.item-danger:hover i { color: var(--ds-danger) !important; }
+/* 待處理數量徽章：深色實心，才看得到 */
+#permission-requests-badge {
+  background: var(--ds-text) !important;
+  color: #fff !important;
+  border: 0;
+}
+
+/* ---------------------------------------------------------------- 按鈕 */
+.btn {
+  border-radius: 6px;
+  font-weight: 500;
+  transition: background-color .15s, border-color .15s, box-shadow .15s, transform .15s;
+}
+/* 主要按鈕：深板岩實心 */
+.btn-primary,
+.btn-primary:focus,
+.btn-primary:active {
+  background: var(--ds-text) !important;
+  border-color: var(--ds-text) !important;
+  color: #fff !important;
+}
+.btn-primary:hover {
+  background: var(--ds-text) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 15px rgba(30, 41, 59, .35);
+}
+.btn-primary:disabled, .btn-primary.disabled { opacity: .5; transform: none; box-shadow: none; }
+/* 其餘全部：白底細框 */
+.btn-secondary, .btn-success, .btn-info, .btn-warning, .btn-light, .btn-danger,
+.btn-outline-primary, .btn-outline-secondary, .btn-outline-success,
+.btn-outline-warning, .btn-outline-info, .btn-outline-danger {
+  background: var(--ds-surface) !important;
+  border: 1px solid var(--ds-border-strong) !important;
+  color: var(--ds-text) !important;
+}
+.btn-secondary:hover, .btn-success:hover, .btn-info:hover, .btn-warning:hover, .btn-light:hover,
+.btn-outline-primary:hover, .btn-outline-secondary:hover, .btn-outline-success:hover,
+.btn-outline-warning:hover, .btn-outline-info:hover {
+  background: var(--ds-hover) !important;
+  border-color: var(--ds-muted) !important;
+}
+/* 破壞性動作：hover 才轉紅 */
+.btn-danger:hover, .btn-outline-danger:hover {
+  background: #FEF2F2 !important;
+  border-color: #FCA5A5 !important;
+  color: var(--ds-danger) !important;
+}
+/* 對話框裡「確認刪除／清空」這類最後一步：維持紅色實心，避免誤按 */
+.modal .btn-danger {
+  background: var(--ds-danger) !important;
+  border-color: var(--ds-danger) !important;
+  color: #fff !important;
+}
+.modal .btn-danger:hover { background: #991B1B !important; border-color: #991B1B !important; color: #fff !important; }
+.btn:focus-visible { box-shadow: 0 0 0 .2rem rgba(var(--ds-accent-rgb), .25) !important; }
+.btn-close:focus { box-shadow: 0 0 0 .2rem rgba(var(--ds-accent-rgb), .25); }
+
+/* ---------------------------------------------------------------- 提示框：同一種中性樣式，只有錯誤保留紅色細線 */
+.alert {
+  background: var(--ds-surface) !important;
+  color: var(--ds-text) !important;
+  border: 1px solid var(--ds-border) !important;
+  border-left: 3px solid var(--ds-text) !important;
+  border-radius: 6px;
+}
+.alert-danger { border-left-color: var(--ds-danger) !important; }
+.alert i:not(.text-danger):not(.text-success) { color: var(--ds-muted) !important; }
+.alert .alert-link { color: var(--ds-text); text-decoration: underline; }
+
+/* ---------------------------------------------------------------- 卡片、彈窗、表格 */
+.card, .modal-content {
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border) !important;
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+}
+.modal-content { box-shadow: 0 10px 40px rgba(15, 23, 42, .18); }
+/* 標題列不用色塊 */
+.card-header, .modal-header,
+.card-header.bg-primary, .card-header.bg-success, .card-header.bg-warning,
+.card-header.bg-info, .card-header.bg-danger, .card-header.bg-dark,
+.modal-header.bg-primary, .modal-header.bg-success, .modal-header.bg-warning,
+.modal-header.bg-info, .modal-header.bg-danger, .modal-header.bg-dark {
+  background: var(--ds-surface) !important;
+  color: var(--ds-text) !important;
+  border-bottom: 1px solid var(--ds-border) !important;
+}
+.modal-header .btn-close-white { filter: none; }
+.modal-header .text-white, .card-header .text-white { color: var(--ds-text) !important; }
+.table { --bs-table-bg: transparent; }
+.table thead th {
+  background: var(--ds-bg);
+  color: var(--ds-muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--ds-border);
+}
+.table-hover > tbody > tr:hover > * { background: var(--ds-hover); }
+.table-striped > tbody > tr:nth-of-type(odd) > * { background: var(--ds-bg); }
+.table-dark, .table-dark > th, .table-dark > td {
+  --bs-table-bg: var(--ds-bg); --bs-table-color: var(--ds-muted);
+  color: var(--ds-muted);
+}
+/* 終端機風格輸出區塊維持深色（內容是程式碼，深色底較易讀） */
+pre.bg-dark { background: #0F172A !important; color: #E2E8F0 !important; border-radius: 0 0 10px 10px; }
+
+/* ---------------------------------------------------------------- 文字色與徽章 */
+.text-primary, .text-info, .text-warning { color: var(--ds-text) !important; }
+a { color: var(--ds-text); }
+a:hover { color: var(--ds-accent); }
+a.btn:hover { color: inherit; }
+.badge, .badge[class*="bg-"], .badge[class*="text-bg-"] {
+  background: var(--ds-hover) !important;
+  color: #475569 !important;
+  border: 1px solid var(--ds-border);
+  font-weight: 500;
+}
+.badge.bg-success { color: var(--ds-success) !important; }       /* 啟用／成功：唯一保留的綠 */
+/* 資料夾樹與圖示：灰階，不再橘色 */
+.folder-icon, .tree .bi-folder-fill, .tree .bi-folder2-open { color: var(--ds-muted) !important; }
+.folder-item:hover { background-color: var(--ds-hover); }
+.list-group-item.active, .page-item.active .page-link {
+  background: var(--ds-text) !important;
+  border-color: var(--ds-text) !important;
+  color: #fff !important;
+}
+.page-link { color: var(--ds-text); }
+.progress-bar { background-color: var(--ds-text) !important; }
+
+/* ---------------------------------------------------------------- 表單 */
+.form-control, .form-select { border-color: var(--ds-border-strong); border-radius: 6px; }
+.form-control:focus, .form-select:focus {
+  border-color: var(--ds-accent) !important;
+  box-shadow: 0 0 0 .2rem rgba(var(--ds-accent-rgb), .15) !important;
+}
+.form-check-input:checked {
+  background-color: var(--ds-text) !important;
+  border-color: var(--ds-text) !important;
+}
+.form-check-input:focus {
+  border-color: var(--ds-accent) !important;
+  box-shadow: 0 0 0 .2rem rgba(var(--ds-accent-rgb), .15) !important;
+}
+
+/* ---------------------------------------------------------------- 分頁籤 */
+.nav-tabs { border-bottom: 1px solid var(--ds-border); }
+.nav-tabs .nav-link { color: var(--ds-muted); border: 0; }
+.nav-tabs .nav-link:hover { color: var(--ds-text); }
+.nav-tabs .nav-link.active, .nav-pills .nav-link.active {
+  background: transparent !important;
+  color: var(--ds-text) !important;
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 var(--ds-accent);
+}
+
+/* ---------------------------------------------------------------- 登入頁 */
+.login-container {
+  border: 1px solid var(--ds-border);
+  box-shadow: 0 10px 40px rgba(15, 23, 42, .10) !important;
+}
+.login-header {
+  background: var(--ds-surface) !important;
+  color: var(--ds-text) !important;
+  border-bottom: 1px solid var(--ds-border);
+}
+.login-header p, .login-header small { color: var(--ds-muted) !important; }
+.btn-login, .btn-register {
+  background: var(--ds-text) !important;
+  color: #fff !important;
+  border: 0 !important;
+}
+.btn-login:hover, .btn-register:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 15px rgba(30, 41, 59, .35) !important;
+}
+.alert-custom { border-radius: 6px; }
+
+/* ---------------------------------------------------------------- 列印／小螢幕 */
+@media (max-width: 991.98px) {
+  .navbar .nav-link { padding: .5rem .25rem !important; }
+}
