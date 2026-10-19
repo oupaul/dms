@@ -71,7 +71,7 @@ async function main() {
     for (const f of d.fixes) {
       const verb = o.apply ? '已處理' : '將處理';
       if (f.count > 0) console.log(`   ✔ ${f.title}：${verb} ${f.count} 筆`);
-      else console.log(`   ! ${f.title}`);
+      else console.log(`   ! ${f.title}：沒有可自動處理的項目，只有需要人工處理的`);
       if (f.details.length) console.log(table(f.details.slice(0, 8)) + (f.details.length > 8 ? `\n        · …其餘 ${f.details.length - 8} 筆省略` : ''));
       if (f.manual.length) {
         console.log(`   ! 需人工處理（${f.manual.length} 項，這支工具不會動）：`);
