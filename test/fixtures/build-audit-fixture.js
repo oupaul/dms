@@ -13,11 +13,21 @@ const open = (name) => new Promise((resolve, reject) => {
 const run = (db, sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, (err) => (err ? reject(err) : resolve())));
 const init = (db) => new Promise((resolve, reject) => initializeTables(db, (err) => (err ? reject(err) : resolve())));
 const close = (db) => new Promise((resolve) => db.close(resolve));
+// initializeTables 的欄位補丁（ALTER TABLE）是在回呼之後非同步完成的，先等欄位出現再寫入資料
+const all = (db, sql) => new Promise((resolve, reject) => db.all(sql, (err, rows) => (err ? reject(err) : resolve(rows))));
+async function waitForColumn(db, table, column) {
+  for (let i = 0; i < 100; i++) {
+    if ((await all(db, `PRAGMA table_info(${table})`)).some(c => c.name === column)) return;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  throw new Error(`等不到 ${table}.${column}`);
+}
 
 (async () => {
   // ---- system.db：帳號與資料庫登記
   const sys = await open('system.db');
   await init(sys);
+  await waitForColumn(sys, 'accounts', 'role_level');
   await run(sys, `CREATE TABLE IF NOT EXISTS databases (name TEXT PRIMARY KEY, display_name TEXT, created_by TEXT, created_at DATETIME, description TEXT)`);
   const acc = (u, status, userDb, allowed) => run(sys,
     `INSERT INTO accounts (username, password_hash, status, user_database, allowed_databases) VALUES (?, 'x', ?, ?, ?)`, [u, status, userDb, allowed]);
@@ -43,6 +53,7 @@ const close = (db) => new Promise((resolve) => db.close(resolve));
   // ---- bad.db：各種壞資料
   const bad = await open('bad.db');
   await init(bad);
+  await waitForColumn(bad, 'users', 'account_key');
   await run(bad, `INSERT INTO folders (id, name, parent_id, path) VALUES
     (1, 'Root', NULL, '/Root'),
     (2, 'Child', 1, '/Root/Child'),

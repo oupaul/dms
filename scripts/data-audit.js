@@ -70,7 +70,7 @@ async function main() {
       const s = d.stats;
       const counts = ['folders', 'users', 'groups', 'group_users', 'permissions', 'permission_requests']
         .filter(t => s[t] !== null).map(t => `${{ folders: '資料夾', users: '人員', groups: '群組', group_users: '成員', permissions: '權限', permission_requests: '申請單' }[t]} ${s[t]}`).join('、');
-      console.log(`\n■ ${d.name}　（${counts || '無資料表'}）`);
+      console.log(`\n■ ${d.name}　（${counts || '無資料表'}）${d.snapshot ? '　〔以暫存快照檢查〕' : ''}`);
       if (!d.findings.length) console.log('   ✔ 沒有發現問題');
       else d.findings.forEach(printFinding);
     }
@@ -80,6 +80,10 @@ async function main() {
       report.errors.forEach(e => console.log(`   ✘ ${e.database}：${e.error}`));
     }
 
+    if (report.snapshots.length) {
+      console.log(`\n註：${report.snapshots.length} 個資料庫因目前使用者對資料庫目錄沒有寫入權限（WAL 模式的唯讀限制），改以「暫存快照」檢查——`
+        + '複製到權限 700 的暫存目錄、檢查完立刻刪除，原檔完全沒被碰。若要避免，請用服務帳號執行（sudo -u <服務帳號> …）。');
+    }
     const s = report.summary;
     console.log('\n' + '─'.repeat(60));
     console.log(`共檢查 ${s.databases} 個資料庫：${paint.error(`${s.error} 項問題`)}、${paint.warn(`${s.warn} 項警告`)}、${paint.info(`${s.info} 項提示`)}`);

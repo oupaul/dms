@@ -139,3 +139,47 @@ test('資料健檢：抓得到各類壞資料，乾淨資料庫沒有問題，�
     assert.match(out.stdout, /共檢查 \d+ 個資料庫：\d+ 項問題/);
   });
 });
+
+test('資料健檢：WAL 資料庫在「對目前使用者唯讀」的目錄也能檢查（改用暫存快照），且不碰原檔、不留暫存檔', async (t) => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    t.skip('root 不受目錄唯讀限制，無法模擬');
+    return;
+  }
+  const { app, dbDir } = prepare();
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'dms-audit-tmproot-'));
+  t.after(() => {
+    fs.chmodSync(dbDir, 0o755);
+    for (const f of fs.readdirSync(dbDir)) fs.chmodSync(path.join(dbDir, f), 0o644);
+    fs.rmSync(app, { recursive: true, force: true });
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // 把 bad.db 轉成 WAL 模式（關閉最後一個連線後 -wal／-shm 會消失，只剩檔頭標記為 WAL）
+  const conv = spawnSync(process.execPath, ['-e', `
+    const sqlite3 = require('sqlite3');
+    const db = new sqlite3.Database(${JSON.stringify(path.join(dbDir, 'bad.db'))});
+    db.run('PRAGMA journal_mode = WAL', (e) => { if (e) { console.error(e); process.exit(1); } db.close(() => process.exit(0)); });
+  `], { cwd: app, encoding: 'utf8' });
+  assert.equal(conv.status, 0, conv.stderr);
+  assert.ok(!fs.existsSync(path.join(dbDir, 'bad.db-wal')), '關閉後不應留下 -wal');
+
+  // 目錄與檔案都改成唯讀：模擬「不是服務帳號、沒有寫入權限」
+  for (const f of fs.readdirSync(dbDir)) fs.chmodSync(path.join(dbDir, f), 0o444);
+  fs.chmodSync(dbDir, 0o555);
+  const before = hashDir(dbDir);
+
+  const proc = spawnSync(process.execPath, [path.join(app, 'scripts', 'data-audit.js'), '--json', '--dir', dbDir, '--only', 'bad.db'], {
+    cwd: app, encoding: 'utf8', env: { ...process.env, TMPDIR: tmpRoot }
+  });
+  assert.equal(proc.status, 0, proc.stderr);
+  const report = JSON.parse(proc.stdout);
+
+  assert.deepEqual(report.errors, [], '不應該有無法檢查的資料庫');
+  assert.deepEqual(report.snapshots, ['bad.db'], '應該走快照路徑');
+  const bad = report.databases.find(d => d.name === 'bad.db');
+  assert.equal(bad.snapshot, true);
+  assert.equal(bad.findings.find(f => f.id === 'permissions.orphan_folder').count, 1, '快照內容要和原檔一致');
+  assert.deepEqual(hashDir(dbDir), before, '原檔不可被修改');
+  assert.deepEqual(fs.readdirSync(tmpRoot), [], '暫存快照要被刪除');
+  assert.ok(!fs.existsSync(path.join(dbDir, 'bad.db-wal')) && !fs.existsSync(path.join(dbDir, 'bad.db-shm')), '原目錄不可出現 -wal／-shm');
+});
