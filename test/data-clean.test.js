@@ -57,6 +57,20 @@ test('資料清理', async (t) => {
     assert.deepEqual(hashDir(dbDir), before);
   });
 
+  await t.test('--only 名稱：沒寫 .db 也能比對；對不上任何檔案就報錯，不能默默當成沒事', () => {
+    const before = hashDir(dbDir);
+    const ok = clean(app, dbDir, ['--only', 'dirty']);
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.ok(fixOf(json(ok), 'dirty.db', 'orphans.group_users'), '省略 .db 仍應比對到 dirty.db');
+
+    const bad = clean(app, dbDir, ['--only', 'dirty.db,不存在的庫', '--apply', '--yes', '--backup-dir', backupDir]);
+    assert.equal(bad.status, 2);
+    assert.match(bad.stderr, /找不到這些資料庫/);
+    assert.match(bad.stderr, /不存在的庫\.db/);
+    assert.deepEqual(hashDir(dbDir), before, '名稱有誤時，連名稱正確的庫也不可被修改');
+    assert.ok(!fs.existsSync(backupDir));
+  });
+
   await t.test('備份目錄無法建立 → 該資料庫不被修改', () => {
     const blocker = path.join(app, 'not-a-dir');
     fs.writeFileSync(blocker, 'x');

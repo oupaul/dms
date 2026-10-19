@@ -56,6 +56,11 @@ async function main() {
   }
 
   const report = await cleanAll(o.dir, o);
+  if (report.unmatched.length) {
+    console.error(`找不到這些資料庫（請確認檔名，位於 ${o.dir}）：\n  ${report.unmatched.join('\n  ')}`);
+    console.error('未做任何修改。');
+    return 2;
+  }
   if (o.json) { console.log(JSON.stringify(report, null, 2)); return report.errors.length ? 3 : 0; }
 
   console.log(`DMS 資料清理 — ${o.dir}`);
