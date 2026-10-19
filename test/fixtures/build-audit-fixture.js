@@ -1,0 +1,76 @@
+'use strict';
+// 在暫存目錄建立「刻意混入各種壞資料」的資料庫，供 data-audit 測試使用。
+// 用法：node build-audit-fixture.js <資料庫目錄>   （需在能 require('sqlite3') 的環境執行）
+const path = require('path');
+const sqlite3 = require('sqlite3');
+const { initializeTables } = require('../../services/schema');
+
+const dir = process.argv[2];
+
+const open = (name) => new Promise((resolve, reject) => {
+  const db = new sqlite3.Database(path.join(dir, name), (err) => (err ? reject(err) : resolve(db)));
+});
+const run = (db, sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, (err) => (err ? reject(err) : resolve())));
+const init = (db) => new Promise((resolve, reject) => initializeTables(db, (err) => (err ? reject(err) : resolve())));
+const close = (db) => new Promise((resolve) => db.close(resolve));
+
+(async () => {
+  // ---- system.db：帳號與資料庫登記
+  const sys = await open('system.db');
+  await init(sys);
+  await run(sys, `CREATE TABLE IF NOT EXISTS databases (name TEXT PRIMARY KEY, display_name TEXT, created_by TEXT, created_at DATETIME, description TEXT)`);
+  const acc = (u, status, userDb, allowed) => run(sys,
+    `INSERT INTO accounts (username, password_hash, status, user_database, allowed_databases) VALUES (?, 'x', ?, ?, ?)`, [u, status, userDb, allowed]);
+  await acc('alice', 'active', 'clean.db', null);
+  await acc('alice_x', 'active', 'user_alice_x.db', null);          // 與 alice 互為底線前綴；預設資料庫檔案不存在
+  await acc('bob', 'active', 'clean.db', '["clean.db","gone.db"]');  // 可存取清單含不存在的資料庫
+  await acc('carol', 'active', 'clean.db', '{not json');              // 不是合法 JSON
+  await acc('dave', 'pending', 'clean.db', null);                     // 舊式申請帳號
+  await run(sys, `INSERT INTO databases (name, created_by) VALUES ('clean.db', 'alice'), ('ghost.db', 'alice')`); // ghost.db 沒有檔案；bad.db 沒登記
+  await close(sys);
+
+  // ---- clean.db：乾淨的資料
+  const clean = await open('clean.db');
+  await init(clean);
+  await run(clean, `INSERT INTO folders (id, name, parent_id, path) VALUES (1, 'Share', NULL, '/Share'), (2, 'HR', 1, '/Share/HR')`);
+  await run(clean, `INSERT INTO users (id, name, email) VALUES (1, 'Ann', 'ann@example.com')`);
+  await run(clean, `INSERT INTO groups (id, name) VALUES (1, 'HR_RW')`);
+  await run(clean, `INSERT INTO group_users (group_id, user_id) VALUES (1, 1)`);
+  await run(clean, `INSERT INTO permissions (folder_id, user_id, group_id, permission_type) VALUES (2, NULL, 1, 'write')`);
+  await run(clean, 'CREATE INDEX idx_permissions_folder ON permissions(folder_id)');  // 驗證「已有索引的欄位」不會被誤報
+  await close(clean);
+
+  // ---- bad.db：各種壞資料
+  const bad = await open('bad.db');
+  await init(bad);
+  await run(bad, `INSERT INTO folders (id, name, parent_id, path) VALUES
+    (1, 'Root', NULL, '/Root'),
+    (2, 'Child', 1, '/Root/Child'),
+    (3, 'Child', 1, '/Root/Child'),
+    (4, 'Orphan', 99, '/Orphan'),
+    (5, 'A', 6, '/x'),
+    (6, 'B', 5, '/y'),
+    (7, 'bad:name', NULL, '/bad:name'),
+    (8, 'X', 1, '/wrong')`);
+  await run(bad, `INSERT INTO users (id, name, email, account_key) VALUES
+    (1, 'U1', 'u1@example.com', 'u1'), (2, 'U2', 'U2@example.com', 'U2'), (3, 'U3', 'u2@example.com', 'u2')`);
+  await run(bad, `INSERT INTO groups (id, name) VALUES (1, 'G'), (2, 'g'), (3, 'Empty')`);
+  await run(bad, `INSERT INTO group_users (group_id, user_id) VALUES (1, 1), (99, 1), (1, 98)`);
+  await run(bad, `INSERT INTO permissions (id, folder_id, user_id, group_id, permission_type) VALUES
+    (1, 1, 1, NULL, 'read'),
+    (2, 1, 1, NULL, 'read'),
+    (3, 2, 2, NULL, 'banana'),
+    (4, 2, 1, 1, 'write'),
+    (5, 2, NULL, NULL, 'read'),
+    (6, 77, 1, NULL, 'read'),
+    (7, 2, 55, NULL, 'read'),
+    (8, 2, NULL, 66, 'read'),
+    (9, 3, 1, NULL, 'read'),
+    (10, 3, NULL, 1, 'write')`);   // 人員 1 在資料夾 3：個人 read、所屬群組 1 write → 直接 vs 群組不一致
+  await run(bad, `INSERT INTO permission_requests (folder_id, target_type, target_user_id, requested_permission_type, reason, status, requested_by_account_id, requested_by_username, requested_at, applied_permission_id) VALUES
+    (555, 'user', 1, 'write', 'orphan folder', 'pending', 1, 'c', '2026-10-01T00:00:00+08:00', NULL),
+    (1,   'user', 1, 'write', 'stale',         'pending', 1, 'c', '2020-01-01T00:00:00+08:00', NULL),
+    (1,   'user', 1, 'write', 'weird',         'weird',   1, 'c', '2026-10-01T00:00:00+08:00', NULL),
+    (1,   'user', 1, 'write', 'applied gone',  'approved',1, 'c', '2026-10-01T00:00:00+08:00', 4242)`);
+  await close(bad);
+})().catch((e) => { console.error(e); process.exit(1); });

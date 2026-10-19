@@ -129,6 +129,7 @@ pm2 logs <service-name>
 - 「清空全部資料」限內部帳號，執行前自動備份到 `backups/pre-clear/`（保留最近 20 份）。
 - 資料庫可見範圍：一般內部帳號只看得到、也只能複製／切換自己的資料庫（或管理員明確授權給自己的）；系統資料庫（`system.db`、`admin.db`）與他人／客戶的資料庫對非管理員一律不可見、不可複製。需要參考他人資料庫時，請管理員授權或由管理員代為複製。
 - 500 錯誤只回通用訊息，細節只在伺服器日誌。
+- 資料健檢（唯讀）：`node scripts/data-audit.js` 檢查資料夾、人員、群組、權限、申請單之間的孤兒、重複與不一致，說明與清理語句見 [docs/data-audit.md](docs/data-audit.md)
 - 部署驗證腳本：`scripts/check-host.sh`（在主機上）與 `scripts/verify-deployment.sh`（從外部），用法見 [docs/dev-verification.md](docs/dev-verification.md)
 - 介面配色集中在 `public/css/dms-theme.css`（近乎單色＋橘色只用於「目前頁面」底線與 focus；主要按鈕深板岩實心，其餘白底細框；各頁 `<html>` 固定 `data-theme="light"`，不跟隨作業系統深色模式）。要調整配色只改這一個檔案。
 - 回歸測試：`npm test`（含登入限速、強制改密碼、CSRF、授權、上傳、代理白名單等整合測試）。
@@ -168,6 +169,7 @@ pm2 logs <service-name>
 
 | 文件 | 內容 |
 |---|---|
+| [data-audit.md](docs/data-audit.md) | 資料健檢腳本的用法、各項目的意思與清理語句 |
 | [dev-verification.md](docs/dev-verification.md) | dms-dev／dms-prod 實機驗證逐步清單（systemd、nginx、防火牆、功能走查、回退） |
 | [nginx-example.conf](docs/nginx-example.conf) | 前端 nginx 反向代理範本（TLS、限速、安全標頭） |
 | [完整開發說明文件.md](docs/完整開發說明文件.md) | 系統架構、API 端點、開發環境設定等完整參考（部署章節較舊，以本 README 為準） |
