@@ -78,7 +78,7 @@ New-ADUser -Name '張三' -SamAccountName 'zhang' -UserPrincipalName 'zhang@cont
 | 欄位 | 來源 | 說明 |
 |------|------|------|
 | Name | 人員姓名 | 使用者顯示名稱 |
-| SamAccountName | Email 前綴 | 從 Email 提取（如 `zhang@example.com` → `zhang`） |
+| SamAccountName | 帳號欄位（優先）／Email 前綴 | 優先用人員的「帳號」欄位（即登入時 `DOMAIN\username` 的 username）；沒填才從 Email 提取（如 `zhang@example.com` → `zhang`） |
 | UserPrincipalName | Email | 完整 Email 地址 |
 | DisplayName | 人員姓名 | 顯示名稱 |
 | EmailAddress | Email | Email 地址 |
@@ -87,6 +87,19 @@ New-ADUser -Name '張三' -SamAccountName 'zhang' -UserPrincipalName 'zhang@cont
 | Title | 職稱 | 如有填寫 |
 | OfficePhone | 電話 | 如有填寫 |
 | Description | 描述 | 如有填寫 |
+
+#### 臨時密碼
+
+- 「新使用者臨時密碼」欄位留空時，**每次生成都會自動產生一組隨機密碼**（16 字元，含大小寫、數字、符號），寫在語法標頭的註解裡；也可以自行輸入（請符合網域的密碼原則）
+- 同一份語法裡的所有新使用者共用同一組臨時密碼，且一律設定 `-ChangePasswordAtLogon $true`（首次登入必須變更）
+- 臨時密碼以明文出現在語法中：請用安全的方式轉交，建立帳號後刪除這份語法
+
+#### 帳號格式提醒
+
+產生器會在有問題的使用者前面加一行 `# ⚠ …` 註解（該行執行時會失敗）：
+
+- SamAccountName 超過 20 字元，或含有 AD 不允許的字元（`" / \ [ ] : ; | = , + * ? < >`），或空白／句點結尾
+- 同一份語法裡兩個人的帳號重複（不分大小寫）
 
 #### 注意事項
 
@@ -209,8 +222,8 @@ Add-ADGroupMember -Identity 'RA_DCC_RW' -Members 'wang'
 
 #### 成員識別
 
-- 使用 Email 前綴作為 SamAccountName
-- 例如：`zhang@example.com` → `zhang`
+- 與「人員生成」一致：優先使用人員的「帳號」欄位作為 SamAccountName，沒填才用 Email 前綴
+- 例如：帳號欄位 `zhang.s`、Email `zhang@example.com` → `zhang.s`；帳號欄位空白 → `zhang`
 
 ---
 

@@ -181,3 +181,4 @@ pm2 logs <service-name>
 | [還原後登入問題排除指南.md](docs/還原後登入問題排除指南.md) | 還原資料後登入異常排除 |
 | [路徑檢查報告.md](docs/路徑檢查報告.md) | 路徑相關檢查記錄 |
 | [AD PowerShell 語法生成功能說明.md](docs/AD%20PowerShell%20語法生成功能說明.md) | AD PowerShell 語法生成工具說明 |
+| [NAS 腳本生成功能說明.md](docs/NAS%20腳本生成功能說明.md) | Synology／QNAP 的 bash 腳本生成（建立群組帳號、設定資料夾 ACL）說明與已知限制 |

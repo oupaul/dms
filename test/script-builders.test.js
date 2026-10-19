@@ -86,12 +86,12 @@ for (const nasType of ['synology', 'qnap']) {
       const expectedGroupArg = (name, perms) => (adMode === 'ad' ? `group:${E.dq.toUpperCase().replace(/[^A-Z0-9]/g, 'X')}\\${name}:${perms}` : `group:${name}:${perms}`);
       for (const f of folders.slice(0, -1)) {
         const g = groups[f.id - 1].name;
-        const mine = acl.filter(c => c[3] === `${volume}/${nasPath(f)}`);
+        const mine = acl.filter(c => c[3] === `${volume}/${nasPath(f).replace(/^\/+/, '')}`);
         const perms = /[_-]ro$/i.test(g) ? 'r-x' : 'rwx';
         assert.deepEqual(mine.map(c => c.slice(1, 3)), [['-Rm', expectedGroupArg(g, perms)], ['-Rdm', expectedGroupArg(g, perms)]], `ACL：${JSON.stringify(f.name)}`);
       }
       // 沒有群組的資料夾：備援群組名稱沒有開頭底線
-      const noGroup = acl.filter(c => c[3] === `${volume}//share/D0600/NoGroup`);
+      const noGroup = acl.filter(c => c[3] === `${volume}/share/D0600/NoGroup`);
       assert.ok(noGroup.some(c => c[2].includes('share_D0600_NoGroup_RO:r-x')) && noGroup.some(c => c[2].includes('share_D0600_NoGroup_RW:rwx')), '備援群組名稱');
       assert.ok(!acl.some(c => c[2].includes('group:_share') || c[2].includes('\\_share')), '不可有開頭底線的群組名稱');
 
@@ -175,7 +175,7 @@ test('PowerShell：不良名稱只會是單引號字串，沒有任何可展開�
   const permissions = folders.map((f, i) => ({ folder_id: f.id, group_id: i + 1, permission_type: 'write' }));
 
   // New-ADUser
-  const u = inspectPs(dir, SB.buildUsersScript(users, E.dq));
+  const u = inspectPs(dir, SB.buildUsersScript(users, E.dq, E.sq));
   assert.deepEqual(u.bad, [], '沒有錯誤、沒有可展開字串／子運算式／變數');
   const nu = u.cmds.find(c => c[0] === 'S:New-ADUser|BareWord');
   assert.ok(nu, '有 New-ADUser 指令');
@@ -187,6 +187,8 @@ test('PowerShell：不良名稱只會是單引號字串，沒有任何可展開�
   assert.equal(strVal(param(nu, 'Title')), weirdQuotes);
   assert.equal(strVal(param(nu, 'OfficePhone')), E.backslash);
   assert.equal(strVal(param(nu, 'Path')), oneLine(E.dq));
+  const sec = u.cmds.find(c => c[0] === 'S:ConvertTo-SecureString|BareWord');
+  assert.equal(strVal(sec[1]), E.sq, '臨時密碼逐字保留（含單引號）');
 
   // New-ADGroup（含沒有群組的資料夾 → 備援名稱）
   const g = inspectPs(dir, SB.buildGroupsScript({ folders: [...folders, { id: 50, name: 'Lone', path: '/a/Lone' }], groups, permissions, rootOU: E.sq }));
@@ -212,4 +214,100 @@ test('PowerShell：註解裡的名稱含換行也不會讓後面的內容變成�
   const r = inspectPs(dir, SB.buildUsersScript([{ id: 1, name: 'x\nRemove-ADUser -Identity admin\u2028Stop-Computer', email: 'a@b.com' }], 'OU=x\nGet-Process'));
   assert.deepEqual(r.bad, []);
   assert.deepEqual(r.cmds.map(c => c[0]), ['S:Import-Module|BareWord', 'S:New-ADUser|BareWord', 'S:ConvertTo-SecureString|BareWord'], '只有產生器自己寫的三個指令，名稱裡的 Remove-ADUser／Stop-Computer／Get-Process 都不是指令');
+});
+
+// ------------------------------------------------------------ 這一輪新增
+test('samOf：優先用「帳號」欄位（account_key），沒有才用 Email 前綴，再沒有用姓名', () => {
+  assert.equal(SB.samOf({ account_key: ' ann.lee ', email: 'x@y.com' }), 'ann.lee');
+  assert.equal(SB.samOf({ account_key: '', email: 'x@y.com' }), 'x');
+  assert.equal(SB.samOf({ account_key: null, email: '', name: 'Ann Lee' }), 'annlee');
+});
+
+test('samProblem：超過 20 字元、含不允許字元、空白或句點結尾', () => {
+  assert.match(SB.samProblem('a'.repeat(21)), /20/);
+  for (const bad of ['a/b', 'a\\b', 'a[b', 'a:b', 'a;b', 'a|b', 'a=b', 'a,b', 'a+b', 'a*b', 'a?b', 'a<b', 'a>b', 'a"b']) assert.ok(SB.samProblem(bad), bad);
+  assert.ok(SB.samProblem('abc.'));
+  assert.equal(SB.samProblem('ann.lee'), null);
+  assert.equal(SB.samProblem('a'.repeat(20)), null);
+});
+
+test('generatePassword：長度、四種字元、不含引號與反斜線，每次不同', () => {
+  const seen = new Set();
+  for (let i = 0; i < 50; i++) {
+    const p = SB.generatePassword();
+    assert.equal(p.length, 16);
+    assert.ok(/[A-Z]/.test(p) && /[a-z]/.test(p) && /[0-9]/.test(p) && /[^A-Za-z0-9]/.test(p), p);
+    assert.ok(!/['"`\\$ ]/.test(p), '不含引號、反引號、反斜線、$、空白');
+    seen.add(p);
+  }
+  assert.equal(seen.size, 50);
+});
+
+test('buildUsersScript：沒給臨時密碼就隨機產生並寫在標頭；帳號用 account_key；有問題的帳號會警示', () => {
+  const users = [
+    { id: 1, name: 'Ann', email: 'ann.long@x.com', account_key: 'ann' },
+    { id: 2, name: 'Bob', email: 'bob@x.com' },
+    { id: 3, name: 'Long', email: 'l@x.com', account_key: 'a'.repeat(25) },
+    { id: 4, name: 'Dup', email: 'd@x.com', account_key: 'ANN' }
+  ];
+  const a = SB.buildUsersScript(users, 'OU=x');
+  const b = SB.buildUsersScript(users, 'OU=x');
+  const pw = (t) => t.match(/^# 臨時密碼: (\S+)（/m)[1];
+  assert.notEqual(pw(a), pw(b), '每次生成的臨時密碼不同');
+  assert.ok(a.includes(`ConvertTo-SecureString '${pw(a)}'`), '指令使用標頭那組密碼');
+  assert.ok(!a.includes('TempPassword123!'), '不再有寫死的密碼');
+  assert.ok(a.includes("-SamAccountName 'ann'") && a.includes("-SamAccountName 'bob'"), '帳號欄位優先，沒有才用 Email 前綴');
+  assert.ok(!a.includes("-SamAccountName 'ann.long'"));
+  assert.match(a, /# ⚠ 帳號 a{25} 超過 20 字元/);
+  assert.match(a, /# ⚠ 帳號 ANN 與前面的 Ann 重複/);
+  const c = SB.buildUsersScript(users.slice(0, 1), 'OU=x', 'My-Own#Pass9');
+  assert.ok(c.includes("ConvertTo-SecureString 'My-Own#Pass9'") && c.includes('# 臨時密碼: My-Own#Pass9'));
+});
+
+test('buildMembersScript：群組成員也用帳號欄位', () => {
+  const s = SB.buildMembersScript({ pairs: [{ folder_id: 1, group_id: 1 }], users: [{ id: 7, name: 'Ann', email: 'ann.long@x.com', account_key: 'ann' }],
+    groups: [{ id: 1, name: 'G' }], folders: [{ id: 1, name: 'F', path: '/F' }], membersByGroup: { 1: [{ id: 7 }] } });
+  assert.ok(s.includes("Add-ADGroupMember -Identity 'G' -Members 'ann'"));
+});
+
+test('NAS：執行前檢查——沒有 setfacl 或磁碟區不存在，就在改動任何東西之前停止', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dms-sb-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'calls.log');
+  const bin = path.join(dir, 'bin'); fs.mkdirSync(bin);
+  for (const cmd of ['synogroup', 'synouser']) {   // 故意不放 setfacl
+    fs.writeFileSync(path.join(bin, cmd), `#!/bin/bash\necho ${cmd} >> "${log}"\n`, { mode: 0o755 });
+  }
+  const vol = path.join(dir, 'vol'); fs.mkdirSync(path.join(vol, 'share'), { recursive: true });
+  const mk = (volume) => SB.buildNasScript({ nasType: 'synology', adMode: 'local', nasIP: 'x', domain: 'D', volume, tmpPass: 't', now: 'n',
+    folders: [{ id: 1, name: 'share', path: '/share' }], permissions: [], groups: [], users: [{ account: 'a', name: 'A', email: 'e' }] });
+
+  fs.writeFileSync(path.join(dir, 'a.sh'), mk(vol));
+  let r = spawnSync('/bin/bash', [path.join(dir, 'a.sh')], { encoding: 'utf8', env: { PATH: bin } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /找不到 setfacl/);
+  assert.equal(fs.existsSync(log), false, '沒有建立任何群組或使用者');
+
+  // 有 setfacl、但磁碟區路徑不存在
+  fs.writeFileSync(path.join(bin, 'setfacl'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, 'b.sh'), mk(path.join(dir, 'no-such-volume')));
+  r = spawnSync('/bin/bash', [path.join(dir, 'b.sh')], { encoding: 'utf8', env: { PATH: bin } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /找不到磁碟區路徑/);
+  assert.equal(fs.existsSync(log), false);
+
+  // 都具備才會往下做
+  r = spawnSync('/bin/bash', [path.join(dir, 'a.sh')], { encoding: 'utf8', env: { PATH: bin } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(fs.existsSync(log));
+});
+
+test('NAS 本地帳號：臨時密碼留空就隨機產生，指令與註解用同一組；不再有固定密碼', () => {
+  const mk = () => SB.buildNasScript({ nasType: 'synology', adMode: 'local', nasIP: 'x', domain: 'D', volume: '/v', tmpPass: '', now: 'n',
+    folders: [{ id: 1, name: 'share', path: '/share' }], permissions: [], groups: [], users: [{ account: 'a', name: 'A', email: 'e' }] });
+  const a = mk(); const b = mk();
+  const pw = (t) => t.match(/^# 2\. 臨時密碼：(\S+)（/m)[1];
+  assert.notEqual(pw(a), pw(b));
+  assert.ok(a.includes(`synouser --add 'a' '${pw(a)}' 'A' 0 'e' 0`), '密碼在全名之前，且與註解那組相同');
+  assert.ok(!a.includes('TempPass123!'));
 });

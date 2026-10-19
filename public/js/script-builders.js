@@ -43,7 +43,41 @@
     return String(folder.path || folder.name || '').split(/[\/\\]+/).filter(Boolean).join('_');
   }
 
-  const samOf = (user) => (user.email ? user.email.split('@')[0] : String(user.name || '').replace(/\s+/g, '').toLowerCase());
+  /**
+   * AD 登入帳號（DOMAIN\username 的 username）：優先用人員的「帳號」欄位（account_key），
+   * 沒有才退回 Email 前綴，再沒有就用姓名去掉空白。
+   */
+  function samOf(user) {
+    const key = user.account_key == null ? '' : String(user.account_key).trim();
+    if (key) return key;
+    return user.email ? user.email.split('@')[0] : String(user.name || '').replace(/\s+/g, '').toLowerCase();
+  }
+
+  // sAMAccountName 的限制：最長 20 字元；不可含 " / \ [ ] : ; | = , + * ? < >；不可以空白開頭／結尾或以句點結尾
+  function samProblem(sam) {
+    if (sam.length > 20) return `超過 20 字元（${sam.length}）`;
+    if (/["\/\\\[\]:;|=,+*?<>]/.test(sam)) return '含有 AD 不允許的字元';
+    if (/^\s|\s$|\.$/.test(sam)) return '開頭／結尾是空白或結尾是句點';
+    return null;
+  }
+
+  /** 隨機臨時密碼：16 字元，大小寫、數字、符號各至少一個，避開容易看錯的字與引號、反斜線 */
+  function generatePassword(len = 16) {
+    const c = (typeof globalThis !== 'undefined' && globalThis.crypto && globalThis.crypto.getRandomValues)
+      ? globalThis.crypto : require('crypto').webcrypto;
+    const pools = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnpqrstuvwxyz', '23456789', '!@#%^&*-_+=?'];
+    const all = pools.join('');
+    const rnd = (n) => {                           // 均勻亂數（拒絕取樣，避免取模偏差）
+      const limit = Math.floor(0x100000000 / n) * n;
+      const buf = new Uint32Array(1);
+      do { c.getRandomValues(buf); } while (buf[0] >= limit);
+      return buf[0] % n;
+    };
+    const out = pools.map(p => p[rnd(p.length)]);
+    while (out.length < len) out.push(all[rnd(all.length)]);
+    for (let i = out.length - 1; i > 0; i--) { const j = rnd(i + 1); [out[i], out[j]] = [out[j], out[i]]; }
+    return out.join('');
+  }
 
   // ============================================================ NAS（bash）
   /**
@@ -57,7 +91,8 @@
    * @param {Array} o.users        本地模式選中的人員 {account,name,email}
    */
   function buildNasScript(o) {
-    const { nasType, adMode, nasIP, domain, volume, tmpPass, now } = o;
+    const { nasType, adMode, nasIP, domain, volume, now } = o;
+    const tmpPass = o.tmpPass ? String(o.tmpPass) : generatePassword();   // 沒給就隨機產生（只有本地帳號模式會用到）
     const folders = o.folders || [];
     const selIds = new Set(folders.map(f => f.id));
 
@@ -98,6 +133,9 @@
     s += `VOLUME=${shq(volume)}\n`;
     if (adMode === 'ad') s += `DOMAIN=${shq(domain)}\n`;
     s += `\n`;
+    // 執行前檢查：在改動任何東西（建立群組／帳號、設定 ACL）之前，確認這台 NAS 真的能執行這份腳本
+    s += `command -v setfacl >/dev/null 2>&1 || { echo ${shq('✗ 找不到 setfacl：這台 NAS 不支援此腳本設定 ACL 的方式（Synology DSM 通常要改用 synoacltool）。尚未做任何變更。')} >&2; exit 1; }\n`;
+    s += `[ -d "\${VOLUME}" ] || { echo ${shq('✗ 找不到磁碟區路徑，尚未做任何變更：')} "\${VOLUME}" >&2; exit 1; }\n\n`;
 
     if (adMode === 'local') {
       const allGroups = new Set();
@@ -148,7 +186,7 @@
     const adPrefix = "'group:'\"${DOMAIN}\"'\\'";    // 'group:'"${DOMAIN}"'\'  → group:DOMAIN\
     folders.forEach(f => {
       const folderPath = (f.path || f.name).replace(/\\/g, '/');
-      const pathExpr = `"\${VOLUME}"${shq('/' + folderPath)}`;     // "${VOLUME}"'/share/x'
+      const pathExpr = `"\${VOLUME}"${shq('/' + folderPath.replace(/^\/+/, ''))}`;     // "${VOLUME}"'/share/x'（開頭的斜線只留一個）
       const groups = folderGroupMap[f.id] || [];
 
       s += `\n# 資料夾: ${comment(folderPath)}\n`;
@@ -191,26 +229,38 @@
   }
 
   // ============================================================ AD（PowerShell）
-  /** New-ADUser */
-  function buildUsersScript(users, ouPath) {
+  /**
+   * New-ADUser。tempPassword 沒給（或是空字串）就自動產生一組隨機密碼，寫在標頭註解裡；
+   * 所有新使用者共用同一組，且一律 -ChangePasswordAtLogon（首次登入必須變更）。
+   */
+  function buildUsersScript(users, ouPath, tempPassword) {
+    const password = tempPassword ? String(tempPassword) : generatePassword();
     let s = '# 產生 AD 使用者的 PowerShell 語法\n';
     s += `# 共 ${users.length} 位人員\n`;
     s += `# OU 路徑: ${comment(ouPath)}\n`;
+    s += `# 臨時密碼: ${comment(password)}（所有新使用者相同；首次登入必須變更，請用安全的方式轉交，並在建立後刪除這份語法）\n`;
+    s += '# 登入帳號（SamAccountName）：優先使用人員的「帳號」欄位，沒有才用 Email 前綴\n';
     s += '# 注意：如果使用者已存在，會出現錯誤，請先檢查或使用 -ErrorAction SilentlyContinue\n\n';
     s += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
     s += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
 
+    const seen = new Map();
     users.forEach(user => {
       const sam = samOf(user);
       const displayName = user.name || sam;
       const email = user.email || `${sam}@yourdomain.com`;
+      const problem = samProblem(sam);
+      const dupOf = seen.get(sam.toLowerCase());
+      seen.set(sam.toLowerCase(), displayName);
+      if (problem) s += `# ⚠ 帳號 ${comment(sam)} ${problem}，下一行會執行失敗，請先修正人員的「帳號」欄位\n`;
+      if (dupOf !== undefined) s += `# ⚠ 帳號 ${comment(sam)} 與前面的 ${comment(dupOf)} 重複，下一行會執行失敗\n`;
       let cmd = `New-ADUser -Name ${psq(displayName)} -SamAccountName ${psq(sam)} -UserPrincipalName ${psq(email)} -DisplayName ${psq(displayName)} -EmailAddress ${psq(email)}`;
       if (user.description) cmd += ` -Description ${psq(user.description)}`;
       if (user.department) cmd += ` -Department ${psq(user.department)}`;
       if (user.company) cmd += ` -Company ${psq(user.company)}`;
       if (user.title) cmd += ` -Title ${psq(user.title)}`;
       if (user.phone) cmd += ` -OfficePhone ${psq(user.phone)}`;
-      cmd += ` -Path ${psq(ouPath)} -Enabled $true -AccountPassword (ConvertTo-SecureString 'TempPassword123!' -AsPlainText -Force) -ChangePasswordAtLogon $true`;
+      cmd += ` -Path ${psq(ouPath)} -Enabled $true -AccountPassword (ConvertTo-SecureString ${psq(password)} -AsPlainText -Force) -ChangePasswordAtLogon $true`;
       s += `# 建立使用者: ${comment(displayName)}\n`;
       s += cmd + '\n\n';
     });
@@ -309,5 +359,5 @@
     return s;
   }
 
-  return { buildNasScript, buildUsersScript, buildGroupsScript, buildMembersScript, shq, psq, comment, defaultGroupBase, samOf };
+  return { buildNasScript, buildUsersScript, buildGroupsScript, buildMembersScript, shq, psq, comment, defaultGroupBase, samOf, samProblem, generatePassword };
 });

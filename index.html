@@ -1354,6 +1354,11 @@
                                 <input type="text" class="form-control" id="users-ou-path" placeholder="OU=Users,DC=yourdomain,DC=com" value="">
                                 <small class="form-text text-muted">留空則使用預設路徑 OU=Users,DC=yourdomain,DC=com</small>
                             </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">新使用者臨時密碼（選填）</label>
+                                <input type="text" class="form-control" id="users-temp-password" autocomplete="off" placeholder="留空：每次生成自動產生一組隨機密碼">
+                                <small class="form-text text-muted">所有新使用者共用這組臨時密碼，首次登入必須變更；密碼會寫在生成語法的標頭註解中。自行輸入時請符合網域的密碼原則。</small>
+                            </div>
                             <button class="btn btn-primary" onclick="generateSelectedUsersPowerShell()">
                                 <i class="bi bi-code"></i> 生成選中人員的語法
                             </button>
@@ -1518,7 +1523,7 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold">臨時密碼（本地帳號用）</label>
-                            <input type="text" id="nas-temp-password" class="form-control" placeholder="TempPass123!" value="TempPass123!">
+                            <input type="text" id="nas-temp-password" class="form-control" autocomplete="off" placeholder="留空：每次生成自動產生隨機密碼" value="">
                             <small class="text-muted">建立本地使用者時使用，建議首次登入後立即更改</small>
                         </div>
                     </div>
@@ -7423,7 +7428,7 @@ group_member,,2,4</code></pre>
             // 取得 OU 路徑
             const ouPath = $('#users-ou-path').val().trim() || 'OU=Users,DC=yourdomain,DC=com';
 
-            const script = ScriptBuilders.buildUsersScript(selectedUsers, ouPath);
+            const script = ScriptBuilders.buildUsersScript(selectedUsers, ouPath, $('#users-temp-password').val().trim());
 
             displayPowerShellOutput(script);
         }
@@ -9304,7 +9309,7 @@ group_member,,2,4</code></pre>
             const nasIP    = $('#nas-ip').val().trim() || 'NAS_IP';
             const domain   = $('#nas-domain').val().trim().toUpperCase() || 'DOMAIN';
             const volume   = ($('#nas-volume-path').val().trim() || (nasType === 'synology' ? '/volume1' : '/share/CIFS')).replace(/\/$/, '');
-            const tmpPass  = $('#nas-temp-password').val().trim() || 'TempPass123!';
+            const tmpPass  = $('#nas-temp-password').val().trim();   // 留空：由產生器隨機產生
             const now      = new Date().toLocaleString('zh-TW');
 
             // 取得選中的資料夾
