@@ -116,12 +116,31 @@ else
 fi
 echo ""
 
+# 4. 前端 nginx 反向代理主機 IP
+echo "4. 前端 nginx 反向代理主機 IP（強烈建議設定）"
+echo "   設定後，應用程式只接受來自這些 IP 的連線，並建議以防火牆同步限制"
+echo "   可填多個，以逗號分隔（例：10.0.0.10,10.0.0.11）；留空表示不限制（不建議）"
+read -p "   請輸入 nginx 主機 IP: " PROXY_IPS_INPUT
+PROXY_IPS_INPUT="${PROXY_IPS_INPUT// /}"
+if [ -z "$PROXY_IPS_INPUT" ]; then
+    PROXY_ALLOWLIST=""
+    echo -e "   ${YELLOW}⚠️  未設定：任何能連到 Port $APP_PORT 的來源都可直連應用程式${NC}"
+elif [[ "$PROXY_IPS_INPUT" =~ ^[0-9a-fA-F:.,]+$ ]]; then
+    PROXY_ALLOWLIST="$PROXY_IPS_INPUT"
+    echo "   ✅ 只接受來自 $PROXY_ALLOWLIST 的連線"
+else
+    echo -e "   ${YELLOW}⚠️  格式不正確，改為不限制（請部署後手動設定 PROXY_ALLOWLIST）${NC}"
+    PROXY_ALLOWLIST=""
+fi
+echo ""
+
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "配置摘要"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  安裝路徑：$APP_DIR"
 echo "  服務 Port：$APP_PORT"
 echo "  瀏覽器標題：$PAGE_TITLE"
+echo "  nginx 主機 IP：${PROXY_ALLOWLIST:-（不限制）}"
 echo ""
 read -p "確認以上配置？(y/N) " -r
 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -269,7 +288,7 @@ else
     
     # 使用 rsync 複製（如果可用）
     if command -v rsync &> /dev/null; then
-        rsync -av --exclude='node_modules' --exclude='databases' --exclude='backups' --exclude='logs' --exclude='uploads' \
+        rsync -av --exclude='node_modules' --exclude='databases' --exclude='backups' --exclude='logs' --exclude='uploads' --exclude='sessions' --exclude='.session_secret' --exclude='.initial_admin_password' \
             "$SCRIPT_DIR/" "$APP_DIR/"
     else
         # 使用 cp（較慢）
@@ -356,6 +375,24 @@ mkdir -p databases uploads logs backups public
 
 echo "設定目錄權限..."
 chmod 775 databases uploads logs backups public
+chmod 700 backups
+
+# 全新安裝：產生亂數管理員初始密碼（顯示於部署結束時的終端機畫面，應用程式建立帳號後會刪除此檔）
+INITIAL_ADMIN_PASSWORD=""
+INITIAL_ADMIN_FILE="$APP_DIR/.initial_admin_password"
+if [ ! -f "$APP_DIR/databases/system.db" ]; then
+    INITIAL_ADMIN_PASSWORD="$(cd "$APP_DIR" && node -e "console.log(require('./lib/security').generatePassword(20))")"
+    if [ -z "$INITIAL_ADMIN_PASSWORD" ]; then
+        echo -e "${RED}❌ 無法產生管理員初始密碼${NC}"
+        exit 1
+    fi
+    ( umask 077; printf '%s' "$INITIAL_ADMIN_PASSWORD" > "$INITIAL_ADMIN_FILE" )
+    chmod 600 "$INITIAL_ADMIN_FILE"
+    echo "  ✅ 已產生管理員初始密碼（部署完成時顯示一次）"
+else
+    rm -f "$INITIAL_ADMIN_FILE"
+    echo "  ℹ️  偵測到既有資料庫，沿用現有管理員帳號（不產生初始密碼）"
+fi
 
 echo ""
 echo "檢查並設定 public 資料夾..."
@@ -411,6 +448,7 @@ fi
 
 echo "啟動應用程式..."
 export SESSION_SECRET="$(cat "$SESSION_SECRET_FILE")"
+export PROXY_ALLOWLIST="$PROXY_ALLOWLIST"
 if [ -f "ecosystem.config.js" ]; then
     pm2 start ecosystem.config.js
 else
@@ -563,20 +601,41 @@ echo ""
 echo "  本地訪問：http://localhost:$APP_PORT"
 echo "  遠端訪問：http://$SERVER_IP:$APP_PORT"
 echo ""
-echo "  預設管理員帳號："
-echo "    使用者名稱：admin"
-echo "    密碼：admin123"
-echo ""
-echo -e "${RED}  ⚠️  重要：首次登入後請立即更改預設密碼！${NC}"
+if [ -n "$INITIAL_ADMIN_PASSWORD" ]; then
+    if [ ! -f "$INITIAL_ADMIN_FILE" ]; then
+        echo -e "${YELLOW}  ┌──────────────────────────────────────────────────────────┐${NC}"
+        echo -e "${YELLOW}  │  管理員初始帳號（只顯示這一次，請立即記下）              │${NC}"
+        echo -e "${YELLOW}  └──────────────────────────────────────────────────────────┘${NC}"
+        echo "    使用者名稱：admin"
+        echo "    密碼：$INITIAL_ADMIN_PASSWORD"
+        echo ""
+        echo -e "${RED}  ⚠️  首次登入後系統會強制要求修改密碼。${NC}"
+    else
+        echo -e "${YELLOW}  ⚠️  應用程式尚未建立管理員帳號（初始密碼檔仍在 $INITIAL_ADMIN_FILE）。${NC}"
+        echo "     請查看 pm2 logs $APP_NAME 確認啟動狀況；帳號建立後密碼檔會自動刪除。"
+        echo "     若無法取得密碼，可用 ./reset_password.sh admin 重設。"
+    fi
+else
+    echo "  沿用既有管理員帳號，未產生新的初始密碼。"
+    echo "  忘記密碼可執行：sudo ./reset_password.sh admin"
+fi
+unset INITIAL_ADMIN_PASSWORD
 echo ""
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "接下來的步驟"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "1. 設定防火牆："
-echo "   sudo ufw allow $APP_PORT/tcp"
+echo "1. 設定防火牆（只允許 nginx 主機連到應用程式埠）："
+if [ -n "$PROXY_ALLOWLIST" ]; then
+    for ip in ${PROXY_ALLOWLIST//,/ }; do
+        echo "   sudo ufw allow from $ip to any port $APP_PORT proto tcp"
+    done
+else
+    echo "   sudo ufw allow from <nginx 主機 IP> to any port $APP_PORT proto tcp"
+fi
 echo "   sudo ufw enable"
+echo "   並請在 nginx 主機套用 docs/nginx-example.conf（TLS、限速、安全標頭）"
 echo ""
 echo "2. 查看應用程式日誌："
 echo "   pm2 logs $APP_NAME"

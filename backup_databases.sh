@@ -46,6 +46,9 @@ else
 fi
 
 # 配置變數
+# 備份內含全部帳號與密碼雜湊：新建的備份目錄／檔案不開放給「其他使用者」讀取（目錄 750、檔案 640）。
+# 注意：排程（cron）與網頁「手動備份」必須以同一個帳號（或同群組）執行，否則其中一方會讀不到對方建立的備份。
+umask 027
 BACKUP_ROOT="/opt/backups"
 BACKUP_DIR="$BACKUP_ROOT/auto_$(date +%Y%m%d_%H%M%S)"
 DATABASE_DIR="$APP_DIR/databases"

@@ -1,0 +1,73 @@
+/* 資料夾管理：點資料夾名稱 → 右側浮動「權限卡片」。配色沿用 dms-theme.css 的 token（近乎單色 + 一個強調色）。 */
+
+.folder-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; }
+.folder-layout.has-card { grid-template-columns: minmax(0, 1fr) 400px; }
+
+/* 選取中的資料夾：淺灰底 + 左側橘色細線（橘色只標示「目前所在」） */
+#folder-tree .folder-item.selected {
+  background: var(--ds-hover);
+  box-shadow: inset 3px 0 0 var(--ds-accent);
+}
+#folder-tree .folder-item .folder-icon { padding: 2px 4px; margin: -2px -2px -2px -4px; }
+#folder-tree .folder-item:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px; }
+
+.folder-access-card {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  background: var(--ds-surface);
+  border: 1px solid var(--ds-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(15, 23, 42, .08);
+  font-size: .9rem;
+}
+.folder-access-card[hidden] { display: none; }
+
+.fa-head { display: flex; align-items: flex-start; gap: .5rem; padding: .75rem .9rem; border-bottom: 1px solid var(--ds-border); position: sticky; top: 0; background: var(--ds-surface); z-index: 1; }
+.fa-titles { flex: 1; min-width: 0; }
+.fa-title { font-weight: 700; word-break: break-word; }
+.fa-path { font-size: .78rem; word-break: break-all; }
+.fa-close { border: 0; color: var(--ds-muted); padding: .1rem .35rem; }
+.fa-close:hover { color: var(--ds-text); background: var(--ds-hover); }
+
+.fa-section { padding: .7rem .9rem; border-bottom: 1px solid var(--ds-border); }
+.fa-section-title { margin: 0 0 .15rem; font-size: .8rem; font-weight: 700; letter-spacing: .02em; }
+.fa-hint { font-size: .75rem; margin-bottom: .4rem; }
+
+.fa-row { padding: .25rem 0; }
+.fa-row-main { display: flex; align-items: center; gap: .45rem; flex-wrap: wrap; }
+.fa-name { word-break: break-word; }
+.fa-count, .fa-from { font-size: .75rem; }
+.fa-from { border: 1px solid var(--ds-border); border-radius: 999px; padding: 0 .4rem; }
+
+/* 權限類型：純文字 + 圖示，不靠顏色區分（寫入較深，唯讀較淺） */
+.fa-type { display: inline-flex; align-items: center; gap: .15rem; min-width: 4.4rem; font-size: .78rem; font-weight: 600; }
+.fa-type-write { color: var(--ds-text); }
+.fa-type-read { color: var(--ds-muted); }
+.fa-type-conflict { color: var(--ds-accent); }
+.fa-type-other { color: var(--ds-danger); }
+
+.fa-members-btn { font-size: .78rem; color: var(--ds-muted); text-decoration: none; }
+.fa-members-btn:hover { color: var(--ds-text); }
+.fa-members { display: flex; flex-wrap: wrap; gap: .25rem; margin: .25rem 0 .1rem 5rem; }
+.fa-member { font-size: .75rem; padding: 0 .45rem; border: 1px solid var(--ds-border); border-radius: 999px; }
+
+.fa-level { display: block; margin: .5rem 0 .1rem; font-size: .78rem; color: var(--ds-muted); text-decoration: none; text-align: left; word-break: break-all; }
+.fa-level:hover { color: var(--ds-text); text-decoration: underline; }
+
+.fa-warning { font-size: .8rem; padding: .2rem 0; }
+.fa-warning-warn { color: var(--ds-text); }
+.fa-warning-warn .bi { color: var(--ds-accent); }
+.fa-warning-info { color: var(--ds-muted); }
+
+.fa-foot { padding: .6rem .9rem; font-size: .72rem; }
+
+/* 窄螢幕：卡片改成底部抽屜 */
+@media (max-width: 992px) {
+  .folder-layout.has-card { grid-template-columns: minmax(0, 1fr); }
+  .folder-access-card {
+    position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+    max-height: 60vh; border-radius: 12px 12px 0 0; z-index: 1030;
+  }
+}

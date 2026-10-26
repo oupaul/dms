@@ -1,20 +1,24 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="zh-TW" data-theme="light">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>資料夾權限文管系統</title>
     <link rel="icon" href="https://www.megapower.asia/ds/logo/logo-mark-light.png">
     <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Bootstrap Icons - 使用穩定版本和 unpkg 作為備用 -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" onerror="this.onerror=null;this.href='https://unpkg.com/bootstrap-icons@1.10.0/font/bootstrap-icons.css'">
+    <link href="/vendor/bootstrap/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons（自託管，避免外部 CDN 供應鏈風險） -->
+    <link rel="stylesheet" href="/vendor/bootstrap-icons/bootstrap-icons.css">
     <!-- Preload Bootstrap Icons Font -->
-    <link rel="preload" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/fonts/bootstrap-icons.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/vendor/bootstrap-icons/fonts/bootstrap-icons.woff2" as="font" type="font/woff2" crossorigin>
     <!-- jQuery -->
-    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="/vendor/jquery/jquery-3.6.0.min.js"></script>
     <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/vendor/bootstrap/bootstrap.bundle.min.js"></script>
+    <script src="/js/folder-access.js"></script>
+    <script src="/js/folder-access-ui.js"></script>
+    <script src="/js/script-builders.js"></script>
+    <script>FolderAccessUI.init({ getFolders: function () { return window.folderTreeData || []; } });</script>
     <style>
         /* 防止未認證內容閃爍 - 頁面載入時先隱藏內容 */
         body {
@@ -97,6 +101,8 @@
     <!-- Megapower Design System：https://github.com/Megapower-Asia-LLC/design-system -->
     <link rel="stylesheet" href="https://www.megapower.asia/ds/megapower.css">
     <link rel="stylesheet" href="megapower-theme.css">
+    <link rel="stylesheet" href="/css/dms-theme.css">
+    <link rel="stylesheet" href="/css/folder-access.css">
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-light bg-light">
@@ -109,25 +115,23 @@
                 <li class="nav-item"><a class="nav-link" href="#" data-section="groups"><i class="bi bi-people-fill"></i> 群組</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="permissions"><i class="bi bi-key-fill"></i> 權限</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="permission-requests"><i class="bi bi-file-earmark-text"></i> 申請單 <span id="permission-requests-badge" class="badge bg-danger ms-1" style="display:none;"></span></a></li>
-                <li class="nav-item" id="online-menu-item" style="display: none;"><a class="nav-link" href="#" data-section="online-users"><i class="bi bi-circle-fill text-success"></i> 在線用戶</a></li>
-                <li class="nav-item" id="system-health-menu-item" style="display: none;"><a class="nav-link text-info" href="#" data-section="system-health"><i class="bi bi-heart-pulse-fill"></i> 系統健康狀態</a></li>
-                <li class="nav-item" id="audit-log-menu-item" style="display: none;"><a class="nav-link text-warning" href="#" data-section="audit-log"><i class="bi bi-journal-text"></i> 修改記錄</a></li>
-                <li class="nav-item" id="usage-statistics-menu-item" style="display: none;"><a class="nav-link text-primary" href="#" data-section="usage-statistics"><i class="bi bi-clock-history"></i> 使用時間統計</a></li>
                 <li class="nav-item"><a class="nav-link" href="#" data-section="query"><i class="bi bi-search"></i> 查詢</a></li>
-                <li class="nav-item" id="admin-menu-item" style="display: none;">
-                    <a class="nav-link text-danger" href="#" data-section="account-management">
-                        <i class="bi bi-shield-fill-check"></i> 帳號管理
+                <li class="nav-item dropdown" id="admin-dropdown-item" style="display: none;">
+                    <a class="nav-link dropdown-toggle" href="#" id="adminDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="bi bi-gear-fill"></i> 管理
                     </a>
-                </li>
-                <li class="nav-item" id="admin-powershell-menu-item" style="display: none;">
-                    <a class="nav-link text-danger" href="#" data-section="powershell-generator">
-                        <i class="bi bi-code-slash"></i> AD PowerShell 語法生成
-                    </a>
-                </li>
-                <li class="nav-item" id="admin-nas-menu-item" style="display: none;">
-                    <a class="nav-link text-danger" href="#" data-section="nas-script-generator">
-                        <i class="bi bi-hdd-network-fill"></i> NAS 腳本生成
-                    </a>
+                    <ul class="dropdown-menu" aria-labelledby="adminDropdown">
+                        <li id="online-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="online-users"><i class="bi bi-circle-fill text-success"></i> 在線用戶</a></li>
+                        <li id="system-health-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="system-health"><i class="bi bi-heart-pulse-fill"></i> 系統健康狀態</a></li>
+                        <li id="audit-log-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="audit-log"><i class="bi bi-journal-text"></i> 修改記錄</a></li>
+                        <li id="usage-statistics-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="usage-statistics"><i class="bi bi-clock-history"></i> 使用時間統計</a></li>
+                        <li id="admin-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="account-management"><i class="bi bi-shield-fill-check"></i> 帳號管理</a></li>
+                        <li id="admin-tools-divider" style="display: none;"><hr class="dropdown-divider"></li>
+                        <li id="admin-powershell-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="powershell-generator"><i class="bi bi-code-slash"></i> AD PowerShell 語法生成</a></li>
+                        <li id="admin-nas-menu-item" style="display: none;"><a class="dropdown-item" href="#" data-section="nas-script-generator"><i class="bi bi-hdd-network-fill"></i> NAS 腳本生成</a></li>
+                        <li class="client-hide" id="admin-clear-divider"><hr class="dropdown-divider"></li>
+                        <li class="client-hide"><a class="dropdown-item item-danger" href="#" onclick="showClearAllModal(); return false;"><i class="bi bi-trash-fill"></i> 清空所有資料</a></li>
+                    </ul>
                 </li>
                 <li class="nav-item dropdown">
                     <a class="nav-link dropdown-toggle" href="#" id="csvDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -151,9 +155,6 @@
                         </a></li>
                     </ul>
                 </li>
-            </ul>
-            <ul class="navbar-nav">
-                <li class="nav-item client-hide"><a class="nav-link text-danger" href="#" onclick="showClearAllModal(); return false;"><i class="bi bi-trash-fill"></i> 清空所有資料</a></li>
             </ul>
             <ul class="navbar-nav ms-auto">
                 <!-- 受限帳號（客戶 / viewer / engineer）授權 ≥2 個資料庫時顯示的快速切換 -->
@@ -298,7 +299,10 @@
                     <button type="button" class="btn btn-secondary" onclick="hideFolderImport(); return false;">取消</button>
                 </form>
             </div>
-            <ul id="folder-tree" class="tree"></ul>
+            <div id="folder-layout" class="folder-layout">
+                <div class="folder-tree-pane"><ul id="folder-tree" class="tree"></ul></div>
+                <aside id="folder-access-card" class="folder-access-card" role="complementary" aria-label="資料夾權限" aria-live="polite" hidden></aside>
+            </div>
         </div>
 
         <div id="users-section" style="display:none;">
@@ -1350,6 +1354,11 @@
                                 <input type="text" class="form-control" id="users-ou-path" placeholder="OU=Users,DC=yourdomain,DC=com" value="">
                                 <small class="form-text text-muted">留空則使用預設路徑 OU=Users,DC=yourdomain,DC=com</small>
                             </div>
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">新使用者臨時密碼（選填）</label>
+                                <input type="text" class="form-control" id="users-temp-password" autocomplete="off" placeholder="留空：每次生成自動產生一組隨機密碼">
+                                <small class="form-text text-muted">所有新使用者共用這組臨時密碼，首次登入必須變更；密碼會寫在生成語法的標頭註解中。自行輸入時請符合網域的密碼原則。</small>
+                            </div>
                             <button class="btn btn-primary" onclick="generateSelectedUsersPowerShell()">
                                 <i class="bi bi-code"></i> 生成選中人員的語法
                             </button>
@@ -1514,7 +1523,7 @@
                         </div>
                         <div class="col-md-6">
                             <label class="form-label fw-bold">臨時密碼（本地帳號用）</label>
-                            <input type="text" id="nas-temp-password" class="form-control" placeholder="TempPass123!" value="TempPass123!">
+                            <input type="text" id="nas-temp-password" class="form-control" autocomplete="off" placeholder="留空：每次生成自動產生隨機密碼" value="">
                             <small class="text-muted">建立本地使用者時使用，建議首次登入後立即更改</small>
                         </div>
                     </div>
@@ -2705,14 +2714,20 @@ group_member,,2,4</code></pre>
             <div class="modal-content">
                 <div class="modal-header bg-primary text-white">
                     <h5 class="modal-title"><i class="bi bi-key-fill"></i> 修改密碼</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                    <button type="button" class="btn-close btn-close-white" id="change-password-close" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body">
+                    <div class="alert alert-warning d-none" id="forced-change-notice">
+                        <i class="bi bi-shield-exclamation"></i>
+                        <strong>為了帳號安全，請先修改密碼</strong>：您目前使用的是初始密碼或管理員重設的臨時密碼，修改完成後才能使用系統。
+                    </div>
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle-fill"></i>
                         <strong>密碼要求：</strong>
                         <ul class="mb-0 mt-2">
-                            <li>長度至少 6 個字元</li>
+                            <li>長度至少 10 個字元</li>
+                            <li>需包含大寫、小寫、數字、符號中至少三類</li>
+                            <li>不可包含使用者名稱，且不能是常見密碼</li>
                             <li>新密碼不能與當前密碼相同</li>
                         </ul>
                     </div>
@@ -2725,13 +2740,13 @@ group_member,,2,4</code></pre>
                         
                         <div class="mb-3">
                             <label for="new-password" class="form-label">新密碼 <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="new-password" required minlength="6" autocomplete="new-password">
-                            <small class="text-muted">至少 6 個字元</small>
+                            <input type="password" class="form-control" id="new-password" required minlength="10" autocomplete="new-password">
+                            <small class="text-muted">至少 10 個字元，含大小寫、數字、符號中至少三類</small>
                         </div>
                         
                         <div class="mb-3">
                             <label for="confirm-password" class="form-label">確認新密碼 <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="confirm-password" required minlength="6" autocomplete="new-password">
+                            <input type="password" class="form-control" id="confirm-password" required minlength="10" autocomplete="new-password">
                         </div>
                         
                         <div id="password-match-message" class="text-danger small" style="display: none;">
@@ -2772,8 +2787,8 @@ group_member,,2,4</code></pre>
                         
                         <div class="mb-3">
                             <label for="create-password" class="form-label fw-bold">密碼 <span class="text-danger">*</span></label>
-                            <input type="password" class="form-control" id="create-password" required minlength="6" autocomplete="new-password">
-                            <small class="text-muted">至少 6 個字元</small>
+                            <input type="password" class="form-control" id="create-password" required minlength="10" autocomplete="new-password">
+                            <small class="text-muted">至少 10 個字元，含大小寫、數字、符號中至少三類；使用者首次登入須自行修改</small>
                         </div>
                         
                         <div class="mb-3">
@@ -2846,6 +2861,11 @@ group_member,,2,4</code></pre>
                         </select>
                     </div>
                     <div class="mb-3" id="permission-db-select-wrapper" style="display:none;">
+                        <div class="form-check mb-2" id="permission-all-db-wrapper" style="display:none;">
+                            <input class="form-check-input" type="checkbox" id="permission-all-db" onchange="togglePermissionAllDb()">
+                            <label class="form-check-label fw-bold" for="permission-all-db">可存取全部資料庫（含未來新增）</label>
+                            <div class="small text-muted">新增、複製、改名或還原出來的資料庫立即生效，不必逐一授權；系統帳號資料庫（system.db）不在範圍內。實習工程師請不要勾選，改用下方清單。切換資料庫會留下稽核紀錄。</div>
+                        </div>
                         <label class="form-label fw-bold" id="permission-db-select-label">可存取的資料庫（可多選）</label>
                         <select id="permission-db-select" class="form-select" multiple size="8" onchange="syncDefaultDbSelect()"></select>
                         <small class="text-muted">僅能選擇目前存在的資料庫；若需要新增資料庫請先至「資料庫管理」建立。</small>
@@ -2881,11 +2901,11 @@ group_member,,2,4</code></pre>
                     </p>
                     <div class="mb-3">
                         <label class="form-label fw-bold" for="reset-password-input">新密碼</label>
-                        <input type="password" class="form-control" id="reset-password-input" minlength="6" autocomplete="new-password" placeholder="至少 6 個字元">
+                        <input type="password" class="form-control" id="reset-password-input" minlength="10" autocomplete="new-password" placeholder="至少 10 個字元，含三類字元">
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-bold" for="reset-password-confirm">再次輸入新密碼</label>
-                        <input type="password" class="form-control" id="reset-password-confirm" minlength="6" autocomplete="new-password">
+                        <input type="password" class="form-control" id="reset-password-confirm" minlength="10" autocomplete="new-password">
                     </div>
                     <div id="reset-password-error" class="text-danger small d-none"></div>
                     <div class="alert alert-warning mt-3 mb-0">
@@ -3035,6 +3055,11 @@ group_member,,2,4</code></pre>
                         // 認證成功，顯示頁面內容（加入淡入效果）
                         $('body').addClass('authenticated');
                         updateUserDisplay();
+                        // 初始密碼／臨時密碼：必須先改密碼，改完前不載入任何資料（伺服器端也會擋掉其他 API）
+                        if (response.user && response.user.mustChangePassword) {
+                            showForcedPasswordChange();
+                            return;
+                        }
                         // 載入初始資料
                         initializePage();
                         startIdleMonitor();
@@ -3100,6 +3125,7 @@ group_member,,2,4</code></pre>
                 
                 applyViewerModeUI();
                 applyClientModeUI();
+                refreshAdminDropdown();
                 updateBroadcastPanelVisibility();
                 checkPendingPermissionRequests();
                 loadDbSwitcher();
@@ -3281,6 +3307,17 @@ group_member,,2,4</code></pre>
         }
 
         // 顯示修改密碼模態框
+        // 強制修改密碼：不可關閉的對話框
+        function showForcedPasswordChange() {
+            $('#change-password-form')[0].reset();
+            $('#password-match-message').hide();
+            $('#forced-change-notice').removeClass('d-none');
+            $('#change-password-close').addClass('d-none');
+            $('#change-password-modal .modal-footer .btn-secondary').addClass('d-none');
+            const el = document.getElementById('change-password-modal');
+            bootstrap.Modal.getOrCreateInstance(el, { backdrop: 'static', keyboard: false }).show();
+        }
+
         function showChangePasswordModal() {
             // 重置表單
             $('#change-password-form')[0].reset();
@@ -3319,8 +3356,8 @@ group_member,,2,4</code></pre>
                 return;
             }
             
-            if (newPassword.length < 6) {
-                alert('❌ 新密碼長度至少需要 6 個字元');
+            if (newPassword.length < 10) {
+                alert('❌ 新密碼長度至少需要 10 個字元');
                 return;
             }
             
@@ -3436,7 +3473,7 @@ group_member,,2,4</code></pre>
             showSection('folders');
             
             // 綁定分頁切換事件
-            $('.nav-link[data-section]').on('click', function(e) {
+            $('.nav-link[data-section], .dropdown-item[data-section]').on('click', function(e) {
                 e.preventDefault();
                 const section = $(this).data('section');
                 showSection(section);
@@ -3452,6 +3489,32 @@ group_member,,2,4</code></pre>
         let currentGroupName = '';  // 當前群組名稱
         let permissionDatabaseOptions = [];
         let allAccountsCache = [];
+
+        // 導覽列：標示目前所在頁面（橘色底線），下拉裡的頁面則標在「管理」上
+        function updateNavActive(sec) {
+            $('.navbar [data-section]').removeClass('active');
+            $('.navbar .dropdown-toggle').removeClass('active');
+            const $item = $(`.navbar [data-section="${sec}"]`);
+            $item.addClass('active');
+            $item.closest('.dropdown').children('.dropdown-toggle').addClass('active');
+        }
+
+        // 「管理」下拉：裡面有任何一項可見才顯示；沒有可用項目就整個藏起來
+        function refreshAdminDropdown() {
+            const $menu = $('#admin-dropdown-item > .dropdown-menu');
+            const visibleItems = $menu.children('li').filter(function () {
+                return this.style.display !== 'none' && $(this).children('a').length > 0;
+            });
+            // 分隔線：上方有項目才顯示
+            const toolsVisible = $('#admin-powershell-menu-item, #admin-nas-menu-item').filter(function () { return this.style.display !== 'none'; }).length > 0;
+            $('#admin-tools-divider').toggle(toolsVisible && $('#online-menu-item, #system-health-menu-item, #audit-log-menu-item, #usage-statistics-menu-item, #admin-menu-item').filter(function () { return this.style.display !== 'none'; }).length > 0);
+            // 「清空所有資料」上方的分隔線：上面真的有其他項目才顯示（一般帳號只有「清空」一項時不顯示）
+            const othersVisible = visibleItems.filter(function () { return !$(this).find('.item-danger').length; }).length > 0;
+            const rl = currentUser ? (currentUser.roleLevel || (currentUser.role === 'admin' ? 'admin' : 'user')) : 'user';
+            const isClient = rl === 'db_admin' || rl === 'client_user';
+            $('#admin-clear-divider').toggle(!isClient && othersVisible);
+            $('#admin-dropdown-item').toggle(visibleItems.length > 0);
+        }
 
         function showSection(sec) {
             if (sec === 'online-users' && (!currentUser || currentUser.role !== 'admin')) {
@@ -3483,6 +3546,7 @@ group_member,,2,4</code></pre>
             // 顯示指定區段
             $('#' + sec + '-section').show();
             currentSection = sec;
+            updateNavActive(sec);
             // 匯入頁面和資料庫頁面不需要載入一般資料
             if (sec === 'databases') {
                 loadDatabases();
@@ -3543,7 +3607,9 @@ group_member,,2,4</code></pre>
                 console.log('Loaded data for ' + type + ':', data);
                 if (type === 'folders') {
                     updateFoldersDbName();
+                    window.folderTreeData = data;
                     buildTree(data, $('#folder-tree'));
+                    FolderAccessUI.restore();   // 樹重建後：快取失效，卡片依最新資料更新（資料夾已不存在就關閉）
                 } else if (type === 'users') {
                     buildTable(data, '#users-table tbody', ['id', 'account_key', 'name', 'email', 'department', 'company', 'title', 'phone', 'description'], type);
                     allUsers = data;  // 更新全球人員清單
@@ -3634,7 +3700,12 @@ group_member,,2,4</code></pre>
                     .on('change', updateFolderBatchDeleteBtn);
 
                 // 資料夾名稱(可點擊展開/收合)
-                const folderSpan = $(`<span class="folder-item" style="cursor:pointer;">${icon}${item.name} <span class="text-muted">(ID: ${item.id})</span></span>`);
+                // 名稱一律以文字節點寫入（不拼 HTML）；icon 只含程式產生的固定標記與數字
+                const folderSpan = $('<span class="folder-item" style="cursor:pointer;" role="button" tabindex="0"></span>')
+                    .attr('data-folder-id', item.id)
+                    .html(icon)
+                    .append(document.createTextNode(String(item.name == null ? '' : item.name) + ' '))
+                    .append($('<span class="text-muted"></span>').text(`(ID: ${item.id})`));
 
                 // 編輯和刪除按鈕
                 const editBtn = $(`<button class="btn btn-sm btn-outline-primary btn-edit-folder ms-2" title="編輯"><i class="bi bi-pencil"></i></button>`)
@@ -3650,8 +3721,17 @@ group_member,,2,4</code></pre>
                 const subUl = $('<ul style="display:none;" class="sub-ul"></ul>');
 
                 // 組裝:checkbox + 資料夾名稱 + 按鈕 + 子列表
-                folderSpan.on('click', function() {
-                    toggle(this);
+                // 點三角形＝展開／收合；點名稱＝選取並在右側顯示權限卡片（雙擊名稱也可展開／收合）
+                folderSpan.on('click', function(e) {
+                    if ($(e.target).closest('.folder-icon').length) { toggle(this); return; }
+                    FolderAccessUI.select(item.id);
+                }).on('dblclick', function(e) {
+                    if (!$(e.target).closest('.folder-icon').length) toggle(this);
+                }).on('keydown', function(e) {
+                    const open = $(this).closest('li').find('> .sub-ul').is(':visible');
+                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); FolderAccessUI.select(item.id); }
+                    else if (e.key === 'ArrowRight' && !open) { e.preventDefault(); toggle(this); }
+                    else if (e.key === 'ArrowLeft' && open) { e.preventDefault(); toggle(this); }
                 });
 
                 li.append(checkbox);
@@ -6003,7 +6083,7 @@ group_member,,2,4</code></pre>
         }
 
         $(document).ready(function() {
-            $('.nav-link[data-section]').on('click', function(e) {
+            $('.nav-link[data-section], .dropdown-item[data-section]').on('click', function(e) {
                 e.preventDefault();
                 showSection($(this).data('section'));
             });
@@ -7192,8 +7272,8 @@ group_member,,2,4</code></pre>
                 return;
             }
             
-            if (password.length < 6) {
-                showCreateAccountError('密碼長度至少需要 6 個字元');
+            if (password.length < 10) {
+                showCreateAccountError('密碼長度至少需要 10 個字元');
                 return;
             }
             
@@ -7353,47 +7433,7 @@ group_member,,2,4</code></pre>
             // 取得 OU 路徑
             const ouPath = $('#users-ou-path').val().trim() || 'OU=Users,DC=yourdomain,DC=com';
 
-            let script = '# 產生 AD 使用者的 PowerShell 語法\n';
-            script += `# 共 ${selectedUsers.length} 位人員\n`;
-            script += `# OU 路徑: ${ouPath}\n`;
-            script += '# 注意：如果使用者已存在，會出現錯誤，請先檢查或使用 -ErrorAction SilentlyContinue\n\n';
-            script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-            script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-            selectedUsers.forEach(function(user) {
-                const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                const displayName = user.name || samAccountName;
-                const email = user.email || `${samAccountName}@yourdomain.com`;
-                const description = user.description || '';
-                const department = user.department || '';
-                const company = user.company || '';
-                const title = user.title || '';
-                const phone = user.phone || '';
-
-                // 建立單行指令，不使用分行符號
-                let cmd = `New-ADUser -Name "${displayName}" -SamAccountName "${samAccountName}" -UserPrincipalName "${email}" -DisplayName "${displayName}" -EmailAddress "${email}"`;
-                
-                if (description) {
-                    cmd += ` -Description "${description.replace(/"/g, '""')}"`;
-                }
-                if (department) {
-                    cmd += ` -Department "${department.replace(/"/g, '""')}"`;
-                }
-                if (company) {
-                    cmd += ` -Company "${company.replace(/"/g, '""')}"`;
-                }
-                if (title) {
-                    cmd += ` -Title "${title.replace(/"/g, '""')}"`;
-                }
-                if (phone) {
-                    cmd += ` -OfficePhone "${phone}"`;
-                }
-                
-                cmd += ` -Path "${ouPath}" -Enabled $true -AccountPassword (ConvertTo-SecureString "TempPassword123!" -AsPlainText -Force) -ChangePasswordAtLogon $true`;
-                
-                script += `# 建立使用者: ${displayName}\n`;
-                script += cmd + '\n\n';
-            });
+            const script = ScriptBuilders.buildUsersScript(selectedUsers, ouPath, $('#users-temp-password').val().trim());
 
             displayPowerShellOutput(script);
         }
@@ -7482,85 +7522,12 @@ group_member,,2,4</code></pre>
                 $.get('/api/groups'),
                 $.get('/api/permissions')
             ).done(function(groupsResp, permissionsResp) {
-                const groups = groupsResp[0];
-                const permissions = permissionsResp[0];
-
-                // 建立群組 ID 到群組的映射
-                const groupMap = {};
-                groups.forEach(function(group) {
-                    groupMap[group.id] = group;
+                const script = ScriptBuilders.buildGroupsScript({
+                    folders: selectedFolders,
+                    groups: groupsResp[0],
+                    permissions: permissionsResp[0],
+                    rootOU: rootOU
                 });
-
-                // 建立資料夾 ID 到群組列表的映射（從權限表）
-                const folderGroupsMap = {};
-                permissions.forEach(function(permission) {
-                    if (!permission.group_id || !permission.folder_id) return;
-                    
-                    if (!folderGroupsMap[permission.folder_id]) {
-                        folderGroupsMap[permission.folder_id] = [];
-                    }
-                    if (folderGroupsMap[permission.folder_id].indexOf(permission.group_id) === -1) {
-                        folderGroupsMap[permission.folder_id].push(permission.group_id);
-                    }
-                });
-
-                let script = '# 產生 AD 群組（Group）的 PowerShell 語法\n';
-                script += `# 共 ${selectedFolders.length} 個資料夾\n`;
-                script += `# 群組路徑: ${rootOU}\n\n`;
-                script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-                script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-                // 建立資料夾 ID 到資料夾的映射
-                const folderMap = {};
-                allFoldersData.forEach(function(folder) {
-                    folderMap[folder.id] = folder;
-                });
-
-                // 收集所有需要建立的群組（避免重複）
-                const groupsToCreate = new Map(); // key: groupName, value: {group, folder}
-
-                selectedFolders.forEach(function(folder) {
-                    const folderGroups = folderGroupsMap[folder.id] || [];
-                    
-                    if (folderGroups.length > 0) {
-                        // 使用系統中對應的群組名稱
-                        folderGroups.forEach(function(groupId) {
-                            const group = groupMap[groupId];
-                            if (group && !groupsToCreate.has(group.name)) {
-                                groupsToCreate.set(group.name, {
-                                    group: group,
-                                    folder: folder
-                                });
-                            }
-                        });
-                    } else {
-                        // 如果沒有對應的群組，使用資料夾路徑生成群組名稱（與自動生成群組的規則一致）
-                        const folderPath = (folder.path || folder.name).replace(/[\/\\]/g, '_').replace(/"/g, '""');
-                        // 生成 RO 和 RW 兩個群組（與系統自動生成群組的規則一致）
-                        ['RO', 'RW'].forEach(function(suffix) {
-                            const groupName = `${folderPath}_${suffix}`;
-                            if (!groupsToCreate.has(groupName)) {
-                                groupsToCreate.set(groupName, {
-                                    group: { name: groupName },
-                                    folder: folder
-                                });
-                            }
-                        });
-                    }
-                });
-
-                // 生成群組建立指令
-                groupsToCreate.forEach(function(item, groupName) {
-                    const description = `資料夾: ${(item.folder.path || item.folder.name).replace(/"/g, '""')}`;
-                    const cmd = `New-ADGroup -Name "${groupName.replace(/"/g, '""')}" -GroupScope Global -GroupCategory Security -Path "${rootOU}" -Description "${description}"`;
-                    
-                    script += `# 建立群組: ${groupName} (對應資料夾: ${item.folder.name})\n`;
-                    script += cmd + '\n\n';
-                });
-
-                if (groupsToCreate.size === 0) {
-                    script += '# 沒有找到需要建立的群組\n';
-                }
 
                 displayPowerShellOutput(script);
             }).fail(function(xhr) {
@@ -7725,275 +7692,25 @@ group_member,,2,4</code></pre>
                 return selectedSet.has(key);
             });
 
-            let script = '# 產生將人員加入 AD 群組的 PowerShell 語法\n';
-            script += `# 共 ${selectedFolderGroupPairs.length} 個資料夾-群組組合\n`;
-            script += '# 請根據實際環境調整 Domain 和群組名稱格式\n\n';
-            script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-            script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-            // 建立使用者 ID 到使用者的映射
-            const userMap = {};
-            allGroupMembersData.users.forEach(function(user) {
-                userMap[user.id] = user;
-            });
-
-            // 建立群組 ID 到群組的映射
-            const groupMap = {};
-            allGroupMembersData.groups.forEach(function(group) {
-                groupMap[group.id] = group;
-            });
-
-            // 建立資料夾 ID 到資料夾的映射
-            const folderMap = {};
-            allGroupMembersData.folders.forEach(function(folder) {
-                folderMap[folder.id] = folder;
-            });
-
-            // 載入所有群組的成員
-            const groupPromises = allGroupMembersData.groups.map(function(group) {
+            // 載入所有群組的成員（$.when 只有一個請求時，回傳的不是「結果陣列的陣列」，這裡一併處理）
+            const groupList = allGroupMembersData.groups;
+            $.when.apply($, groupList.map(function(group) {
                 return $.get(`/api/groups/${group.id}/users`);
-            });
-
-            $.when.apply($, groupPromises).done(function() {
-                // 建立群組 ID 到群組成員的映射
-                const groupMembersMap = {};
-                const memberArrays = Array.prototype.slice.call(arguments);
-                allGroupMembersData.groups.forEach(function(group, index) {
-                    groupMembersMap[group.id] = memberArrays[index] && memberArrays[index][0] ? memberArrays[index][0] : [];
+            })).done(function() {
+                const results = groupList.length === 1 ? [[arguments[0]]] : Array.prototype.slice.call(arguments);
+                const membersByGroup = {};
+                groupList.forEach(function(group, index) {
+                    membersByGroup[group.id] = (results[index] && results[index][0]) || [];
                 });
-
-                // 按資料夾組織輸出
-                const folderGroupsMap = {};
-                selectedFolderGroupPairs.forEach(function(pair) {
-                    if (!folderGroupsMap[pair.folder_id]) {
-                        folderGroupsMap[pair.folder_id] = [];
-                    }
-                    folderGroupsMap[pair.folder_id].push(pair.group_id);
-                });
-
-                const processedGroupMembers = new Set(); // 追蹤已經處理過的（群組ID, 用戶ID）組合
-
-                Object.keys(folderGroupsMap).forEach(function(folderId) {
-                    const folder = folderMap[folderId];
-                    const folderPath = folder ? folder.path || folder.name : '未知資料夾';
-                    
-                    const groupIds = folderGroupsMap[folderId];
-                    let hasMembers = false;
-
-                    groupIds.forEach(function(groupId) {
-                        const group = groupMap[groupId];
-                        if (!group) return;
-
-                        const members = groupMembersMap[groupId] || [];
-                        if (members.length === 0) return;
-
-                        if (!hasMembers) {
-                            script += `# ========== 資料夾: ${folderPath} ==========\n`;
-                            hasMembers = true;
-                        }
-
-                        script += `\n# 群組: ${group.name}\n`;
-
-                        members.forEach(function(member) {
-                            const user = userMap[member.id];
-                            if (!user) return;
-
-                            // 檢查是否已經處理過這個組合
-                            const key = `${groupId}-${member.id}`;
-                            if (processedGroupMembers.has(key)) {
-                                script += `# 將使用者 "${user.name}" 加入群組 "${group.name}" (已在其他資料夾中處理)\n`;
-                                return;
-                            }
-                            processedGroupMembers.add(key);
-
-                            const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                            
-                            script += `Add-ADGroupMember -Identity "${group.name}" -Members "${samAccountName}"\n`;
-                        });
-                    });
-
-                    if (hasMembers) {
-                        script += '\n';
-                    }
-                });
-
-                if (processedGroupMembers.size === 0) {
-                    script += '# 目前選中的資料夾群組組合沒有成員資料。\n';
-                }
-
-                displayPowerShellOutput(script);
+                displayPowerShellOutput(ScriptBuilders.buildMembersScript({
+                    pairs: selectedFolderGroupPairs,
+                    users: allGroupMembersData.users,
+                    groups: groupList,
+                    folders: allGroupMembersData.folders,
+                    membersByGroup: membersByGroup
+                }));
             }).fail(function(xhr) {
                 alert('載入群組成員資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
-            });
-        }
-
-        // 生成資料夾群組成員的 AD PowerShell 語法（保留舊函數以備不時之需）
-        function generateGroupMembersPowerShell() {
-            // 同時取得群組、人員和權限資料
-            $.when(
-                $.get('/api/groups'),
-                $.get('/api/users'),
-                $.get('/api/permissions')
-            ).done(function(groupsResp, usersResp, permissionsResp) {
-                const groups = groupsResp[0];  // jQuery 返回 [data, textStatus, jqXHR]
-                const users = usersResp[0];
-                const permissions = permissionsResp[0];
-
-                if (!groups || groups.length === 0) {
-                    alert('目前沒有群組資料，無法生成語法。');
-                    return;
-                }
-
-                if (!users || users.length === 0) {
-                    alert('目前沒有人員資料，無法生成語法。');
-                    return;
-                }
-
-                let script = '# 產生將人員加入 AD 群組的 PowerShell 語法\n';
-                script += '# 請根據實際環境調整 Domain 和群組名稱格式\n\n';
-                script += '# 匯入 ActiveDirectory 模組（如果尚未匯入）\n';
-                script += 'Import-Module ActiveDirectory -ErrorAction SilentlyContinue\n\n';
-
-                // 建立使用者 ID 到使用者的映射
-                const userMap = {};
-                users.forEach(function(user) {
-                    userMap[user.id] = user;
-                });
-
-                // 建立群組 ID 到群組的映射
-                const groupMap = {};
-                groups.forEach(function(group) {
-                    groupMap[group.id] = group;
-                });
-
-                // 取得資料夾資訊
-                $.get('/api/folders').done(function(folders) {
-                    const folderMap = {};
-                    folders.forEach(function(folder) {
-                        folderMap[folder.id] = folder;
-                    });
-
-                    // 建立群組 ID 到群組成員的映射（從 group_users 關聯表）
-                    const groupMembersMap = {};
-                    const groupPromises = groups.map(function(group) {
-                        return $.get(`/api/groups/${group.id}/users`);
-                    });
-                    
-                    $.when.apply($, groupPromises).done(function() {
-                        // arguments 包含所有回傳值
-                        const memberArrays = Array.prototype.slice.call(arguments);
-                        groups.forEach(function(group, index) {
-                            groupMembersMap[group.id] = memberArrays[index] && memberArrays[index][0] ? memberArrays[index][0] : [];
-                        });
-
-                        // 根據權限資料，按資料夾組織群組成員
-                        // 建立資料夾 ID 到群組列表的映射
-                        const folderGroupsMap = {};
-                        permissions.forEach(function(permission) {
-                            if (!permission.group_id || !permission.folder_id) return;
-                            
-                            if (!folderGroupsMap[permission.folder_id]) {
-                                folderGroupsMap[permission.folder_id] = [];
-                            }
-                            if (folderGroupsMap[permission.folder_id].indexOf(permission.group_id) === -1) {
-                                folderGroupsMap[permission.folder_id].push(permission.group_id);
-                            }
-                        });
-
-                        // 按資料夾生成語法
-                        const processedGroupMembers = new Set(); // 追蹤已經處理過的（群組ID, 用戶ID）組合，避免重複
-
-                        Object.keys(folderGroupsMap).forEach(function(folderId) {
-                            const folder = folderMap[folderId];
-                            const folderPath = folder ? folder.path || folder.name : '未知資料夾';
-                            
-                            const groupIds = folderGroupsMap[folderId];
-                            let hasMembers = false;
-
-                            groupIds.forEach(function(groupId) {
-                                const group = groupMap[groupId];
-                                if (!group) return;
-
-                                const members = groupMembersMap[groupId] || [];
-                                if (members.length === 0) return;
-
-                                if (!hasMembers) {
-                                    script += `# ========== 資料夾: ${folderPath} ==========\n`;
-                                    hasMembers = true;
-                                }
-
-                                script += `\n# 群組: ${group.name}\n`;
-
-                                members.forEach(function(member) {
-                                    const user = userMap[member.id];
-                                    if (!user) return;
-
-                                    // 檢查是否已經處理過這個組合
-                                    const key = `${groupId}-${member.id}`;
-                                    if (processedGroupMembers.has(key)) {
-                                        script += `# 將使用者 "${user.name}" 加入群組 "${group.name}" (已在其他資料夾中處理)\n`;
-                                        return;
-                                    }
-                                    processedGroupMembers.add(key);
-
-                                    const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                                    
-                                    script += `Add-ADGroupMember -Identity "${group.name}" -Members "${samAccountName}"\n`;
-                                });
-                            });
-
-                            if (hasMembers) {
-                                script += '\n';
-                            }
-                        });
-
-                        // 如果還有沒有在權限中出現的群組，也生成它們的成員加入語法
-                        const groupsInPermissions = new Set();
-                        permissions.forEach(function(p) {
-                            if (p.group_id) groupsInPermissions.add(p.group_id);
-                        });
-
-                        let hasUnassignedGroups = false;
-                        groups.forEach(function(group) {
-                            if (groupsInPermissions.has(group.id)) return;
-
-                            const members = groupMembersMap[group.id] || [];
-                            if (members.length === 0) return;
-
-                            if (!hasUnassignedGroups) {
-                                script += `# ========== 未指派到資料夾的群組 ==========\n\n`;
-                                hasUnassignedGroups = true;
-                            }
-
-                            script += `# 群組: ${group.name}\n`;
-
-                            members.forEach(function(member) {
-                                const user = userMap[member.id];
-                                if (!user) return;
-
-                                const samAccountName = user.email ? user.email.split('@')[0] : user.name.replace(/\s+/g, '').toLowerCase();
-                                
-                                script += `Add-ADGroupMember -Identity "${group.name}" -Members "${samAccountName}"\n`;
-                            });
-
-                            script += '\n';
-                        });
-
-                        // 檢查是否沒有任何資料
-                        const hasAnyMembers = processedGroupMembers.size > 0 || hasUnassignedGroups;
-                        if (!hasAnyMembers) {
-                            script += '# 目前沒有群組成員資料，無法生成語法。\n';
-                        }
-
-                        displayPowerShellOutput(script);
-                    }).fail(function(xhr) {
-                        alert('載入群組成員資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
-                    });
-                }).fail(function(xhr) {
-                    alert('載入資料夾資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
-                });
-            }).fail(function(xhr) {
-                alert('載入資料失敗: ' + (xhr.responseJSON ? xhr.responseJSON.error : xhr.statusText));
             });
         }
 
@@ -8067,7 +7784,8 @@ group_member,,2,4</code></pre>
                     url: '/api/databases',
                     method: 'GET',
                     success: function(resp) {
-                        permissionDatabaseOptions = (resp.databases || []).map(db => db.name);
+                        // 系統資料庫（system.db 掌管所有帳號、admin.db）任何角色都不可被授權，不列入選項
+                        permissionDatabaseOptions = (resp.databases || []).map(db => db.name).filter(n => n !== 'system.db' && n !== 'admin.db');
                         resolve();
                     },
                     error: function() {
@@ -8190,9 +7908,11 @@ group_member,,2,4</code></pre>
                         const permissionLevel = account.permission_level === 'viewer'
                             ? '<span class="badge bg-warning text-dark">唯讀</span>'
                             : '<span class="badge bg-primary">可編輯</span>';
-                        const allowedList = account.allowed_databases && account.allowed_databases.length
-                            ? account.allowed_databases.join(', ')
-                            : '<span class="text-muted">-</span>';
+                        const allowedList = account.allow_all_databases
+                            ? '<span class="badge bg-success" title="新增的資料庫立即生效；系統帳號資料庫不在範圍內">全部資料庫（含未來新增）</span>'
+                            : (account.allowed_databases && account.allowed_databases.length
+                                ? account.allowed_databases.join(', ')
+                                : '<span class="text-muted">-</span>');
 
                         const canInviteBadge = account.can_invite
                             ? '<span class="badge bg-success">是</span>'
@@ -8209,8 +7929,8 @@ group_member,,2,4</code></pre>
                             actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
                                 <i class="bi bi-key-fill"></i>
                             </button>`;
-                            actionButtons += `<button class="btn btn-sm ${account.ms_email ? 'btn-info' : 'btn-outline-info'} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#0078d4'}"/><rect x="12" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#7fba00'}"/><rect x="0" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#00a4ef'}"/><rect x="12" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#ffb900'}"/></svg>
+                            actionButtons += `<button class="btn btn-sm btn-outline-info${account.ms_email ? ' ms-bound' : ''} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="#0078d4"/><rect x="12" y="0" width="11" height="11" fill="#7fba00"/><rect x="0" y="12" width="11" height="11" fill="#00a4ef"/><rect x="12" y="12" width="11" height="11" fill="#ffb900"/></svg>
                             </button>`;
                             actionButtons += `<button class="btn btn-sm btn-outline-warning me-1" title="升為系統管理員" onclick="setAdminRole(${account.id}, '${safeUsername}', true)">
                                 <i class="bi bi-shield-fill-plus"></i>
@@ -8223,8 +7943,8 @@ group_member,,2,4</code></pre>
                             actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
                                 <i class="bi bi-key-fill"></i>
                             </button>`;
-                            actionButtons += `<button class="btn btn-sm ${account.ms_email ? 'btn-info' : 'btn-outline-info'} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#0078d4'}"/><rect x="12" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#7fba00'}"/><rect x="0" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#00a4ef'}"/><rect x="12" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#ffb900'}"/></svg>
+                            actionButtons += `<button class="btn btn-sm btn-outline-info${account.ms_email ? ' ms-bound' : ''} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="#0078d4"/><rect x="12" y="0" width="11" height="11" fill="#7fba00"/><rect x="0" y="12" width="11" height="11" fill="#00a4ef"/><rect x="12" y="12" width="11" height="11" fill="#ffb900"/></svg>
                             </button>`;
                             actionButtons += `<button class="btn btn-sm btn-warning me-1" title="取消管理員身份" onclick="setAdminRole(${account.id}, '${safeUsername}', false)">
                                 <i class="bi bi-shield-fill-minus"></i>
@@ -8294,8 +8014,8 @@ group_member,,2,4</code></pre>
                 showResetPasswordError('請輸入新密碼');
                 return;
             }
-            if (newPassword.length < 6) {
-                showResetPasswordError('新密碼至少需 6 個字元');
+            if (newPassword.length < 10) {
+                showResetPasswordError('新密碼至少需 10 個字元');
                 return;
             }
             if (newPassword !== confirmPassword) {
@@ -8414,6 +8134,7 @@ group_member,,2,4</code></pre>
             const level = account.permission_level === 'viewer' ? 'viewer' : 'editor';
             $('#permission-level-select').val(level);
             $('#permission-db-select').html(buildDatabaseOptionsHtml(account.allowed_databases || []));
+            $('#permission-all-db').prop('checked', !!account.allow_all_databases);
             togglePermissionModalDatabases();
             syncDefaultDbSelect();
             if (account.user_database) {
@@ -8422,8 +8143,14 @@ group_member,,2,4</code></pre>
             $('#account-permission-modal').modal('show');
         }
 
+        // 「全部資料庫」涵蓋的名稱（前端只用來挑預設登入資料庫；實際範圍由伺服器即時計算，系統資料庫不在內）
+        function allDatabasesForEngineer() {
+            return permissionDatabaseOptions.filter(n => n !== 'system.db' && n !== 'admin.db' && !n.startsWith('deleted_'));
+        }
+
         function syncDefaultDbSelect() {
-            const selected = ($('#permission-db-select').val() || []).filter(Boolean);
+            const allMode = $('#permission-role-level').val() === 'engineer' && $('#permission-all-db').is(':checked');
+            const selected = allMode ? allDatabasesForEngineer() : ($('#permission-db-select').val() || []).filter(Boolean);
             const current = $('#permission-default-db').val();
             if (!selected.length) {
                 $('#permission-default-db').html('<option value="">（請先選擇可存取的資料庫）</option>');
@@ -8466,6 +8193,16 @@ group_member,,2,4</code></pre>
             } else {
                 $('#permission-db-select-wrapper').hide();
             }
+            // 「全部資料庫」只有工程師角色才有；其他角色一律不顯示並取消勾選
+            $('#permission-all-db-wrapper').toggle(isEngineer);
+            if (!isEngineer) $('#permission-all-db').prop('checked', false);
+            const allMode = isEngineer && $('#permission-all-db').is(':checked');
+            $('#permission-db-select').prop('disabled', allMode).closest('div').find('#permission-db-select-label, #permission-db-select').toggleClass('text-muted', allMode);
+        }
+
+        function togglePermissionAllDb() {
+            togglePermissionModalDatabases();
+            syncDefaultDbSelect();
         }
 
         function submitPermissionUpdate() {
@@ -8480,7 +8217,11 @@ group_member,,2,4</code></pre>
             const isClient = roleLevel === 'db_admin' || roleLevel === 'client_user';
             const isEngineer = roleLevel === 'engineer';
             const payload = { accountId, permissionLevel: level, roleLevel, canInvite };
-            if (level === 'viewer' || isClient || isEngineer) {
+            if (isEngineer && $('#permission-all-db').is(':checked')) {
+                // 全部資料庫：不送清單，只送標記與預設登入資料庫
+                payload.allowAllDatabases = true;
+                payload.defaultDatabase = $('#permission-default-db').val() || undefined;
+            } else if (level === 'viewer' || isClient || isEngineer) {
                 const allowed = ($('#permission-db-select').val() || []).filter(Boolean);
                 if (allowed.length === 0) {
                     alert('請至少選擇一個可存取的資料庫');
@@ -8882,8 +8623,10 @@ group_member,,2,4</code></pre>
             let html = '';
             
             for (const [key, service] of Object.entries(services)) {
-                const statusClass = service.status === 'healthy' ? 'success' : (service.status === 'error' ? 'danger' : 'warning');
-                const statusIcon = service.status === 'healthy' ? 'check-circle-fill' : (service.status === 'error' ? 'x-circle-fill' : 'exclamation-triangle-fill');
+                // 應用程式服務回報的狀態是 'running'，與 'healthy' 同樣視為正常（原本會被誤顯示成警告三角形）
+                const isOk = service.status === 'healthy' || service.status === 'running';
+                const statusClass = isOk ? 'success' : (service.status === 'error' ? 'danger' : 'warning');
+                const statusIcon = isOk ? 'check-circle-fill' : (service.status === 'error' ? 'x-circle-fill' : 'exclamation-triangle-fill');
                 
                 html += `
                     <div class="col-md-6 mb-3">
@@ -8918,6 +8661,7 @@ group_member,,2,4</code></pre>
         function getStatusText(status) {
             const texts = {
                 healthy: '正常',
+                running: '運作中',
                 error: '錯誤',
                 warning: '警告',
                 unknown: '未知'
@@ -9229,7 +8973,9 @@ group_member,,2,4</code></pre>
                 'update': '修改',
                 'delete': '刪除',
                 'login': '登入',
-                'logout': '登出'
+                'logout': '登出',
+                'switch': '切換資料庫',
+                'switch_denied': '切換被拒'
             };
             return texts[actionType] || actionType;
         }
@@ -9240,7 +8986,9 @@ group_member,,2,4</code></pre>
                 'user': '人員',
                 'group': '群組',
                 'permission': '權限',
-                'account': '帳號'
+                'account': '帳號',
+                'account_permission': '帳號權限',
+                'database': '資料庫'
             };
             return texts[resourceType] || resourceType;
         }
@@ -9251,7 +8999,9 @@ group_member,,2,4</code></pre>
                 'update': 'warning',
                 'delete': 'danger',
                 'login': 'info',
-                'logout': 'secondary'
+                'logout': 'secondary',
+                'switch': 'secondary',
+                'switch_denied': 'danger'
             };
             return classes[actionType] || 'secondary';
         }
@@ -9530,10 +9280,10 @@ group_member,,2,4</code></pre>
                     container.append(`
                         <div class="form-check">
                             <input class="form-check-input nas-folder-checkbox" type="checkbox" value="${f.id}" id="nas-f-${f.id}"
-                                   data-path="${label}" data-name="${f.name}"
+                                   data-path="${escapeHtml(label)}" data-name="${escapeHtml(f.name)}"
                                    onchange="updateNasSelectionCount('folders')">
                             <label class="form-check-label" for="nas-f-${f.id}">
-                                <i class="bi bi-folder-fill text-warning"></i> ${label}
+                                <i class="bi bi-folder-fill text-warning"></i> ${escapeHtml(label)}
                             </label>
                         </div>`);
                 });
@@ -9555,13 +9305,13 @@ group_member,,2,4</code></pre>
                 nasAllUsers.sort((a,b) => (a.name||'').localeCompare(b.name||'','zh-TW'));
                 nasAllUsers.forEach(u => {
                     const display = u.account_key
-                        ? `${u.name} <span class="text-muted">(${u.account_key})</span>`
-                        : `${u.name} <span class="text-muted">(${u.email || '無帳號'})</span>`;
+                        ? `${escapeHtml(u.name)} <span class="text-muted">(${escapeHtml(u.account_key)})</span>`
+                        : `${escapeHtml(u.name)} <span class="text-muted">(${escapeHtml(u.email || '無帳號')})</span>`;
                     container.append(`
                         <div class="form-check">
                             <input class="form-check-input nas-user-checkbox" type="checkbox" value="${u.id}" id="nas-u-${u.id}"
-                                   data-account="${u.account_key || u.email?.split('@')[0] || u.name}"
-                                   data-name="${u.name}" data-email="${u.email || ''}"
+                                   data-account="${escapeHtml(u.account_key || u.email?.split('@')[0] || u.name)}"
+                                   data-name="${escapeHtml(u.name)}" data-email="${escapeHtml(u.email || '')}"
                                    onchange="updateNasSelectionCount('users')">
                             <label class="form-check-label" for="nas-u-${u.id}">
                                 <i class="bi bi-person-fill text-primary"></i> ${display}
@@ -9594,7 +9344,7 @@ group_member,,2,4</code></pre>
             const nasIP    = $('#nas-ip').val().trim() || 'NAS_IP';
             const domain   = $('#nas-domain').val().trim().toUpperCase() || 'DOMAIN';
             const volume   = ($('#nas-volume-path').val().trim() || (nasType === 'synology' ? '/volume1' : '/share/CIFS')).replace(/\/$/, '');
-            const tmpPass  = $('#nas-temp-password').val().trim() || 'TempPass123!';
+            const tmpPass  = $('#nas-temp-password').val().trim();   // 留空：由產生器隨機產生
             const now      = new Date().toLocaleString('zh-TW');
 
             // 取得選中的資料夾
@@ -9603,179 +9353,22 @@ group_member,,2,4</code></pre>
 
             const selFolders = nasAllFolders.filter(f => selFolderIds.has(f.id));
 
-            // 建立 folderId → groups map from permissions
-            const folderGroupMap = {}; // folderId → [{name, isRO}]
-            nasAllPerms.forEach(p => {
-                if (!p.group_id || !p.folder_id) return;
-                if (!selFolderIds.has(p.folder_id)) return;
-                const grp = nasAllGroups.find(g => g.id === p.group_id);
-                if (!grp) return;
-                if (!folderGroupMap[p.folder_id]) folderGroupMap[p.folder_id] = [];
-                const existing = folderGroupMap[p.folder_id].find(g => g.name === grp.name);
-                if (!existing) {
-                    folderGroupMap[p.folder_id].push({
-                        name: grp.name,
-                        isRO: /[_-]ro$/i.test(grp.name) || p.permission_type === 'read'
-                    });
-                }
-            });
-
-            // 若資料夾沒有對應群組，用路徑自動推算 _RO/_RW
-            selFolders.forEach(f => {
-                if (!folderGroupMap[f.id] || folderGroupMap[f.id].length === 0) {
-                    const base = (f.path || f.name).replace(/[\/\\]/g,'_');
-                    folderGroupMap[f.id] = [
-                        { name: base + '_RO', isRO: true },
-                        { name: base + '_RW', isRO: false }
-                    ];
-                }
-            });
-
             // 選中的人員（本地模式用）
             const selUsers = [];
             if (adMode === 'local') {
                 $('.nas-user-checkbox:checked').each(function() {
                     selUsers.push({
-                        account: $(this).data('account'),
-                        name: $(this).data('name'),
-                        email: $(this).data('email')
+                        account: $(this).attr('data-account'),
+                        name: $(this).attr('data-name'),
+                        email: $(this).attr('data-email')
                     });
                 });
             }
 
-            let script = '';
-            const nasTypeName = nasType === 'synology' ? 'Synology DSM' : 'QNAP QTS';
-            const adModeLabel = adMode === 'ad' ? '已加入 AD 網域' : '本地帳號';
-
-            script += `#!/bin/bash\n`;
-            script += `# ${'='.repeat(60)}\n`;
-            script += `# NAS 腳本生成 — ${nasTypeName}（${adModeLabel}）\n`;
-            script += `# NAS IP   : ${nasIP}\n`;
-            if (adMode === 'ad') script += `# AD 網域  : ${domain}\n`;
-            script += `# Volume   : ${volume}\n`;
-            script += `# 生成時間 : ${now}\n`;
-            script += `# 執行方式 : sudo bash this_script.sh\n`;
-            script += `# ${'='.repeat(60)}\n\n`;
-
-            script += `set -e  # 遇到錯誤時停止執行\n`;
-            script += `VOLUME="${volume}"\n`;
-            if (adMode === 'ad') script += `DOMAIN="${domain}"\n`;
-            script += `\n`;
-
-            // ── 本地帳號：建立群組 ──────────────────────────────
-            if (adMode === 'local') {
-                const allGroups = new Set();
-                selFolders.forEach(f => {
-                    (folderGroupMap[f.id] || []).forEach(g => allGroups.add(g.name));
-                });
-
-                if (allGroups.size > 0) {
-                    script += `echo "=== 建立本地群組 ==="\n`;
-                    if (nasType === 'synology') {
-                        allGroups.forEach(gname => {
-                            script += `synogroup --add "${gname}" 2>/dev/null && echo "  ✔ 群組建立: ${gname}" || echo "  ⚠ 群組已存在: ${gname}"\n`;
-                        });
-                    } else {
-                        // QNAP
-                        allGroups.forEach(gname => {
-                            script += `# QNAP: 請透過 QTS 管理介面或 API 建立群組 "${gname}"\n`;
-                            script += `# /sbin/qgroup.sh -a "${gname}" 2>/dev/null || true\n`;
-                        });
-                    }
-                    script += `\n`;
-                }
-
-                // 建立使用者
-                if (selUsers.length > 0) {
-                    script += `echo "=== 建立本地使用者 ==="\n`;
-                    if (nasType === 'synology') {
-                        selUsers.forEach(u => {
-                            script += `synouser --add "${u.account}" "${u.name}" "${tmpPass}" 0 "${u.email}" 0 2>/dev/null && echo "  ✔ 使用者建立: ${u.account}" || echo "  ⚠ 使用者已存在: ${u.account}"\n`;
-                        });
-                    } else {
-                        selUsers.forEach(u => {
-                            script += `# QNAP: 請透過 QTS 管理介面建立使用者 "${u.account}" (${u.name})\n`;
-                        });
-                    }
-                    script += `\n`;
-                }
-
-                // 加入群組成員（僅 Synology，需知道每個人對應哪個群組）
-                if (nasType === 'synology' && selUsers.length > 0) {
-                    script += `echo "=== 加入群組成員（請依實際需求調整 _RO/_RW）==="\n`;
-                    script += `# 以下將所有選中人員加入各資料夾的 _RO 群組（唯讀）\n`;
-                    script += `# 如需 _RW（讀寫）存取，請手動調整或複製對應指令\n`;
-                    selFolders.forEach(f => {
-                        const groups = folderGroupMap[f.id] || [];
-                        const roGroup = groups.find(g => g.isRO);
-                        const rwGroup = groups.find(g => !g.isRO);
-                        if (roGroup) {
-                            selUsers.forEach(u => {
-                                script += `# synogroup --memberadd "${roGroup.name}" "${u.account}"  # 唯讀\n`;
-                            });
-                        }
-                        if (rwGroup) {
-                            selUsers.forEach(u => {
-                                script += `# synogroup --memberadd "${rwGroup.name}" "${u.account}"  # 讀寫（取消 # 啟用）\n`;
-                            });
-                        }
-                    });
-                    script += `\n`;
-                }
-            }
-
-            // ── ACL 設定 ──────────────────────────────────────────
-            script += `echo "=== 設定資料夾 ACL ==="\n`;
-            selFolders.forEach(f => {
-                const folderPath = (f.path || f.name).replace(/\\/g, '/');
-                const fullPath = `\${VOLUME}/${folderPath}`;
-                const groups = folderGroupMap[f.id] || [];
-
-                script += `\n# 資料夾: ${folderPath}\n`;
-                script += `if [ -d "${fullPath}" ]; then\n`;
-
-                groups.forEach(g => {
-                    let groupRef, perms;
-                    if (adMode === 'ad') {
-                        groupRef = `\${DOMAIN}\\\\${g.name}`;
-                    } else {
-                        groupRef = g.name;
-                    }
-                    perms = g.isRO ? 'r-x' : 'rwx';
-                    const permLabel = g.isRO ? '唯讀 (RO)' : '讀寫 (RW)';
-
-                    script += `    # ${g.name} — ${permLabel}\n`;
-                    script += `    setfacl -Rm "group:${groupRef}:${perms}" "${fullPath}"\n`;
-                    script += `    setfacl -Rdm "group:${groupRef}:${perms}" "${fullPath}"\n`;
-                });
-
-                script += `    echo "  ✔ ACL 設定完成: ${folderPath}"\n`;
-                script += `else\n`;
-                script += `    echo "  ✗ 資料夾不存在，略過: ${fullPath}"\n`;
-                script += `fi\n`;
+            const script = ScriptBuilders.buildNasScript({
+                nasType: nasType, adMode: adMode, nasIP: nasIP, domain: domain, volume: volume, tmpPass: tmpPass, now: now,
+                folders: selFolders, permissions: nasAllPerms, groups: nasAllGroups, users: selUsers
             });
-
-            script += `\necho ""\necho "✅ 腳本執行完成！"\n`;
-
-            // AD 模式附註
-            if (adMode === 'ad') {
-                script += `\n# ────────────────────────────────────────────────────────\n`;
-                script += `# 注意事項：\n`;
-                script += `# 1. 請確認 NAS 已正確加入 AD 網域\n`;
-                script += `# 2. AD 群組格式因 NAS 版本可能有差異（DOMAIN\\Group 或 DOMAIN+Group）\n`;
-                script += `#    若 setfacl 失敗，請改用 NAS 管理介面手動設定\n`;
-                script += `# 3. 建議先在單一資料夾測試後再批次執行\n`;
-                if (nasType === 'synology') {
-                    script += `# 4. Synology 亦可用 synoaclset 指令（DSM 7+ 支援較好）\n`;
-                    script += `#    synoaclset -name "ShareName/SubPath" -user "DOMAIN\\\\Group" -acl "r--" -group\n`;
-                }
-            } else {
-                script += `\n# ────────────────────────────────────────────────────────\n`;
-                script += `# 注意事項：\n`;
-                script += `# 1. 群組成員指令已用 # 標示，請依需求取消註解後執行\n`;
-                script += `# 2. 臨時密碼：${tmpPass}（請要求使用者首次登入後立即更改）\n`;
-                script += `# 3. 建議先確認 Volume 路徑正確（ls \${VOLUME}）\n`;
-            }
 
             $('#nas-output').text(script);
             $('#nas-output-card').show();
