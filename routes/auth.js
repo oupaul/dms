@@ -12,7 +12,7 @@ const { requireAuth } = require('../middleware/auth');
 const { sessionStore } = require('../middleware/session');
 const { usernameCollisionOf } = require('../services/accounts');
 const { logAudit, logLogout, updateUsageStatistics } = require('../services/audit');
-const { connectDatabase, getSystemDb, getUserDatabase, parseAllowedDatabases, sanitizeAllowedDatabases } = require('../services/database');
+const { accountAllowsAllDatabases, connectDatabase, getSystemDb, getUserDatabase, listEngineerAccessibleDatabases, parseAllowedDatabases, sanitizeAllowedDatabases, sessionAccessibleDatabases, sessionAllowsAllDatabases } = require('../services/database');
 const { getMsalClient, getMsalConfig } = require('../services/sso');
 const { dbGet, dbRun } = require('../lib/db');
 
@@ -121,9 +121,11 @@ router.post('/api/auth/login', async (req, res) => {
     const userRoleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
     const isClientRole = userRoleLevel === 'db_admin' || userRoleLevel === 'client_user';
     const isEngineer = userRoleLevel === 'engineer';
-    let allowedDatabases = parseAllowedDatabases(user.allowed_databases);
+    // 「全部資料庫」的工程師：清單即時由資料庫目錄計算（不含系統資料庫）；其他角色即使帶有這個標記也不生效
+    const allowAllDatabases = accountAllowsAllDatabases(user);
+    let allowedDatabases = allowAllDatabases ? listEngineerAccessibleDatabases() : parseAllowedDatabases(user.allowed_databases);
     if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
-      allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
+      if (!allowAllDatabases) allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
       if (allowedDatabases.length === 0) {
         return res.status(403).json({
           error: '尚未指派可存取的資料庫',
@@ -161,7 +163,9 @@ router.post('/api/auth/login', async (req, res) => {
       req.session.roleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
       req.session.canInvite = !!(user.can_invite || user.role === 'admin');
       req.session.permissionLevel = permissionLevel;
-      req.session.allowedDatabases = (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : [];
+      // 「全部資料庫」不把清單存進 session（每次存取即時計算，新資料庫不必重新登入就生效）
+      req.session.allowAllDatabases = allowAllDatabases;
+      req.session.allowedDatabases = (!allowAllDatabases && (permissionLevel === 'viewer' || isClientRole || isEngineer)) ? allowedDatabases : [];
       req.session.userDatabase = targetDatabase;
       
       // 記錄活動會話到系統資料庫（在線用戶追蹤）
@@ -204,7 +208,8 @@ router.post('/api/auth/login', async (req, res) => {
           canInvite: !!(user.can_invite || user.role === 'admin'),
           database: targetDatabase,
           permissionLevel,
-          allowedDatabases: (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : []
+          allowedDatabases: (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : [],
+          allowAllDatabases
         }
       });
     } catch (dbError) {
@@ -325,10 +330,11 @@ router.get('/auth/callback', async (req, res) => {
     const userRoleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
     const isClientRole = userRoleLevel === 'db_admin' || userRoleLevel === 'client_user';
     const isEngineer = userRoleLevel === 'engineer';
-    let allowedDatabases = parseAllowedDatabases(user.allowed_databases);
+    const allowAllDatabases = accountAllowsAllDatabases(user);
+    let allowedDatabases = allowAllDatabases ? listEngineerAccessibleDatabases() : parseAllowedDatabases(user.allowed_databases);
 
     if (permissionLevel === 'viewer' || isClientRole || isEngineer) {
-      allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
+      if (!allowAllDatabases) allowedDatabases = sanitizeAllowedDatabases(allowedDatabases);
       if (allowedDatabases.length === 0) {
         return res.redirect('/login.html?error=ms_no_database');
       }
@@ -355,7 +361,8 @@ router.get('/auth/callback', async (req, res) => {
     req.session.roleLevel = user.role === 'admin' ? 'admin' : (user.role_level || 'user');
     req.session.canInvite = !!(user.can_invite || user.role === 'admin');
     req.session.permissionLevel = permissionLevel;
-    req.session.allowedDatabases = (permissionLevel === 'viewer' || isClientRole || isEngineer) ? allowedDatabases : [];
+    req.session.allowAllDatabases = allowAllDatabases;
+    req.session.allowedDatabases = (!allowAllDatabases && (permissionLevel === 'viewer' || isClientRole || isEngineer)) ? allowedDatabases : [];
     req.session.userDatabase = targetDatabase;
     req.session.loginMethod = 'sso';
 
@@ -488,7 +495,8 @@ router.get('/api/auth/status', (req, res) => {
         roleLevel: req.session.role === 'admin' ? 'admin' : (req.session.roleLevel || 'user'),
         canInvite: !!(req.session.canInvite || req.session.role === 'admin'),
         permissionLevel: req.session.permissionLevel || 'editor',
-        allowedDatabases: req.session.allowedDatabases || [],
+        allowedDatabases: sessionAccessibleDatabases(req.session),
+        allowAllDatabases: sessionAllowsAllDatabases(req.session),
         database: req.session.userDatabase,
         mustChangePassword: !!req.session.mustChangePassword
       }

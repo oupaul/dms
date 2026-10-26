@@ -36,6 +36,7 @@ async function waitForColumn(db, table, column) {
   await acc('bob', 'active', 'clean.db', '["clean.db","gone.db"]');  // 可存取清單含不存在的資料庫
   await acc('carol', 'active', 'clean.db', '{not json');              // 不是合法 JSON
   await acc('dave', 'pending', 'clean.db', null);                     // 舊式申請帳號
+  await acc('eve', 'active', 'clean.db', '["*"]');                      // 工程師「全部資料庫」標記：不是資料庫名稱，健檢與清理都必須放過
   await run(sys, `INSERT INTO databases (name, created_by) VALUES ('clean.db', 'alice'), ('ghost.db', 'alice')`); // ghost.db 沒有檔案；bad.db 沒登記
   await close(sys);
 

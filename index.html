@@ -2861,6 +2861,11 @@ group_member,,2,4</code></pre>
                         </select>
                     </div>
                     <div class="mb-3" id="permission-db-select-wrapper" style="display:none;">
+                        <div class="form-check mb-2" id="permission-all-db-wrapper" style="display:none;">
+                            <input class="form-check-input" type="checkbox" id="permission-all-db" onchange="togglePermissionAllDb()">
+                            <label class="form-check-label fw-bold" for="permission-all-db">可存取全部資料庫（含未來新增）</label>
+                            <div class="small text-muted">新增、複製、改名或還原出來的資料庫立即生效，不必逐一授權；系統帳號資料庫（system.db）不在範圍內。實習工程師請不要勾選，改用下方清單。切換資料庫會留下稽核紀錄。</div>
+                        </div>
                         <label class="form-label fw-bold" id="permission-db-select-label">可存取的資料庫（可多選）</label>
                         <select id="permission-db-select" class="form-select" multiple size="8" onchange="syncDefaultDbSelect()"></select>
                         <small class="text-muted">僅能選擇目前存在的資料庫；若需要新增資料庫請先至「資料庫管理」建立。</small>
@@ -7779,7 +7784,8 @@ group_member,,2,4</code></pre>
                     url: '/api/databases',
                     method: 'GET',
                     success: function(resp) {
-                        permissionDatabaseOptions = (resp.databases || []).map(db => db.name);
+                        // 系統資料庫（system.db 掌管所有帳號、admin.db）任何角色都不可被授權，不列入選項
+                        permissionDatabaseOptions = (resp.databases || []).map(db => db.name).filter(n => n !== 'system.db' && n !== 'admin.db');
                         resolve();
                     },
                     error: function() {
@@ -7902,9 +7908,11 @@ group_member,,2,4</code></pre>
                         const permissionLevel = account.permission_level === 'viewer'
                             ? '<span class="badge bg-warning text-dark">唯讀</span>'
                             : '<span class="badge bg-primary">可編輯</span>';
-                        const allowedList = account.allowed_databases && account.allowed_databases.length
-                            ? account.allowed_databases.join(', ')
-                            : '<span class="text-muted">-</span>';
+                        const allowedList = account.allow_all_databases
+                            ? '<span class="badge bg-success" title="新增的資料庫立即生效；系統帳號資料庫不在範圍內">全部資料庫（含未來新增）</span>'
+                            : (account.allowed_databases && account.allowed_databases.length
+                                ? account.allowed_databases.join(', ')
+                                : '<span class="text-muted">-</span>');
 
                         const canInviteBadge = account.can_invite
                             ? '<span class="badge bg-success">是</span>'
@@ -8126,6 +8134,7 @@ group_member,,2,4</code></pre>
             const level = account.permission_level === 'viewer' ? 'viewer' : 'editor';
             $('#permission-level-select').val(level);
             $('#permission-db-select').html(buildDatabaseOptionsHtml(account.allowed_databases || []));
+            $('#permission-all-db').prop('checked', !!account.allow_all_databases);
             togglePermissionModalDatabases();
             syncDefaultDbSelect();
             if (account.user_database) {
@@ -8134,8 +8143,14 @@ group_member,,2,4</code></pre>
             $('#account-permission-modal').modal('show');
         }
 
+        // 「全部資料庫」涵蓋的名稱（前端只用來挑預設登入資料庫；實際範圍由伺服器即時計算，系統資料庫不在內）
+        function allDatabasesForEngineer() {
+            return permissionDatabaseOptions.filter(n => n !== 'system.db' && n !== 'admin.db' && !n.startsWith('deleted_'));
+        }
+
         function syncDefaultDbSelect() {
-            const selected = ($('#permission-db-select').val() || []).filter(Boolean);
+            const allMode = $('#permission-role-level').val() === 'engineer' && $('#permission-all-db').is(':checked');
+            const selected = allMode ? allDatabasesForEngineer() : ($('#permission-db-select').val() || []).filter(Boolean);
             const current = $('#permission-default-db').val();
             if (!selected.length) {
                 $('#permission-default-db').html('<option value="">（請先選擇可存取的資料庫）</option>');
@@ -8178,6 +8193,16 @@ group_member,,2,4</code></pre>
             } else {
                 $('#permission-db-select-wrapper').hide();
             }
+            // 「全部資料庫」只有工程師角色才有；其他角色一律不顯示並取消勾選
+            $('#permission-all-db-wrapper').toggle(isEngineer);
+            if (!isEngineer) $('#permission-all-db').prop('checked', false);
+            const allMode = isEngineer && $('#permission-all-db').is(':checked');
+            $('#permission-db-select').prop('disabled', allMode).closest('div').find('#permission-db-select-label, #permission-db-select').toggleClass('text-muted', allMode);
+        }
+
+        function togglePermissionAllDb() {
+            togglePermissionModalDatabases();
+            syncDefaultDbSelect();
         }
 
         function submitPermissionUpdate() {
@@ -8192,7 +8217,11 @@ group_member,,2,4</code></pre>
             const isClient = roleLevel === 'db_admin' || roleLevel === 'client_user';
             const isEngineer = roleLevel === 'engineer';
             const payload = { accountId, permissionLevel: level, roleLevel, canInvite };
-            if (level === 'viewer' || isClient || isEngineer) {
+            if (isEngineer && $('#permission-all-db').is(':checked')) {
+                // 全部資料庫：不送清單，只送標記與預設登入資料庫
+                payload.allowAllDatabases = true;
+                payload.defaultDatabase = $('#permission-default-db').val() || undefined;
+            } else if (level === 'viewer' || isClient || isEngineer) {
                 const allowed = ($('#permission-db-select').val() || []).filter(Boolean);
                 if (allowed.length === 0) {
                     alert('請至少選擇一個可存取的資料庫');
@@ -8944,7 +8973,9 @@ group_member,,2,4</code></pre>
                 'update': '修改',
                 'delete': '刪除',
                 'login': '登入',
-                'logout': '登出'
+                'logout': '登出',
+                'switch': '切換資料庫',
+                'switch_denied': '切換被拒'
             };
             return texts[actionType] || actionType;
         }
@@ -8955,7 +8986,9 @@ group_member,,2,4</code></pre>
                 'user': '人員',
                 'group': '群組',
                 'permission': '權限',
-                'account': '帳號'
+                'account': '帳號',
+                'account_permission': '帳號權限',
+                'database': '資料庫'
             };
             return texts[resourceType] || resourceType;
         }
@@ -8966,7 +8999,9 @@ group_member,,2,4</code></pre>
                 'update': 'warning',
                 'delete': 'danger',
                 'login': 'info',
-                'logout': 'secondary'
+                'logout': 'secondary',
+                'switch': 'secondary',
+                'switch_denied': 'danger'
             };
             return classes[actionType] || 'secondary';
         }

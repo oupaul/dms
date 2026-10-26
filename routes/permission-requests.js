@@ -12,7 +12,7 @@ const { nowFileStamp, nowISO } = require('../lib/time');
 const { isClientRoleSession, requireStaffRole } = require('../middleware/auth');
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
-const { connectDatabase, getSystemDb, isDatabaseOwnedBy, listAllDatabaseNames } = require('../services/database');
+const { connectDatabase, getSystemDb, isDatabaseOwnedBy, listAllDatabaseNames, sessionAccessibleDatabases } = require('../services/database');
 const { getEffectivePermissionInfo, insertPermissionRecord } = require('../services/permissions');
 const { dbAll, dbGet, dbRun } = require('../lib/db');
 
@@ -405,7 +405,7 @@ router.get('/api/permission-requests/pending-summary', requireStaffRole, async (
       databaseNames = fs.readdirSync(DB_DIR)
         .filter(f => f.endsWith('.db') && !SYSTEM_DB_NAMES.has(f) && !f.startsWith('deleted_'));
     } else if (roleLevel === 'engineer') {
-      databaseNames = req.session.allowedDatabases || [];
+      databaseNames = sessionAccessibleDatabases(req.session);
     } else {
       databaseNames = listAllDatabaseNames().filter(name => isDatabaseOwnedBy(name, username));
     }

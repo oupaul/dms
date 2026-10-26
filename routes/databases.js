@@ -11,7 +11,7 @@ const { isClientRoleSession, requireAdmin, requireAuth, requireStaffRole } = req
 const { withUserDatabase } = require('../middleware/user-database');
 const { logAudit } = require('../services/audit');
 const { backupBeforeClear } = require('../services/backup');
-const { closeUserDatabase, connectDatabase, getCurrentDbName, getDatabaseOwner, getSystemDb, getUserDatabase, isDatabaseOwnedBy, parseAllowedDatabases } = require('../services/database');
+const { closeUserDatabase, connectDatabase, getCurrentDbName, getDatabaseOwner, getSystemDb, getUserDatabase, isDatabaseOwnedBy, parseAllowedDatabases, sessionAccessibleDatabases, sessionAllowsAllDatabases, sessionCanAccessDatabase } = require('../services/database');
 const { dbGet, dbRun } = require('../lib/db');
 
 const router = express.Router();
@@ -76,7 +76,7 @@ router.get('/api/databases', requireAuth, (req, res) => {
   const username = req.session.username;
   const isAdmin = req.session.role === 'admin';
   const permissionLevel = req.session.permissionLevel || 'editor';
-  const allowedForViewer = req.session.allowedDatabases || [];
+  const allowedForViewer = sessionAccessibleDatabases(req.session);   // 「全部資料庫」的工程師即時計算
   const isViewer = permissionLevel === 'viewer' && !isAdmin;
   const sessionRoleLevelDb = req.session.roleLevel || 'user';
   const isEngineerDb = sessionRoleLevelDb === 'engineer' && !isAdmin;
@@ -221,7 +221,7 @@ router.post('/api/databases', requireAuth, async (req, res) => {
 
     // 工程師自動取得新建資料庫的存取權
     const sessionRoleLevel = req.session.roleLevel || 'user';
-    const isEngineerCreator = sessionRoleLevel === 'engineer' && !isAdmin;
+    const isEngineerCreator = sessionRoleLevel === 'engineer' && !isAdmin && !sessionAllowsAllDatabases(req.session);
     if (isEngineerCreator) {
       try {
         const account = await dbGet(getSystemDb(), 'SELECT id, allowed_databases FROM accounts WHERE username = ? AND status = ?', [username, 'active']);
@@ -263,6 +263,10 @@ router.post('/api/databases/switch', requireAuth, async (req, res) => {
     if (!name) {
       return res.status(400).json({ error: '資料庫名稱為必填' });
     }
+    // 名稱只能是資料庫目錄下的單純檔名（擋掉 ../ 與路徑分隔字元）
+    if (typeof name !== 'string' || name !== path.basename(name) || name.includes('\\') || name.includes('\0') || !name.endsWith('.db')) {
+      return res.status(400).json({ error: '資料庫名稱格式不正確' });
+    }
     
     const username = req.session.username;
     const isAdmin = req.session.role === 'admin';
@@ -270,10 +274,10 @@ router.post('/api/databases/switch', requireAuth, async (req, res) => {
     const sessionRoleLevel = req.session.roleLevel || 'user';
     const isClientRole = sessionRoleLevel === 'db_admin' || sessionRoleLevel === 'client_user';
     const isEngineerSwitch = sessionRoleLevel === 'engineer';
-    const allowedForRestricted = req.session.allowedDatabases || [];
 
     if (!isAdmin && (permissionLevel === 'viewer' || isClientRole || isEngineerSwitch)) {
-      if (!allowedForRestricted.includes(name)) {
+      if (!sessionCanAccessDatabase(req.session, name)) {
+        logAudit(req, 'switch_denied', 'database', null, name, null, { roleLevel: sessionRoleLevel });
         return res.status(403).json({ error: '此帳號無法切換到該資料庫' });
       }
     } else if (!isAdmin) {
@@ -316,6 +320,8 @@ router.post('/api/databases/switch', requireAuth, async (req, res) => {
     }
 
     console.log(`✓ 使用者 ${username} 切換到資料庫: ${name}`);
+    // 稽核：誰在什麼時候看了哪個資料庫（工程師可存取全部資料庫之後，這是事後追查的依據）
+    logAudit(req, 'switch', 'database', null, name, { from: oldDatabase || null }, { to: name });
 
     // 明確儲存 session，確保 userDatabase 更新在回應送出前寫入 store
     await new Promise((resolve) => {
@@ -421,8 +427,7 @@ router.post('/api/databases/copy', requireAuth, (req, res) => {
       }
       // 來源只能是自己的資料庫，或管理員明確授權給自己的資料庫；
       // 系統資料庫（含全部帳號與密碼雜湊）與他人／客戶的資料庫一律不可複製。
-      const allowedSources = req.session.allowedDatabases || [];
-      if (SYSTEM_DB_NAMES.has(source) || !(isDatabaseOwnedBy(source, username) || allowedSources.includes(source))) {
+      if (SYSTEM_DB_NAMES.has(source) || !(isDatabaseOwnedBy(source, username) || sessionCanAccessDatabase(req.session, source))) {
         return res.status(403).json({ error: '權限不足', message: '只能複製自己的資料庫或已授權給您的資料庫' });
       }
     }

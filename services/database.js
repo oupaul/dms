@@ -41,12 +41,70 @@ function sanitizeAllowedDatabases(list) {
     if (typeof name !== 'string') return;
     const trimmed = name.trim();
     if (!trimmed.endsWith('.db')) return;
+    if (SYSTEM_DB_NAMES.has(trimmed)) return;   // 系統資料庫（system.db 掌管所有帳號與密碼雜湊）任何角色都不可被授權
     if (!existing.has(trimmed)) return;
     if (unique.has(trimmed)) return;
     unique.add(trimmed);
     sanitized.push(trimmed);
   });
   return sanitized;
+}
+
+// ==================== 工程師「全部資料庫」 ====================
+//
+// 工程師帳號可以不存名單，改存一個「全部」標記（allowed_databases = ["*"]）。存取時才即時判斷：
+// 資料庫目錄裡所有資料庫，扣掉系統資料庫（system.db 掌管所有帳號，admin.db 為管理員用）與已刪除標記的檔案。
+// 這樣新增、複製、改名、還原出來的資料庫立刻生效，不必逐一授權，也不必重新登入，刪除的資料庫也不會留下殘留名稱。
+//
+// 安全邊界：
+//   - 標記只對「非管理員的工程師（role_level = engineer）」生效；同樣的標記出現在其他角色的帳號上一律忽略
+//     （parseAllowedDatabases 本來就不會把它當成資料庫名稱）
+//   - 只有管理員能透過帳號權限 API 設定；其他寫入 allowed_databases 的路徑都會過濾掉它
+//   - 系統資料庫永遠不在範圍內
+const ALL_DATABASES_TOKEN = '*';
+const DB_NAME_PATTERN = /^[a-zA-Z0-9_\-\u4e00-\u9fa5]+\.db$/;
+
+/** 帳號的 allowed_databases 是否帶有「全部」標記 */
+function hasAllDatabasesToken(raw) {
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.includes(ALL_DATABASES_TOKEN);
+  } catch (err) {
+    return false;
+  }
+}
+
+/** 這個帳號（accounts 資料列）是否為「可存取全部資料庫」的工程師 */
+function accountAllowsAllDatabases(account) {
+  return !!account && account.role !== 'admin' && account.role_level === 'engineer' && hasAllDatabasesToken(account.allowed_databases);
+}
+
+/** 工程師「全部」涵蓋的資料庫（即時從資料庫目錄計算） */
+function listEngineerAccessibleDatabases() {
+  return listAllDatabaseNames()
+    .filter(f => DB_NAME_PATTERN.test(f) && !SYSTEM_DB_NAMES.has(f) && !f.startsWith('deleted_'))
+    .sort();
+}
+
+/** 此 session 是否為「全部資料庫」的工程師（登入時決定；仍再確認角色，避免標記被誤用到其他角色） */
+function sessionAllowsAllDatabases(session) {
+  return !!(session && session.allowAllDatabases && session.role !== 'admin' && session.roleLevel === 'engineer');
+}
+
+/** 此 session 目前可存取的資料庫清單（受限角色用；管理員與一般帳號不走這裡） */
+function sessionAccessibleDatabases(session) {
+  return sessionAllowsAllDatabases(session) ? listEngineerAccessibleDatabases() : ((session && session.allowedDatabases) || []);
+}
+
+/** 此 session 是否可存取指定資料庫（受限角色用） */
+function sessionCanAccessDatabase(session, name) {
+  if (typeof name !== 'string' || !name) return false;
+  if (sessionAllowsAllDatabases(session)) {
+    return DB_NAME_PATTERN.test(name) && !SYSTEM_DB_NAMES.has(name) && !name.startsWith('deleted_')
+      && fs.existsSync(path.join(DB_DIR, name));
+  }
+  return ((session && session.allowedDatabases) || []).includes(name);
 }
 
 // 僅用於顯示（資料庫登記表的 created_by 後備值）；授權判斷請一律用 isDatabaseOwnedBy
@@ -515,6 +573,14 @@ module.exports = {
   listAllDatabaseNames,
   parseAllowedDatabases,
   sanitizeAllowedDatabases,
+  ALL_DATABASES_TOKEN,
+  DB_NAME_PATTERN,
+  hasAllDatabasesToken,
+  accountAllowsAllDatabases,
+  listEngineerAccessibleDatabases,
+  sessionAllowsAllDatabases,
+  sessionAccessibleDatabases,
+  sessionCanAccessDatabase,
   closeUserDatabase,
   retainUserDatabase,
   startDatabase,

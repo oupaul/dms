@@ -16,7 +16,7 @@ const { requireAdmin, requireAuth, requireCanInvite } = require('../middleware/a
 const { sessionStore } = require('../middleware/session');
 const { usernameCollisionOf } = require('../services/accounts');
 const { logAudit } = require('../services/audit');
-const { connectDatabase, getSystemDb, parseAllowedDatabases, sanitizeAllowedDatabases } = require('../services/database');
+const { ALL_DATABASES_TOKEN, accountAllowsAllDatabases, connectDatabase, getSystemDb, hasAllDatabasesToken, listEngineerAccessibleDatabases, parseAllowedDatabases, sanitizeAllowedDatabases } = require('../services/database');
 const { EMAIL_CONFIG_PATH, buildEmailHtml, cancelBatchTimer, flushBatch, getEmailConfig, getEmailTransporter, getPendingChangeCount, hasBatchTimer, loadEmailConfig, sendChangeNotification } = require('../services/email');
 const { MSAL_CONFIG_PATH, getMsalClient, getMsalConfig, loadMsalConfig } = require('../services/sso');
 const { dbGet, dbRun, dbRunExpectChange } = require('../lib/db');
@@ -53,6 +53,7 @@ router.get('/api/admin/accounts', requireAdmin, (req, res) => {
         ...row,
         permission_level: row.permission_level || 'editor',
         allowed_databases: parseAllowedDatabases(row.allowed_databases),
+        allow_all_databases: accountAllowsAllDatabases(row),   // 工程師「全部資料庫」
         role_level: row.role === 'admin' ? 'admin' : (row.role_level || 'user'),
         can_invite: !!(row.can_invite || row.role === 'admin')
       }));
@@ -68,13 +69,13 @@ router.post('/api/admin/review-account', requireAdmin, (req, res) => {
 
 // 更新帳號權限（管理員專用）
 router.post('/api/admin/accounts/update-permission', requireAdmin, async (req, res) => {
-  const { accountId, permissionLevel, allowedDatabases, roleLevel, canInvite, defaultDatabase } = req.body;
+  const { accountId, permissionLevel, allowedDatabases, roleLevel, canInvite, defaultDatabase, allowAllDatabases } = req.body;
   if (!accountId) {
     return res.status(400).json({ error: '缺少必要參數' });
   }
 
   try {
-    const account = await dbGet(getSystemDb(), 'SELECT id, role FROM accounts WHERE id = ?', [accountId]);
+    const account = await dbGet(getSystemDb(), 'SELECT id, username, role, role_level, allowed_databases FROM accounts WHERE id = ?', [accountId]);
 
     if (!account) {
       return res.status(404).json({ error: '帳號不存在' });
@@ -95,9 +96,21 @@ router.post('/api/admin/accounts/update-permission', requireAdmin, async (req, r
     // db_admin 預設 can_invite=1；client_user 強制 0；engineer 依傳入值；user 依傳入值
     const finalCanInvite = finalRoleLevel === 'db_admin' ? 1 : (finalRoleLevel === 'client_user' ? 0 : (canInvite ? 1 : 0));
 
+    // 「全部資料庫（含未來新增）」只有工程師角色可以設定，而且只有管理員能設（此 API 本身就是管理員專用）
+    const wantsAll = allowAllDatabases === true;
+    if (wantsAll && !isEngineer) {
+      return res.status(400).json({ error: '只有「工程師」角色可以設定為可存取全部資料庫' });
+    }
+
     let sanitized = [];
     let serialized = null;
-    if (finalPermissionLevel === 'viewer' || isClientRole || isEngineer) {
+    if (wantsAll) {
+      sanitized = listEngineerAccessibleDatabases();   // 只用來決定預設資料庫；實際存取每次即時計算
+      if (sanitized.length === 0) {
+        return res.status(400).json({ error: '目前沒有可存取的資料庫' });
+      }
+      serialized = JSON.stringify([ALL_DATABASES_TOKEN]);
+    } else if (finalPermissionLevel === 'viewer' || isClientRole || isEngineer) {
       sanitized = sanitizeAllowedDatabases(Array.isArray(allowedDatabases) ? allowedDatabases : []);
       if (sanitized.length === 0) {
         return res.status(400).json({ error: '請至少選擇一個可存取的資料庫' });
@@ -126,9 +139,14 @@ router.post('/api/admin/accounts/update-permission', requireAdmin, async (req, r
 
     await dbRunExpectChange(getSystemDb(), `UPDATE accounts SET ${updates.join(', ')} WHERE id = ?`, params, '更新失敗');
 
+    // 稽核：誰把誰的權限改成什麼（尤其是「全部資料庫」）
+    logAudit(req, 'update', 'account_permission', account.id, account.username,
+      { roleLevel: account.role_level || 'user', allDatabases: hasAllDatabasesToken(account.allowed_databases), databases: parseAllowedDatabases(account.allowed_databases).length },
+      { roleLevel: finalRoleLevel, permissionLevel: finalPermissionLevel, allDatabases: wantsAll, databases: wantsAll ? null : sanitized.length });
+
     // 角色／權限／可存取資料庫都快取在 session 內，變更後讓該帳號的既有登入失效，強制以新權限重新登入
     sessionStore.destroyByUserId(account.id, req.sessionID);
-    res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: sanitized, roleLevel: finalRoleLevel, canInvite: !!finalCanInvite });
+    res.json({ success: true, message: '帳號權限已更新', permissionLevel: finalPermissionLevel, allowedDatabases: wantsAll ? [] : sanitized, allowAllDatabases: wantsAll, roleLevel: finalRoleLevel, canInvite: !!finalCanInvite });
   } catch (error) {
     console.error('更新帳號權限失敗:', error);
     internalError(res, error);
@@ -356,7 +374,8 @@ router.post('/api/admin/invitations', requireCanInvite, async (req, res) => {
   // 資料庫範圍：
   //   admin 或 can_invite 工程師 → 可邀請至任何資料庫
   //   db_admin → 只能邀請至自身有存取權的資料庫
-  let finalDbs = Array.isArray(allowedDatabases) ? allowedDatabases : [];
+  // 邀請只能指定具體的資料庫名稱；「全部」標記不接受（只有管理員能在帳號權限設定）
+  let finalDbs = (Array.isArray(allowedDatabases) ? allowedDatabases : []).filter(d => typeof d === 'string' && d !== ALL_DATABASES_TOKEN && d.endsWith('.db'));
   if (isDbAdmin) {
     const ownDbs = senderAllowed.length > 0 ? senderAllowed : (req.session.userDatabase ? [req.session.userDatabase] : []);
     finalDbs = finalDbs.filter(d => ownDbs.includes(d));
@@ -449,6 +468,8 @@ router.get('/api/my-team-accounts', requireAuth, (req, res) => {
           try { return JSON.parse(r.allowed_databases || '[]'); } catch { return []; }
         })();
         const rDbs = dbs.length > 0 ? dbs : (r.user_database ? [r.user_database] : []);
+        // 「全部資料庫」的工程師對每個資料庫都有存取權（標記只對工程師角色有效）
+        if (r.role_level === 'engineer' && rDbs.includes(ALL_DATABASES_TOKEN)) return true;
         return scope.some(d => rDbs.includes(d)) || scope.includes(r.user_database);
       }).map(r => ({
         id: r.id,

@@ -787,3 +787,144 @@ test('整合：資料關聯完整性（不產生重複／孤兒資料）', async
     assert.equal(q(`SELECT COUNT(*) AS c FROM permissions WHERE group_id = ${roId} AND folder_id = ${root}`)[0].c, 1);
   });
 });
+
+// ============================================================================
+// 工程師「可存取全部資料庫」
+//   - 只有管理員能設定，只有工程師角色有效；客戶、唯讀、一般帳號即使資料庫裡有標記也不生效
+//   - 系統資料庫（system.db 掌管所有帳號、admin.db）任何角色都不可被授權或切換
+//   - 新資料庫立即生效（不必重新登入）；實習工程師（清單模式）不受影響
+//   - 切換資料庫與被拒絕的嘗試都寫稽核日誌
+// ============================================================================
+test('整合：工程師「可存取全部資料庫」', async (t) => {
+  const srv = await startServer();
+  t.after(() => srv.stop());
+  const admin = makeClient(srv.base, '192.0.2.130');
+  assert.equal((await admin.post('/api/auth/login', { username: 'admin', password: INITIAL_PASSWORD })).status, 200);
+  assert.equal((await admin.post('/api/auth/change-password', { currentPassword: INITIAL_PASSWORD, newPassword: NEW_ADMIN_PASSWORD })).status, 200);
+
+  const sys = (sql, write) => sqlOn(srv.dir, 'system.db', sql, { write });
+  const dbFiles = () => fs.readdirSync(path.join(srv.dir, 'databases')).filter(f => f.endsWith('.db') && !['system.db', 'admin.db'].includes(f) && !f.startsWith('deleted_')).sort();
+  const names = (r) => (r.data.databases || []).map(d => d.name).sort();
+  const newPw = 'Zebra-Changed-Pass-88!';
+  let ipSeq = 140;
+  async function loginAs(username) {
+    const c = makeClient(srv.base, `192.0.2.${ipSeq++}`);
+    assert.equal((await c.post('/api/auth/login', { username, password: USER_PASSWORD })).status, 200, `${username} 登入`);
+    assert.equal((await c.post('/api/auth/change-password', { currentPassword: USER_PASSWORD, newPassword: newPw })).status, 200);
+    return c;
+  }
+  const setPerm = (username, body) => {
+    const id = sys(`SELECT id FROM accounts WHERE username = '${username}'`)[0].id;
+    return admin.post('/api/admin/accounts/update-permission', { accountId: id, ...body });
+  };
+
+  for (const u of ['eng', 'intern', 'cust', 'view']) {
+    assert.equal((await admin.post('/api/admin/accounts/create', { username: u, password: USER_PASSWORD, permissionLevel: 'editor' })).status, 200);
+  }
+  for (const n of ['cust_a.db', 'cust_b.db']) assert.equal((await admin.post('/api/databases', { name: n })).status, 200);
+
+  await t.test('設定：只有工程師角色能設「全部」；其他角色一律拒絕', async () => {
+    const asClient = await setPerm('cust', { roleLevel: 'client_user', permissionLevel: 'viewer', allowedDatabases: ['cust_a.db'], allowAllDatabases: true });
+    assert.equal(asClient.status, 400);
+    const asViewer = await setPerm('view', { permissionLevel: 'viewer', allowedDatabases: ['cust_a.db'], allowAllDatabases: true });
+    assert.equal(asViewer.status, 400);
+    const asUser = await setPerm('view', { roleLevel: 'user', allowAllDatabases: true });
+    assert.equal(asUser.status, 400);
+
+    assert.equal((await setPerm('cust', { roleLevel: 'client_user', permissionLevel: 'viewer', allowedDatabases: ['cust_a.db'] })).status, 200);
+    assert.equal((await setPerm('view', { permissionLevel: 'viewer', allowedDatabases: ['cust_a.db'] })).status, 200);
+    assert.equal((await setPerm('intern', { roleLevel: 'engineer', allowedDatabases: ['cust_a.db'] })).status, 200);
+    const ok = await setPerm('eng', { roleLevel: 'engineer', allowAllDatabases: true });
+    assert.equal(ok.status, 200, JSON.stringify(ok.data));
+    assert.equal(ok.data.allowAllDatabases, true);
+
+    const list = (await admin.get('/api/admin/accounts')).data;
+    const eng = list.find(a => a.username === 'eng');
+    assert.equal(eng.allow_all_databases, true);
+    assert.deepEqual(eng.allowed_databases, [], '清單裡不會出現標記本身');
+    assert.equal(list.find(a => a.username === 'intern').allow_all_databases, false);
+    assert.equal(sys("SELECT allowed_databases AS a FROM accounts WHERE username = 'eng'")[0].a, '["*"]');
+  });
+
+  await t.test('系統資料庫任何角色都不可被授權', async () => {
+    const r = await setPerm('intern', { roleLevel: 'engineer', allowedDatabases: ['system.db', 'admin.db', 'cust_a.db'] });
+    assert.equal(r.status, 200);
+    assert.equal(sys("SELECT allowed_databases AS a FROM accounts WHERE username = 'intern'")[0].a, '["cust_a.db"]');
+    const only = await setPerm('intern', { roleLevel: 'engineer', allowedDatabases: ['system.db'] });
+    assert.equal(only.status, 400, '只有系統資料庫等於沒選');
+  });
+
+  const eng = await loginAs('eng');
+  const intern = await loginAs('intern');
+
+  await t.test('全部資料庫的工程師：看得到所有非系統資料庫，系統資料庫看不到也切不過去', async () => {
+    const list = await eng.get('/api/databases');
+    assert.deepEqual(names(list), dbFiles());
+    assert.ok(!names(list).includes('system.db') && !names(list).includes('admin.db'));
+    assert.equal((await eng.post('/api/databases/switch', { name: 'cust_a.db' })).status, 200);
+    assert.equal((await eng.get('/api/folders')).status, 200);
+    assert.equal((await eng.post('/api/databases/switch', { name: 'system.db' })).status, 403);
+    assert.equal((await eng.post('/api/databases/switch', { name: 'admin.db' })).status, 403);
+    assert.equal((await eng.post('/api/databases/switch', { name: 'no_such.db' })).status, 403);
+    assert.equal((await eng.post('/api/databases/switch', { name: '../databases/system.db' })).status, 400, '路徑跳脫');
+    assert.equal((await eng.post('/api/databases/switch', { name: 'cust_a.db/../system.db' })).status, 400);
+    assert.equal((await eng.post('/api/databases/copy', { source: 'system.db', target: 'user_eng_loot.db' })).status, 403);
+    const me = (await eng.get('/api/auth/status')).data.user;
+    assert.equal(me.allowAllDatabases, true);
+    assert.deepEqual([...me.allowedDatabases].sort(), dbFiles(), '前端用的清單也是即時計算的、不含系統資料庫');
+  });
+
+  await t.test('新資料庫立刻生效：已登入的工程師不必重新登入；實習工程師（清單模式）不受影響', async () => {
+    assert.equal((await admin.post('/api/databases', { name: 'later_new.db' })).status, 200);
+    assert.ok(names(await eng.get('/api/databases')).includes('later_new.db'));
+    assert.equal((await eng.post('/api/databases/switch', { name: 'later_new.db' })).status, 200);
+    // 複製：全部資料庫的工程師可以複製任何非系統資料庫（目標仍須是自己名下）
+    assert.equal((await eng.post('/api/databases/copy', { source: 'cust_b.db', target: 'user_eng_copy.db' })).status, 200);
+
+    assert.deepEqual(names(await intern.get('/api/databases')), ['cust_a.db']);
+    assert.equal((await intern.post('/api/databases/switch', { name: 'later_new.db' })).status, 403);
+    assert.equal((await intern.post('/api/databases/switch', { name: 'cust_a.db' })).status, 200);
+  });
+
+  await t.test('客戶與唯讀帳號：即使資料庫裡被塞進「全部」標記也不生效', async () => {
+    sys(`UPDATE accounts SET allowed_databases = '["*"]' WHERE username IN ('cust', 'view')`, true);
+    for (const u of ['cust', 'view']) {
+      const c = makeClient(srv.base, `192.0.2.${ipSeq++}`);
+      const r = await c.post('/api/auth/login', { username: u, password: USER_PASSWORD });
+      assert.equal(r.status, 403, `${u} 不應因標記取得任何資料庫`);
+    }
+    // 一般帳號（非工程師角色）帶標記：登入後也只看得到自己的資料庫
+    assert.equal((await setPerm('view', { roleLevel: 'user', permissionLevel: 'editor' })).status, 200);
+    sys(`UPDATE accounts SET allowed_databases = '["*"]' WHERE username = 'view'`, true);
+    const v = makeClient(srv.base, `192.0.2.${ipSeq++}`);
+    assert.equal((await v.post('/api/auth/login', { username: 'view', password: USER_PASSWORD })).status, 200);
+    assert.equal((await v.post('/api/auth/change-password', { currentPassword: USER_PASSWORD, newPassword: newPw })).status, 200);
+    assert.ok(!names(await v.get('/api/databases')).includes('cust_a.db'), '一般帳號不會因標記看到他人資料庫');
+    assert.equal((await v.post('/api/databases/switch', { name: 'cust_a.db' })).status, 403);
+  });
+
+  await t.test('邀請連結不能夾帶「全部」標記', async () => {
+    const r = await admin.post('/api/admin/invitations', { roleLevel: 'client_user', permissionLevel: 'viewer', allowedDatabases: ['*', 'cust_a.db'], expiryDays: 1 });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    const row = sys("SELECT allowed_databases AS a FROM invitations ORDER BY rowid DESC LIMIT 1")[0];
+    assert.equal(row.a, '["cust_a.db"]');
+  });
+
+  await t.test('稽核：切換資料庫與被拒絕的嘗試都有紀錄；改權限也有紀錄', async () => {
+    const rows = sys("SELECT username, action_type AS t, resource_name AS n FROM audit_log WHERE action_type IN ('switch', 'switch_denied') ORDER BY id");
+    assert.ok(rows.some(r => r.username === 'eng' && r.t === 'switch' && r.n === 'cust_a.db'));
+    assert.ok(rows.some(r => r.username === 'eng' && r.t === 'switch_denied' && r.n === 'system.db'), '被拒絕的 system.db 也要留下紀錄');
+    assert.ok(rows.some(r => r.username === 'intern' && r.t === 'switch_denied' && r.n === 'later_new.db'));
+    const perm = sys("SELECT new_value AS v FROM audit_log WHERE action_type = 'update' AND resource_type = 'account_permission' AND resource_name = 'eng' ORDER BY id DESC LIMIT 1")[0];
+    assert.equal(JSON.parse(perm.v).allDatabases, true);
+  });
+
+  await t.test('取消「全部」：既有登入立即失效，重新登入後只剩清單內的資料庫', async () => {
+    assert.equal((await setPerm('eng', { roleLevel: 'engineer', allowedDatabases: ['cust_a.db'] })).status, 200);
+    assert.equal((await eng.get('/api/databases')).status, 401, '舊登入已被踢出');
+    const again = makeClient(srv.base, `192.0.2.${ipSeq++}`);
+    assert.equal((await again.post('/api/auth/login', { username: 'eng', password: newPw })).status, 200);
+    assert.deepEqual(names(await again.get('/api/databases')), ['cust_a.db']);
+    assert.equal(sys("SELECT allowed_databases AS a FROM accounts WHERE username = 'eng'")[0].a, '["cust_a.db"]');
+  });
+});

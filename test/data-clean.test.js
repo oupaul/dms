@@ -175,6 +175,7 @@ test('資料清理', async (t) => {
     assert.equal(proc.status, 0, proc.stderr);
     assert.equal(list('bob'), '["clean.db"]');
     assert.equal(list('carol'), '{not json', '不是合法 JSON 的不動');
+    assert.equal(list('eve'), '["*"]', '工程師「全部資料庫」標記（*）不是資料庫名稱，不可被清掉');
   });
 
   await t.test('乾淨的資料庫（clean.db）沒有任何需要處理的項目', () => {
