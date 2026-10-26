@@ -288,7 +288,8 @@ router.get('/auth/callback', async (req, res) => {
     console.error('Microsoft auth error:', error, req.query.error_description);
     return res.redirect('/login.html?error=ms_auth_cancelled');
   }
-  if (!code) return res.redirect('/login.html?error=ms_auth_failed');
+  // 只接受單一字串的授權碼（?code=a&code=b 會變成陣列）。MSAL 對 acquireTokenByCode 的建議也是只傳入純授權碼
+  if (!code || typeof code !== 'string') return res.redirect('/login.html?error=ms_auth_failed');
 
   // state 驗證：必須與發起登入時存在 session 的隨機值一致（一次性）
   const expectedState = req.session && req.session.msalState;
