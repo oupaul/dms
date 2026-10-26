@@ -7921,8 +7921,8 @@ group_member,,2,4</code></pre>
                             actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
                                 <i class="bi bi-key-fill"></i>
                             </button>`;
-                            actionButtons += `<button class="btn btn-sm ${account.ms_email ? 'btn-info' : 'btn-outline-info'} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#0078d4'}"/><rect x="12" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#7fba00'}"/><rect x="0" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#00a4ef'}"/><rect x="12" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#ffb900'}"/></svg>
+                            actionButtons += `<button class="btn btn-sm btn-outline-info${account.ms_email ? ' ms-bound' : ''} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="#0078d4"/><rect x="12" y="0" width="11" height="11" fill="#7fba00"/><rect x="0" y="12" width="11" height="11" fill="#00a4ef"/><rect x="12" y="12" width="11" height="11" fill="#ffb900"/></svg>
                             </button>`;
                             actionButtons += `<button class="btn btn-sm btn-outline-warning me-1" title="升為系統管理員" onclick="setAdminRole(${account.id}, '${safeUsername}', true)">
                                 <i class="bi bi-shield-fill-plus"></i>
@@ -7935,8 +7935,8 @@ group_member,,2,4</code></pre>
                             actionButtons += `<button class="btn btn-sm btn-outline-secondary me-1" title="重設密碼" onclick="openResetPasswordModal(${account.id}, '${safeUsername}')">
                                 <i class="bi bi-key-fill"></i>
                             </button>`;
-                            actionButtons += `<button class="btn btn-sm ${account.ms_email ? 'btn-info' : 'btn-outline-info'} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#0078d4'}"/><rect x="12" y="0" width="11" height="11" fill="${account.ms_email ? '#fff' : '#7fba00'}"/><rect x="0" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#00a4ef'}"/><rect x="12" y="12" width="11" height="11" fill="${account.ms_email ? '#fff' : '#ffb900'}"/></svg>
+                            actionButtons += `<button class="btn btn-sm btn-outline-info${account.ms_email ? ' ms-bound' : ''} me-1" title="${account.ms_email ? 'M365 已綁定：' + account.ms_email : '設定 M365 Email 綁定'}" onclick="openMsEmailModal(${account.id}, '${safeUsername}', '${safeMsEmail}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 23 23" style="vertical-align:-1px"><rect x="0" y="0" width="11" height="11" fill="#0078d4"/><rect x="12" y="0" width="11" height="11" fill="#7fba00"/><rect x="0" y="12" width="11" height="11" fill="#00a4ef"/><rect x="12" y="12" width="11" height="11" fill="#ffb900"/></svg>
                             </button>`;
                             actionButtons += `<button class="btn btn-sm btn-warning me-1" title="取消管理員身份" onclick="setAdminRole(${account.id}, '${safeUsername}', false)">
                                 <i class="bi bi-shield-fill-minus"></i>

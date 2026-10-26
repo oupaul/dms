@@ -123,6 +123,13 @@ body {
   background: var(--ds-hover) !important;
   border-color: var(--ds-muted) !important;
 }
+/* 帳號管理的 M365 綁定按鈕：兩種狀態都用彩色 Logo（過去已綁定時是白色 Logo 配實心底，換成白底後就看不見了）。
+   已綁定＝淺灰底 + 較深邊框 + 右上角一個綠點（綠色只用在「已啟用／已完成」這類狀態） */
+.btn.ms-bound { position: relative; background: var(--ds-hover) !important; border-color: var(--ds-muted) !important; }
+.btn.ms-bound::after {
+  content: ''; position: absolute; top: -3px; right: -3px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--ds-success); border: 2px solid var(--ds-surface);
+}
 /* 破壞性動作：hover 才轉紅 */
 .btn-danger:hover, .btn-outline-danger:hover {
   background: #FEF2F2 !important;
